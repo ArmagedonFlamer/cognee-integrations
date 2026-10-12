@@ -77,8 +77,7 @@ export class CogneeMemory implements INodeType {
 		group: ['transform'],
 		version: [1],
 		subtitle: 'Long-term memory in Cognee',
-		description:
-			'Give the AI Agent long-term memory: the conversation is stored in a Cognee session, relevant knowledge is recalled for every question, and sessions are promoted into the knowledge graph so later conversations remember',
+		description: 'Give the AI Agent long-term memory with Cognee',
 		defaults: {
 			name: 'Cognee Memory',
 		},
