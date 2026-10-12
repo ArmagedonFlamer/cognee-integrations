@@ -325,15 +325,15 @@ async def _sync(
 
         incomplete: list[str] = []
         # The final (strict) sync must always run; a manual /cognee-sync too.
-        # Only the idle and auto triggers honour the improve cooldown/backoff.
+        # Only the auto trigger honours the improve cooldown/backoff.
         trigger = "final" if strict else "manual"
         for sid, ds in targets:
             outcome = run_session_improve_detailed(ds, sid, trigger=trigger)
             wrote = bool(outcome.get("ok"))
             why = str(outcome.get("reason") or "")
             if why == "busy":
-                # Another improve of this session is in flight server-side (the
-                # idle watcher's, or a second final worker). It persists
+                # Another improve of this session is in flight server-side (an
+                # auto improve, or a second final worker). It persists
                 # everything above the session watermark, and re-submitting
                 # would only be recorded as one more improve operation — so a
                 # busy answer is deferred, never retried.

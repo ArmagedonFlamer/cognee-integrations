@@ -51,9 +51,9 @@ _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 # One state file per session (see record_improve_success / record_improve_failure):
 # when the last improve attempt ran, whether it landed, and how many turns the
-# session had at the last success. Every improve trigger records it; the idle
-# and auto triggers consult it so the cooldown (and the failure backoff) survive
-# the watcher's exit-after-bridge respawn cycle.
+# session had at the last success. Every improve trigger records it; the auto
+# trigger consults it so the cooldown (and the failure backoff) survive across
+# hook processes.
 _IMPROVE_STATE_DIR = _PLUGIN_DIR / "improve-state"
 # Per-agent-session buffer dirs. Each agent session (one Claude/Codex terminal)
 # owns its own file under these dirs, so two concurrent agents never
@@ -1864,7 +1864,7 @@ IMPROVE_COOLDOWN_DEFAULT_SECONDS = 5400.0
 
 
 def improve_cooldown_seconds() -> float:
-    """Minimum seconds between idle/auto improves of one session (COGNEE_IMPROVE_COOLDOWN)."""
+    """Minimum seconds between auto improves of one session (COGNEE_IMPROVE_COOLDOWN)."""
     raw = os.environ.get("COGNEE_IMPROVE_COOLDOWN", "").strip()
     try:
         value = float(raw) if raw else IMPROVE_COOLDOWN_DEFAULT_SECONDS
@@ -1892,7 +1892,7 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
     Called by ``run_session_improve_detailed`` itself on a confirmed 2xx submit,
     never by its callers, so a skipped or failed attempt can never be stamped as
     a success. Replaces the whole state, which also clears any failure backoff.
-    The idle/auto triggers read this back through ``improve_throttle_reason``.
+    The auto trigger reads this back through ``improve_throttle_reason``.
     Best-effort: a write failure is logged and never fails the improve.
     """
     if not session_id:
@@ -1941,15 +1941,15 @@ def record_improve_failure(session_id: str, dataset: str, trigger: str, reason: 
 
 
 def improve_throttle_reason(session_id: str) -> str:
-    """Why an idle/auto improve of ``session_id`` should be skipped right now.
+    """Why an auto improve of ``session_id`` should be skipped right now.
 
     ``"cooldown"`` while the last successful improve is younger than
     ``improve_cooldown_seconds()``; ``"backoff"`` while the last FAILED attempt
     (busy, timeout, unreachable...) is; ``"no_new_entries"`` when nothing was
     stored since the last success; ``""`` when an improve may run. A session that
-    never attempted an improve is never throttled. Only the automatic triggers
-    (idle watcher, every-N entries) honour this — the session-end, manual and
-    dataset-switch syncs always run.
+    never attempted an improve is never throttled. Only the automatic every-N
+    entries trigger honours this — the session-end, manual and dataset-switch
+    syncs always run.
     """
     state = read_improve_state(session_id)
     if not state:
@@ -5543,8 +5543,8 @@ def ensure_dataset_via_http(dataset: str) -> None:
 def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str = "final") -> dict:
     """API-mode session->graph sync: drain warmup entries, then ONE improve submit.
 
-    ``trigger`` names the caller (``idle``, ``auto``, ``final``, ``manual``,
-    ``switch``) and is recorded with the session's improve state. Returns
+    ``trigger`` names the caller (``auto``, ``final``, ``manual``, ``switch``)
+    and is recorded with the session's improve state. Returns
     ``{"ok": bool, "reason": str, "error": str}``: ``ok`` when the improve landed
     and the drain was complete; otherwise ``reason`` is ``busy`` (another improve
     of this session is in flight server-side), ``unreachable`` (backend down,
@@ -5564,7 +5564,7 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
         result: dict = {"ok": False, "error": "backend unreachable"}
         reason = "unreachable"
     else:
-        # Detached/idle context: nothing user-visible waits on this, so the drain
+        # Detached context: nothing user-visible waits on this, so the drain
         # gets a far larger budget than the per-prompt hook's default.
         final_budget = _float_env("COGNEE_DRAIN_BUDGET_FINAL", 120.0)
         _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
