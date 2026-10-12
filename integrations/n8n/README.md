@@ -326,6 +326,7 @@ The package depends on `n8n-workflow` and `@n8n/ai-node-sdk` at runtime (peer de
 
 ## Version history
 
+- **0.8.1**: Shorter Cognee Memory sub-node description in the node picker.
 - **0.8.0**: The **Cognee Memory** sub-node becomes long-term memory. It recalls graph context for every question (`POST /api/v1/recall`, hybrid completion, only context) and appends it to the loaded history, and promotes the sessions it writes into the knowledge graph (`POST /api/v1/improve`) at most once per interval (default 24 hours), covering every session written since the last run in one request; the last-run time lives in the workflow static data. Both are on by default and switchable in the options. Window Size default drops to 5. The action node gains **Memory → Improve**, and the repo ships a nightly promotion workflow.
 - **0.7.1**: Text uploads (Add Data, Remember) are named by a hash of their content instead of their position, so cognee >= 1.6.0 no longer refuses every text after the first run as a changed document.
 - **0.7.0**: Add the **Cognee Memory** sub-node for the AI Agent's Memory port, built on `@n8n/ai-node-sdk`: loads the last N Q&A pairs of a Cognee session (`GET /api/v1/sessions/{id}`) and stores each turn as a `qa` session entry (`POST /api/v1/remember/entry`), so the conversation survives restarts and is readable from any Cognee client. Session entries stay in the session cache, separate from a dataset's knowledge graph. Declares `n8n.aiNodeSdkVersion: 1`; the sub-node requires n8n ≥ 2.16.
