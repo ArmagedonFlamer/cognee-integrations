@@ -29,6 +29,9 @@ from .http_client import CogneeHttpClient
 # query is a graph/graph_context completion; a stored session entry is a prior
 # turn, never the answer to display.
 _ANSWER_SOURCES = ("graph", "graph_context")
+# Code-graph facts are structured query results, not prose: never shown as the
+# answer, even when nothing else came back.
+_NEVER_ANSWER_SOURCES = ("code",)
 _EMPTY_ANSWER = "I don't have anything in memory for that yet."
 
 
@@ -83,6 +86,8 @@ def _answer_text(results: Sequence[Any]) -> str:
     for generated_only in (True, False):
         for entry in entries:
             if generated_only and _field(entry, "source") not in _ANSWER_SOURCES:
+                continue
+            if _field(entry, "source") in _NEVER_ANSWER_SOURCES:
                 continue
             text = _entry_text(entry)
             if text:

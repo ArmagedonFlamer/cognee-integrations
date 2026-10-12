@@ -92,6 +92,19 @@ async def test_answer_returns_clean_text_and_citations(fake_client):
     assert call.kwargs["top_k"] == 5
 
 
+async def test_answer_ignores_code_graph_entries(fake_client):
+    """Code-graph facts sit next to the answer, never in place of it."""
+    code_entry = {"source": "code", "text": '{"operation": "explore", "nodes": []}'}
+    adapter = ChatMemoryAdapter(client=fake_client)
+    conv = adapter.conversation(site_id="demo", visitor_id="v1", conversation_id="c1")
+
+    fake_client.recall.return_value = [code_entry, GRAPH_ENTRY]
+    assert (await adapter.answer(conversation=conv, query="q")).text == GRAPH_ANSWER
+
+    fake_client.recall.return_value = [code_entry]
+    assert (await adapter.answer(conversation=conv, query="q")).text == _EMPTY_ANSWER
+
+
 async def test_answer_prefers_generated_completion_over_session_turns(fake_client):
     """A prior/echoed session turn must never be shown as the answer."""
     # recall returns session entries *before* the graph completion.

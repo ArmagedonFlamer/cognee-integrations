@@ -22,6 +22,36 @@ from typing import Any, Optional
 
 logger = logging.getLogger("web_widget.http_client")
 
+# Memory sources every recall asks for. "graph" is the docs answer; "code" adds a
+# deterministic query over the code graph of any repository ingested into the
+# same dataset. cognee never implies "code" from "auto" or "all", so it has to
+# be named. Code entries come back tagged source="code", next to the answer
+# rather than inside it.
+# WIDGET_RECALL_SCOPE overrides it as a comma-separated list, e.g. "graph" to
+# answer from the docs graph alone.
+RECALL_SCOPE = tuple(
+    part.strip()
+    for part in os.getenv("WIDGET_RECALL_SCOPE", "graph,code").split(",")
+    if part.strip()
+)
+
+# How the dataset ("graph" scope) is searched. Pinned to GRAPH_COMPLETION by
+# default; WIDGET_SEARCH_TYPE overrides it, and an empty value (or "auto") leaves
+# it out so cognee routes the question itself - HYBRID_COMPLETION unless a rule
+# matches - which also lets a "session" scope contribute next to the graph.
+_SEARCH_TYPE = os.getenv("WIDGET_SEARCH_TYPE", "GRAPH_COMPLETION").strip()
+RECALL_SEARCH_TYPE = None if _SEARCH_TYPE.lower() in ("", "auto") else _SEARCH_TYPE
+
+# The instruction the answering model gets. Unset, nothing is sent and cognee uses
+# its own default ("Answer the question using the provided context. Be as brief
+# as possible."). It replaces that default rather than adding to it; the Evidence
+# block behind citations is appended by cognee after the answer, so it is
+# unaffected.
+RECALL_SYSTEM_PROMPT = os.getenv("WIDGET_SYSTEM_PROMPT") or None
+
+# The most items cognee's dataset-data endpoint returns per request.
+DATASET_PAGE_SIZE = 1000
+
 
 def normalise_run_status(value) -> str:
     """One vocabulary for a pipeline state, whichever endpoint reported it.
@@ -120,7 +150,9 @@ class CogneeHttpClient:
                 "session_id": session_id,
                 "top_k": top_k,
                 "include_references": True,
-                "search_type": "GRAPH_COMPLETION",
+                "scope": list(RECALL_SCOPE),
+                **({"search_type": RECALL_SEARCH_TYPE} if RECALL_SEARCH_TYPE else {}),
+                **({"system_prompt": RECALL_SYSTEM_PROMPT} if RECALL_SYSTEM_PROMPT else {}),
             },
         )
         if response.status_code >= 500:
@@ -167,13 +199,45 @@ class CogneeHttpClient:
         return list(items) if isinstance(items, list) else []
 
     async def dataset_data(self, dataset_id: str) -> list[Any]:
-        """The items ingested into one dataset."""
-        response = await self._request("GET", f"/api/v1/datasets/{dataset_id}/data")
-        if response.status_code >= 400:
-            return []
-        data = response.json()
-        items = data.get("data", data) if isinstance(data, dict) else data
-        return list(items) if isinstance(items, list) else []
+        """Every item ingested into one dataset.
+
+        The endpoint is paginated - ``limit`` defaults to 100 - so a single call
+        returned the first 100 items as if they were the whole dataset, and the
+        dashboard's count and drift badge stopped there. This pages with
+        ``offset`` until a short page. A server that ignores ``offset`` hands the
+        same first page back, which would loop forever; seeing an item twice ends
+        it.
+
+        ``[]`` when the dataset is missing (4xx on the first page). A failure
+        after that raises: returning the pages read so far would be the same
+        silent truncation this exists to prevent.
+        """
+        items: list[Any] = []
+        seen: set[str] = set()
+        while True:
+            response = await self._request(
+                "GET",
+                f"/api/v1/datasets/{dataset_id}/data",
+                params={"limit": DATASET_PAGE_SIZE, "offset": len(items)},
+            )
+            if response.status_code >= 400:
+                if not items:
+                    return []
+                raise RuntimeError(
+                    f"listing dataset {dataset_id} failed at offset {len(items)} "
+                    f"(HTTP {response.status_code})"
+                )
+            data = response.json()
+            page = data.get("data", data) if isinstance(data, dict) else data
+            page = list(page) if isinstance(page, list) else []
+            ids = [str(i.get("id")) for i in page if isinstance(i, dict) and i.get("id")]
+            if ids and seen.intersection(ids):
+                break
+            seen.update(ids)
+            items.extend(page)
+            if len(page) < DATASET_PAGE_SIZE:
+                break
+        return items
 
     async def recall_history(self) -> list[Any]:
         """Questions this key's principal has asked, newest-first per the server.
