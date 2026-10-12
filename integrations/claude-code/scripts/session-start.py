@@ -2206,6 +2206,65 @@ def _apply_memory_preference(output: dict) -> dict:
     return result
 
 
+def _auto_memory_offer_text(script: Path, project: str) -> str:
+    python = sys.executable or "python3"
+    return (
+        "One-time Cognee setup question. Claude Code's built-in auto-memory (MEMORY.md) "
+        "is on, so it duplicates Cognee memory and hides what Cognee recalls. Once in "
+        "this session, early but without delaying the user's request, ask the user "
+        "whether to turn it off. Use the AskUserQuestion tool if you have it, with these "
+        "options: 'Turn off for all projects (recommended)', 'Turn off for this project "
+        "only', 'Keep it on'. Then run exactly one of these commands and tell the user "
+        "its result in one line:\n"
+        f'  "{python}" "{script}" off --scope user\n'
+        f'  "{python}" "{script}" off --scope project --project-dir "{project}"\n'
+        f'  "{python}" "{script}" keep\n'
+        "The change applies from the next session, and existing MEMORY.md notes stay on "
+        "disk. Do not ask again in this session."
+    )
+
+
+def _apply_auto_memory_offer(output: dict, payload: dict | None = None) -> dict:
+    """Ask the user, once ever, to turn off Claude Code's auto memory.
+
+    The hook cannot ask anything itself, so it tells Claude to ask and gives it
+    the exact ``cognee-auto-memory.py`` commands to run. Offered only while auto
+    memory is on by default (see ``_auto_memory.should_offer``), never on a
+    compaction restart (that lands mid-task), and not when the user opted out
+    of the Cognee memory steer with ``COGNEE_PREFER_MEMORY=false``.
+    """
+    payload = payload or {}
+    if str(payload.get("source") or "") == "compact":
+        return output
+    try:
+        val = load_config().get("prefer_cognee_memory", True)
+    except Exception:
+        val = True
+    if str(val).strip().lower() in {"0", "false", "no", "off"}:
+        return output
+    try:
+        import _auto_memory
+
+        project = str(payload.get("cwd") or os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+        if not _auto_memory.should_offer(project):
+            return output
+        script = Path(__file__).resolve().parent / "cognee-auto-memory.py"
+        text = _auto_memory_offer_text(script, project)
+        _auto_memory.record_offer(offered_at=_auto_memory.now())
+    except Exception as exc:
+        hook_log("auto_memory_offer_failed", {"error": str(exc)[:200]})
+        return output
+    hook_log("auto_memory_offered", {"project": project})
+
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    existing = str(hso.get("additionalContext") or "").strip()
+    hso["additionalContext"] = f"{existing}\n\n{text}" if existing else text
+    result["hookSpecificOutput"] = hso
+    return result
+
+
 def _apply_update_nudge(output: dict) -> dict:
     """Append a one-time 'update available' systemMessage (once per new version).
 
@@ -2500,6 +2559,47 @@ async def _start(payload: dict | None = None) -> dict:
     return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
 
 
+def _apply_sync_notice(output: dict) -> dict:
+    """Say, on reopening a chat, whether it reached long-term memory (SDK-1071).
+
+    The session-end sync runs after the chat is gone, so its outcome is shown
+    when the same chat is resumed: resume keeps the session id, and the
+    session's improve record says when it was last saved or why the save
+    failed. Shown once per save, in the terminal and to the agent. A new chat
+    or ``/clear`` has no record, so it shows nothing. Off with
+    ``COGNEE_PLUGIN_CITE_MEMORY=off``.
+    """
+    try:
+        import _plugin_common
+        from _recall_text import credit_enabled, mark_notice_shown, notice_due, sync_notice
+        from config import get_session_id
+
+        if not credit_enabled():
+            return output
+        session_id = get_session_id(load_config())
+        message, sync_ts = sync_notice(_plugin_common.read_improve_state(session_id))
+        if not message or not notice_due(_plugin_common._PLUGIN_DIR, session_id, sync_ts):
+            return output
+        mark_notice_shown(_plugin_common._PLUGIN_DIR, session_id, sync_ts)
+    except Exception as exc:
+        hook_log("sync_notice_failed", {"error": str(exc)[:200]})
+        return output
+    hook_log("sync_notice_shown", {"session": session_id, "sync_ts": sync_ts})
+
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    for field in ("systemMessage", "additionalContext"):
+        existing = str(hso.get(field) or "").strip()
+        hso[field] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    # The user sees only the top-level systemMessage: Claude Code documents it
+    # there (inside hookSpecificOutput it reached the agent but was never shown).
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{message}" if top else message
+    return result
+
+
 def main():
     if is_observer_child():
         return
@@ -2539,6 +2639,8 @@ def main():
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     output = _apply_memory_preference(output)
+    output = _apply_auto_memory_offer(output, payload)
+    output = _apply_sync_notice(output)
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     print(json.dumps(output or {}))

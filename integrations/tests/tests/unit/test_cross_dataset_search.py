@@ -291,7 +291,7 @@ def test_an_answered_prompt_appends_the_other_datasets(lookup, monkeypatch):
     _offer(lookup, monkeypatch)
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
     ctx = _context(run)
-    assert "(no memory matches for this prompt)" in ctx
+    assert ctx.startswith("Other Cognee datasets")  # no empty-recall header (SDK-1071)
     assert "Other Cognee datasets you can search (active: agent_sessions)" in ctx
     assert f"  - project-alpha [{OTHER_ID}]" in ctx and f"  - team-notes [{THIRD_ID}]" in ctx
     assert "agent_sessions [" not in ctx  # the active dataset is never offered
@@ -389,7 +389,7 @@ def test_a_dataset_without_a_graph_yet_still_offers(lookup, monkeypatch):
 def test_only_the_active_dataset_offers_nothing(lookup, monkeypatch):
     _offer(lookup, monkeypatch, rows=ROWS[:1])
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
-    assert _context(run).endswith("(no memory matches for this prompt)")
+    assert _context(run) == ""  # nothing recalled, nothing to offer: nothing injected
     assert not run.fired("recall_dataset_hint")
 
 
@@ -435,7 +435,7 @@ def test_a_failing_lister_never_breaks_the_hook(lookup, monkeypatch):
 
     monkeypatch.setattr(lookup, "cached_readable_datasets", boom)
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
-    assert _context(run).endswith("(no memory matches for this prompt)")
+    assert _context(run) == ""
     assert run.detail("recall_error") == {
         "scope": ["dataset_hint"],
         "error": "cache exploded",

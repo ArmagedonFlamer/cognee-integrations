@@ -68,6 +68,7 @@ def test_json_report_has_exactly_the_expected_keys(doctor, mock_server, suite):
     expected = set(_REPORT_KEYS)
     if suite.name == "claude-code":
         expected.add("llm")  # where the local server's LLM calls go (key vs. Claude observer)
+        expected.add("auto_memory")  # Claude Code's built-in MEMORY.md, which duplicates Cognee
     assert set(parsed.keys()) == expected, f"keys mismatch: {expected ^ set(parsed.keys())}"
 
 

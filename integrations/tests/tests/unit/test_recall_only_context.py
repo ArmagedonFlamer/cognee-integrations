@@ -67,8 +67,12 @@ ITEM_GUIDANCE = {"source": "session_context", "content": GUIDANCE_BLOCK, "contex
 
 
 @pytest.fixture
-def lookup(suite, hook_module):
-    return hook_module(suite, "session-context-lookup.py")
+def lookup(suite, hook_module, monkeypatch):
+    # These pin the trimmed text itself; the credit tags woven into it are
+    # covered by test_memory_credit.py.
+    module = hook_module(suite, "session-context-lookup.py")
+    monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "off")  # after the harness scrubs COGNEE_*
+    return module
 
 
 def _context(run) -> str:

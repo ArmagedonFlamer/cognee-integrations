@@ -28,6 +28,7 @@ import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+import _plugin_common
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
@@ -65,7 +66,16 @@ from _plugin_common import (
     write_connection_state,
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
-from _recall_text import code_facts, format_code_facts, trim_recall_text
+from _recall_text import (
+    MemoryTags,
+    code_facts,
+    credit_enabled,
+    credit_instruction,
+    format_code_facts,
+    has_credited,
+    save_turn_tags,
+    trim_recall_text,
+)
 from cognee_statusline_render import render_status_for_host
 from config import get_dataset, get_session_id, load_config
 
@@ -249,6 +259,32 @@ def _memory_summary(
     parts.append(saves_segment(saves))
     parts.extend(buffered_saves_segments(saves, backlog))
     return "Cognee memory: " + " · ".join(parts)
+
+
+def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
+    """``_format_entry`` with the item's credit tag (SDK-1071), when tagging is on.
+
+    Graph memory is tagged per passage plus one tag each for its entities and
+    facts; every other item gets one tag naming where it came from.
+    """
+    if tags is None:
+        return _format_entry(entry)
+    source = entry.get("source", "")
+    if source == "graph_context":
+        entry = dict(entry)
+        entry["text"] = tags.tag_graph(str(entry.get("text", "") or entry.get("content", "")))
+        return _format_entry(entry)
+    body = _format_entry(entry)
+    if source == "code":
+        origin = "code graph"
+    elif source == "session_context":
+        origin = "agent guidance"
+    elif source == "trace":
+        origin = f"agent trace, {entry.get('origin_function', '?')}"
+    else:
+        day = str(entry.get("time", "") or "")[:10]
+        origin = f"earlier session turn, {day}" if day else "earlier session turn"
+    return f"{tags.label(source or 'session', origin, body)}\n{body}"
 
 
 def _outage_output(state: str) -> dict:
@@ -803,16 +839,18 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         backlog=warmup_backlog(),
     )
 
+    # Tag each recalled item so the answer can credit it (SDK-1071).
+    tags = MemoryTags() if credit_enabled() else None
     section_lines = []
     if by_source.get("code"):
         section_lines.append("=== Code graph facts ===")
         for e in by_source["code"]:
-            section_lines.append(_format_entry(e))
+            section_lines.append(_tagged_entry(e, tags))
             section_lines.append("")
     if by_source.get("graph_context"):
         section_lines.append("=== Cognee memory ===")
         for e in by_source["graph_context"]:
-            section_lines.append(_format_entry(e))
+            section_lines.append(_tagged_entry(e, tags))
             section_lines.append("")
     # A server older than 1.6.0 answers the graph scope with the bare context
     # and nothing else arrives on this request; whatever a server does tag with
@@ -825,11 +863,19 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         if by_source.get(src):
             section_lines.append(title)
             for e in by_source[src]:
-                section_lines.append(_format_entry(e))
+                section_lines.append(_tagged_entry(e, tags))
                 section_lines.append("")
     if total > 0:
+        # The credit instruction goes right under the header, not after the
+        # memory: Claude Code replaces hook context over 10,000 characters with
+        # a file and a 2 KB preview, so a large recall would cut off anything
+        # at the end (SDK-1071).
+        instruction = ""
+        if tags is not None and tags.records:
+            first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
+            instruction = credit_instruction(first) + "\n\n"
         full_context = (
-            f"{header}\n\nRelevant context from this session's memory:\n\n"
+            f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
         if dataset_hint:
@@ -846,9 +892,10 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
+        # Nothing recalled: the agent gets no memory header (a "0 hits" line on
+        # most turns read as "Cognee does nothing", SDK-1071). The header stays
+        # in systemMessage; the dataset hint, when due, still goes in.
+        full_context = dataset_hint
         hook_log(
             "context_lookup_empty",
             {
@@ -881,12 +928,27 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
                     "hits": counts,
                     "per_scope": per_scope,
+                    # The header the user sees: an empty recall no longer
+                    # puts it in the injected context (SDK-1071).
+                    "header": header,
                     "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
                 }
             ),
         )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
+
+    # The Stop hook checks the answer's citations against these (SDK-1071).
+    # Saved every turn, so a turn without memory clears the previous tags.
+    try:
+        save_turn_tags(
+            _plugin_common._PLUGIN_DIR,
+            get_session_key(),
+            tags.records if tags is not None else [],
+            ts=str(int(time.time())),
+        )
+    except Exception as exc:
+        hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
 
     # additionalContext is the MODEL injection channel and must carry the full
     # recalled content — trimming it to the status line would silently disable

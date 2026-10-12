@@ -10,6 +10,47 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Answers credit Cognee memory.** Every recalled item is tagged (`m1`, `m2`…) with
+  where it came from, and on turns where memory was injected the agent is asked to end
+  an answer that used it with one `🧠 Cognee memory [mN]: …` line; the first credit in a
+  session also says how it connects to the earlier work. The Stop hook checks the cited
+  tags against what that turn injected and logs a `memory_credit` event (valid and
+  invented citations). Off with `COGNEE_PLUGIN_CITE_MEMORY=off` (SDK-1071).
+- **Reopening a chat says whether it was saved.** The session-end sync runs after the chat
+  is gone, so on resume of the same chat session start shows once, in the terminal and to
+  the agent, whether the conversation reached long-term memory and when, or why the save
+  failed (SDK-1071).
+- **Offer to turn off Claude Code's auto-memory.** Claude Code's built-in `MEMORY.md`
+  memory duplicates Cognee, and a plugin can't disable it on its own. On the first
+  session where it is on by default, `SessionStart` now tells Claude to ask once
+  whether to turn it off for all projects or for this project only, and on a yes
+  `scripts/cognee-auto-memory.py` writes `"autoMemoryEnabled": false` to
+  `~/.claude/settings.json` or `.claude/settings.local.json`. Not asked when the
+  setting was chosen explicitly or with `COGNEE_PREFER_MEMORY=false` (SDK-1071).
+- **`/cognee-memory:cognee-auto-memory`** turns auto-memory off or back on later.
+- **`cognee-doctor` reports auto-memory** on a new `Claude Auto-Memory` line, with the
+  fix when it is still on.
+
+### Changed
+- **An empty recall no longer injects a memory header.** The "0 hits" line went into the
+  agent's context on most turns; the status line still shows the counts, and the recall
+  audit log now records the header in a `header` field.
+
+### Fixed
+- **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
+  on the session alone and kept for an hour, so a chat that was resumed and left again
+  within the hour was skipped as already synced, and its new turns waited for the idle
+  sync's 90-minute cooldown. The marker is now keyed on the session plus its running
+  stored-item count (buffered writes included): the two workers of one exit still sync
+  once, an exit after new turns syncs again, and an exit with nothing new is skipped. A
+  final sync whose every attempt failed releases its marker, so the next exit retries
+  (SDK-1071).
+- The README no longer says disabling auto-memory may be unsupported: both
+  `autoMemoryEnabled` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY` are documented by Claude Code.
+
 ## [1.6.6]
 
 ### Fixed

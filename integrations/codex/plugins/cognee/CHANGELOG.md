@@ -10,6 +10,35 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Answers credit Cognee memory.** Every recalled item is tagged (`m1`, `m2`…) with
+  where it came from, and on turns where memory was injected the agent is asked to end
+  an answer that used it with one `🧠 Cognee memory [mN]: …` line; the first credit in a
+  session also says how it connects to the earlier work. The Stop hook checks the cited
+  tags against what that turn injected and logs a `memory_credit` event (valid and
+  invented citations). Off with `COGNEE_PLUGIN_CITE_MEMORY=off` (SDK-1071).
+- **Reopening a chat says whether it was saved.** The session-end sync runs after the chat
+  is gone, so on resume of the same chat session start shows once, in the terminal and to
+  the agent, whether the conversation reached long-term memory and when, or why the save
+  failed (SDK-1071).
+
+### Changed
+- **An empty recall no longer injects a memory header.** The "0 hits" line went into the
+  agent's context on most turns; it is still shown to the user, and the recall audit log
+  now records it in a `header` field.
+
+### Fixed
+- **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
+  on the session alone and kept for an hour, so a chat that was resumed and left again
+  within the hour was skipped as already synced, and its new turns waited for the idle
+  sync's 90-minute cooldown. The marker is now keyed on the session plus its running
+  stored-item count (buffered writes included): the two workers of one exit still sync
+  once, an exit after new turns syncs again, and an exit with nothing new is skipped. A
+  final sync whose every attempt failed releases its marker, so the next exit retries
+  (SDK-1071).
+
 ## [1.7.5]
 
 ### Changed

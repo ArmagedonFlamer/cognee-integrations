@@ -385,7 +385,7 @@ Session→graph sync runs through Cognee's session-aware `improve` endpoint: the
 
 An idle watcher runs in the background for the lifetime of each launch. It polls activity every `COGNEE_IDLE_POLL` seconds and fires an improve when the session has been quiet for `COGNEE_IDLE_THRESHOLD` seconds. An automatic improve also fires every `COGNEE_AUTO_IMPROVE_EVERY` stored tool calls/stops (`0` disables it).
 
-Both of those automatic triggers share one **per-session cooldown**: after any successful improve of a session (idle, auto, manual or final), no further idle/auto improve runs for `COGNEE_IMPROVE_COOLDOWN` seconds, and none runs at all until at least one new prompt, tool call or answer has been stored since. The timestamp and turn count are persisted per session under `~/.cognee-plugin/codex/improve-state/`, so they survive the watcher process, which exits after each bridge and is respawned on the next prompt. (Until 1.4.4 the cooldown lived only in that process's memory and was reset on every respawn, so in practice an improve ran after every prompt.) The session-end final sync, a manual `python3 "${CODEX_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"` run and the dataset-switch sync ignore the cooldown and always run.
+Both of those automatic triggers share one **per-session cooldown**: after any successful improve of a session (idle, auto, manual or final), no further idle/auto improve runs for `COGNEE_IMPROVE_COOLDOWN` seconds, and none runs at all until at least one new prompt, tool call or answer has been stored since. The timestamp and turn count are persisted per session under `~/.cognee-plugin/codex/improve-state/`, so they survive the watcher process, which exits after each bridge and is respawned on the next prompt. (Until 1.4.4 the cooldown lived only in that process's memory and was reset on every respawn, so in practice an improve ran after every prompt.) The session-end final sync, a manual `python3 "${CODEX_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"` run and the dataset-switch sync ignore the cooldown and always run. Leaving a session syncs it once per exit that has something new: the two workers one exit can start share a marker keyed on the session and its running stored-item count, so a resumed session that is left again after new turns syncs again, and an exit with nothing new is skipped. A final sync whose every attempt failed releases its marker, so the next exit retries.
 
 A **failed** attempt arms the same window as a **backoff**: if the submit timed out, the server was unreachable, or the server answered *busy* (its per-session improve lock is held by another run), no automatic improve of that session runs again until `COGNEE_IMPROVE_COOLDOWN` seconds have passed. A busy answer is never retried by the plugin — the in-flight improve persists everything above the session's server-side watermark, and the next trigger covers whatever landed after it. (Until 1.6.3 only a success armed the cooldown, the plugin held its own per-session lock, and a busy answer was re-submitted every 15 seconds for up to ten minutes, each re-submit counted by the server as one more improve.)
 
@@ -463,6 +463,42 @@ knows.
 
 Automatic indexing skips directories that are not git repositories, hold no source
 files, or exceed 3000 source files. Explicit indexing has no size cap.
+
+## Memory credit in the answer
+
+When an answer uses recalled memory, the agent says so in one line at the end:
+
+```
+> 🧠 Cognee memory [m2]: on Oct 3 (Codex session) you chose the server over the CLI.
+```
+
+How it works:
+
+- The recall hook tags every injected item with `m1`, `m2`… and where it came from: a
+  Claude Code or Codex session, a dated session learning, a document, graph entities or
+  facts, code-graph facts, or agent guidance.
+- On turns where memory was injected, an instruction under it asks the agent to add the
+  credit line only when the answer used a tagged item, and never for what it knows from
+  AGENTS.md, the code, or the conversation. The first credit in a session also says
+  in a few words how it connects to the earlier work.
+- The Stop hook compares the cited tags with the ones injected on that turn and logs a
+  `memory_credit` event (cited, valid, invented) to `hook.log`. Nothing is sent anywhere.
+- A turn where recall found nothing injects no memory header into the agent's context;
+  the header is still shown to you.
+
+**When you reopen a chat.** The session-end sync runs after the chat is closed, so its
+outcome is shown when you resume the same chat:
+
+```
+🧠 Cognee saved this conversation to long-term memory when you left at 14:32.
+🧠 This conversation wasn't saved to Cognee when you left at 14:32: the Cognee server was unreachable.
+```
+
+It is shown once per save, in the terminal and to the agent. A new chat or `/clear` shows
+nothing. A sync the server skipped because another improve held the dataset lock is still
+reported as saved until the server fix for that lands (COG-6828).
+
+Both are off with `COGNEE_PLUGIN_CITE_MEMORY=off`.
 
 ## Status visibility
 

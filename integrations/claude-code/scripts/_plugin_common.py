@@ -47,6 +47,9 @@ _COUNTER_FILE = _PLUGIN_DIR / "counter.json"
 _ACTIVITY_FILE = _PLUGIN_DIR / "activity.ts"
 _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
+#: Running count of every store per session (prompt, trace, answer, buffered
+#: or not), never reset. The final-sync dedupe key includes it (SDK-1071).
+_STORED_SEQ = _PLUGIN_DIR / "stored-seq.json"
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 # One state file per session (see record_improve_success / record_improve_failure):
@@ -1579,6 +1582,40 @@ def bump_save_counter(session_id: str, kind: str, *, buffered: bool = False) -> 
         _SAVE_COUNTER.write_text(json.dumps(data), encoding="utf-8")
     except Exception as exc:
         hook_log("save_counter_write_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]})
+    _bump_stored_seq(session_id)
+
+
+def _bump_stored_seq(session_id: str) -> None:
+    """Advance the session's running stored-item count (see ``read_stored_seq``)."""
+    try:
+        data = json.loads(_STORED_SEQ.read_text(encoding="utf-8")) if _STORED_SEQ.exists() else {}
+    except Exception:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    try:
+        data[session_id] = int(data.get(session_id, 0) or 0) + 1
+        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
+        _STORED_SEQ.write_text(json.dumps(data), encoding="utf-8")
+    except Exception as exc:
+        hook_log("stored_seq_write_failed", {"error": str(exc)[:200]})
+
+
+def read_stored_seq(session_id: str) -> int:
+    """How many items this session has stored so far, buffered ones included.
+
+    Unlike the save counter it is never reset, so a later value means the
+    session stored something new. The session-end sync keys its dedupe marker
+    on it: the two workers of one exit share a value, a later exit after new
+    turns does not.
+    """
+    if not session_id:
+        return 0
+    try:
+        data = json.loads(_STORED_SEQ.read_text(encoding="utf-8")) if _STORED_SEQ.exists() else {}
+        return int(data.get(session_id, 0) or 0) if isinstance(data, dict) else 0
+    except Exception:
+        return 0
 
 
 def read_and_reset_save_counter(session_id: str) -> dict:

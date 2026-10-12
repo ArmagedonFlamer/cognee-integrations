@@ -370,3 +370,290 @@ def format_code_facts(facts: list) -> str:
             if rel_type or target:
                 lines.append(f"  → {rel_type} {target}".rstrip())
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Crediting memory in the answer (SDK-1071)
+# ---------------------------------------------------------------------------
+#
+# Every recalled item the hook injects gets a short tag (``m1``, ``m2``…) and a
+# label saying where it came from. An instruction under the memory asks the
+# agent to end an answer that used memory with one ``🧠 Cognee memory [mN]: …``
+# line. The tags of the turn are saved, and the Stop hook checks the answer's
+# citations against them: a cited tag that was never injected is logged as
+# invented. That log is the measure of how reliably agents credit memory.
+
+ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
+
+#: Directory (under the suite's state dir) holding each session's turn tags
+#: (``<session key>.json``) and credit state (``<session key>.credit.json``).
+TAGS_DIRNAME = "memory-tags"
+
+_LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
+_CITATION_RE = re.compile(r"\[(m\d+(?:\s*,\s*m\d+)*)\]")
+_AGENTS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity"}
+
+CREDIT_INSTRUCTION = (
+    "Crediting Cognee memory: the memory below is tagged [m1], [m2], …. If your answer "
+    "uses information from a tagged item, end the answer with one line:\n"
+    "> 🧠 Cognee memory [mN]: <what you remembered, and where or when it came from, "
+    "as the tag says>\n"
+    "Cite several tags as [m1, m3]. Cite only tags listed below, and only items your "
+    "answer actually used. Never credit Cognee for what you know from project "
+    "instruction files, your own memory files, the code, or this conversation. If no "
+    "tagged item was used, do not mention memory."
+)
+FIRST_CREDIT_ADDENDUM = (
+    "This would be the first Cognee credit in this session, so in that line also say in "
+    "a few words how it connects to the earlier work."
+)
+
+
+def credit_enabled() -> bool:
+    return os.environ.get(ENV_CITE_MEMORY, "").strip().lower() not in {"0", "false", "no", "off"}
+
+
+def _agent_name(session_id: str) -> str:
+    prefix = session_id.split("_", 1)[0].lower() if "_" in session_id else ""
+    return _AGENTS.get(prefix, "agent")
+
+
+def passage_origin(passage: str) -> str:
+    """Where a recalled passage came from, in a few words for its tag."""
+    session_id = passage_session_id(passage)
+    if not session_id:
+        return "document"
+    agent = _agent_name(session_id)
+    date = _LEARNING_DATE_RE.search(passage.lstrip()[:400])
+    if date:
+        return f"{agent} session learning, {date.group(1)}"
+    return f"{agent} session"
+
+
+class MemoryTags:
+    """Hands out ``m1``, ``m2``… for one turn and remembers what each one tagged."""
+
+    SNIPPET_CHARS = 200
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    def add(self, kind: str, origin: str, text: str) -> str:
+        tag = f"m{len(self.records) + 1}"
+        self.records.append(
+            {
+                "tag": tag,
+                "kind": kind,
+                "origin": origin,
+                "snippet": " ".join(str(text or "").split())[: self.SNIPPET_CHARS],
+            }
+        )
+        return tag
+
+    def label(self, kind: str, origin: str, text: str) -> str:
+        """``[mN · origin]`` for an item, registering it."""
+        tag = self.add(kind, origin, text)
+        return f"[{tag} · {origin}]" if origin else f"[{tag}]"
+
+    def tag_graph(self, context: str) -> str:
+        """Tag a graph-memory context: each passage, the entities and the facts.
+
+        An unsectioned context (an older server, another retriever) is tagged
+        as one item.
+        """
+        sections = split_sections(context)
+        if (
+            sections["passages"] is None
+            and sections["entities"] is None
+            and sections["facts"] is None
+        ):
+            if not (context or "").strip():
+                return context
+            return f"{self.label('memory', 'Cognee memory', context)}\n{context}"
+        blocks: list[str] = []
+        preamble = (sections["preamble"] or "").strip()
+        if preamble:
+            blocks.append(f"{self.label('memory', 'Cognee memory', preamble)}\n{preamble}")
+        if sections["passages"] is not None:
+            tagged = []
+            for passage in split_passages(sections["passages"]):
+                tagged.append(
+                    f"{self.label('passage', passage_origin(passage), passage)}\n{passage}"
+                )
+            if tagged:
+                blocks.append(PASSAGES_HEADING + "\n" + PASSAGE_SEPARATOR.join(tagged))
+        for key, heading, kind, origin in (
+            ("entities", ENTITIES_HEADING, "entities", "knowledge graph entities"),
+            ("facts", FACTS_HEADING, "facts", "knowledge graph facts"),
+        ):
+            body = (sections[key] or "").strip("\n")
+            if body.strip():
+                blocks.append(f"{heading} {self.label(kind, origin, body)}\n{body}")
+        return "\n\n".join(blocks).strip()
+
+
+def credit_instruction(first_in_session: bool) -> str:
+    if first_in_session:
+        return f"{CREDIT_INSTRUCTION} {FIRST_CREDIT_ADDENDUM}"
+    return CREDIT_INSTRUCTION
+
+
+def _safe_key(session_key: str) -> bool:
+    return bool(session_key) and all(c.isalnum() or c in "._-" for c in session_key)
+
+
+def _read_json(path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def save_turn_tags(state_dir, session_key: str, records: list, ts: str = "") -> None:
+    """Record this turn's tags for the Stop hook. An empty list clears them."""
+    if _safe_key(session_key):
+        _write_json(state_dir / TAGS_DIRNAME / f"{session_key}.json", {"ts": ts, "tags": records})
+
+
+def load_turn_tags(state_dir, session_key: str) -> list:
+    if not _safe_key(session_key):
+        return []
+    tags = _read_json(state_dir / TAGS_DIRNAME / f"{session_key}.json").get("tags")
+    return tags if isinstance(tags, list) else []
+
+
+def has_credited(state_dir, session_key: str) -> bool:
+    """Whether an answer in this session has already credited memory."""
+    if not _safe_key(session_key):
+        return False
+    path = state_dir / TAGS_DIRNAME / f"{session_key}.credit.json"
+    return bool(_read_json(path).get("credited_turns"))
+
+
+def check_credits(answer: str, records: list) -> dict:
+    """Compare the tags an answer cites with the tags its turn injected.
+
+    Returns ``{"cited", "valid", "invented", "available"}``, tag lists in the
+    order first cited.
+    """
+    cited: list[str] = []
+    for group in _CITATION_RE.findall(answer or ""):
+        for tag in re.split(r"\s*,\s*", group):
+            if tag not in cited:
+                cited.append(tag)
+    known = {str(r.get("tag")) for r in records if isinstance(r, dict)}
+    return {
+        "cited": cited,
+        "valid": [t for t in cited if t in known],
+        "invented": [t for t in cited if t not in known],
+        "available": len(known),
+    }
+
+
+def record_credit(state_dir, session_key: str, result: dict, ts: str = "") -> None:
+    """Count a turn that credited memory with at least one valid tag."""
+    if not (_safe_key(session_key) and result.get("valid")):
+        return
+    path = state_dir / TAGS_DIRNAME / f"{session_key}.credit.json"
+    state = _read_json(path)
+    state["credited_turns"] = int(state.get("credited_turns", 0) or 0) + 1
+    state.setdefault("first_credit_ts", ts)
+    _write_json(path, state)
+
+
+# ---------------------------------------------------------------------------
+# "This conversation was saved" notice on resume (SDK-1071)
+# ---------------------------------------------------------------------------
+#
+# The session-end sync runs after the chat is gone, so nothing it does can be
+# shown there. When the user reopens the same chat (resume keeps the session
+# id), session start reads that session's improve record and says, once per
+# sync, whether the conversation reached long-term memory.
+
+NOTICE_DIRNAME = "sync-notice"
+
+_FAILURE_REASONS = {
+    "unreachable": "the Cognee server was unreachable",
+    "busy": "another save of this conversation was still running",
+    "incomplete_drain": "part of it could not be uploaded",
+}
+
+
+def _clock(ts: float, now: float) -> str:
+    """``14:32`` for today, ``Oct 3, 14:32`` for another day (local time)."""
+    import time as _time
+
+    when = _time.localtime(ts)
+    if _time.strftime("%Y-%m-%d", when) == _time.strftime("%Y-%m-%d", _time.localtime(now)):
+        return _time.strftime("%H:%M", when)
+    return f"{_time.strftime('%b', when)} {when.tm_mday}, {_time.strftime('%H:%M', when)}"
+
+
+def sync_notice(state: dict, now: float | None = None) -> tuple[str, float]:
+    """``(message, sync_ts)`` for a session's last save; ``("", 0.0)`` when there is none.
+
+    ``state`` is the plugin's per-session improve record (``last_improved_at``,
+    ``trigger``, ``last_failed_at``, ``last_failure_reason``). ``sync_ts`` is the
+    time of the save the message describes, so it is shown once per save.
+    """
+    import time as _time
+
+    now = _time.time() if now is None else now
+    try:
+        ok_at = float(state.get("last_improved_at") or 0)
+        failed_at = float(state.get("last_failed_at") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return "", 0.0
+    if failed_at > ok_at:
+        reason = str(state.get("last_failure_reason") or "")
+        why = _FAILURE_REASONS.get(reason) or (
+            f"the save failed ({reason})" if reason else "the save failed"
+        )
+        left = "when you left at" if state.get("last_failure_trigger") == "final" else "at"
+        message = (
+            f"🧠 This conversation wasn't saved to Cognee {left} {_clock(failed_at, now)}: {why}."
+        )
+        if ok_at:
+            message += f" An earlier save at {_clock(ok_at, now)} has the conversation up to then."
+        return message, failed_at
+    if ok_at:
+        left = "when you left at" if state.get("trigger") == "final" else "at"
+        return (
+            f"🧠 Cognee saved this conversation to long-term memory {left} {_clock(ok_at, now)}.",
+            ok_at,
+        )
+    return "", 0.0
+
+
+def _notice_path(state_dir, session_id: str):
+    import hashlib
+
+    digest = hashlib.sha1(session_id.encode("utf-8")).hexdigest()
+    return state_dir / NOTICE_DIRNAME / f"{digest}.json"
+
+
+def notice_due(state_dir, session_id: str, sync_ts: float) -> bool:
+    """Whether the notice for the save at ``sync_ts`` has not been shown yet."""
+    if not session_id or not sync_ts:
+        return False
+    try:
+        shown = float(_read_json(_notice_path(state_dir, session_id)).get("shown_for") or 0)
+    except (TypeError, ValueError):
+        shown = 0.0
+    return shown < sync_ts
+
+
+def mark_notice_shown(state_dir, session_id: str, sync_ts: float) -> None:
+    if session_id:
+        _write_json(_notice_path(state_dir, session_id), {"shown_for": sync_ts})
