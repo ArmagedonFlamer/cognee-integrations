@@ -63,3 +63,19 @@ def test_digest_seed(ledger):
     ledger.seed("session-a", [ledger.entry_hash("fact")])
     _, stats, _ = ledger.render("session-a", "header", [{"entries": ["fact"]}], 9000)
     assert stats["entries_kept"] == 0
+
+
+def test_deduped_hits_are_not_reported_as_new_injections(suite, hook_module, monkeypatch):
+    if suite.name != "claude-code":
+        pytest.skip("Claude Code cloud ledger")
+    from utils.recall import drive_recall
+
+    lookup = hook_module(suite, "session-context-lookup.py")
+    monkeypatch.setattr(lookup, "get_session_key", lambda: "review-dedup")
+    recall = {"graph": [{"source": "graph", "text": "One useful fact"}]}
+    first = drive_recall(lookup, monkeypatch, recall=recall)
+    second = drive_recall(lookup, monkeypatch, recall=recall)
+    assert "recall 1 memory" in first.output["hookSpecificOutput"]["additionalContext"]
+    context = second.output["hookSpecificOutput"]["additionalContext"]
+    assert "recall 0 memory" in context and "0 new, 1 already in context" in context
+    assert second.detail("context_lookup_empty")["retrieved_counts"]["graph_context"] == 1
