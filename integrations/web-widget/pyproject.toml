@@ -28,7 +28,7 @@ include = ["cognee_integration_web_widget*"]
 exclude = ["tests*"]
 
 [tool.setuptools.package-data]
-cognee_integration_web_widget = ["static/*"]
+cognee_integration_web_widget = ["static/*", "static/vendor/*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

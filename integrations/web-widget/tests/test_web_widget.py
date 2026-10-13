@@ -2240,3 +2240,24 @@ def test_clear_and_ingest_are_gated(dashboard_client, fake_client):
     assert client.post("/api/dashboard/clear", json={"confirm": "x"}).status_code == 401
     assert client.post("/api/dashboard/ingest", json={"files": []}).status_code == 401
     fake_client.forget_dataset.assert_not_awaited()
+
+
+def test_widget_js_is_one_bundle_with_scoped_libraries(web_client):
+    """marked and DOMPurify ship inside widget.js, scoped so they never reach window."""
+    test_client, _ = web_client
+    resp = test_client.get("/widget.js")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("application/javascript")
+    body = resp.text
+    # Both libraries, in order, before the widget that uses them.
+    marked_at = body.index("marked v18.1.1")
+    purify_at = body.index("DOMPurify 3.4.17")
+    widget_at = body.index("cognee web chat widget")
+    assert marked_at < purify_at < widget_at
+    # Each runs with a local `module`, so its UMD wrapper exports into the bundle.
+    assert body.count("var module = { exports: {} }; var exports = module.exports;") == 2
+    assert "__cognee_libs.marked = module.exports;" in body
+    assert "__cognee_libs.DOMPurify = module.exports;" in body
+    # Answers are sanitised before they reach the page; user text never is HTML.
+    assert "DOMPurify.sanitize(" in body
+    assert "bubble.textContent = text;" in body

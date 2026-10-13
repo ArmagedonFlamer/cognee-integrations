@@ -38,12 +38,13 @@ import time
 from collections import Counter
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from .adapter import ChatMemoryAdapter
@@ -184,9 +185,36 @@ async def demo_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "demo.html")
 
 
+# The libraries the widget renders answers with, pinned and vendored so the
+# embed stays one <script> tag that needs no CDN. Each runs inside its own
+# function with a local `module`, which sends their UMD wrappers down the
+# CommonJS path: they export into the bundle instead of onto window, so a host
+# page that ships its own marked or DOMPurify keeps it.
+WIDGET_LIBS = (("marked", "marked.umd.js"), ("DOMPurify", "purify.min.js"))
+
+
+@lru_cache(maxsize=1)
+def widget_bundle() -> str:
+    """widget.js with marked and DOMPurify prepended, as the single served file."""
+    parts = [
+        "/* cognee web widget. Bundles marked (MIT) and DOMPurify (Apache-2.0 / MPL-2.0). */",
+        "(function () {",
+        "var __cognee_libs = {};",
+    ]
+    for name, filename in WIDGET_LIBS:
+        source = (STATIC_DIR / "vendor" / filename).read_text(encoding="utf-8")
+        parts.append(
+            "(function () { var module = { exports: {} }; var exports = module.exports;\n"
+            f"{source}\n__cognee_libs.{name} = module.exports; }})();"
+        )
+    parts.append((STATIC_DIR / "widget.js").read_text(encoding="utf-8"))
+    parts.append("})();")
+    return "\n".join(parts) + "\n"
+
+
 @app.get("/widget.js")
-async def widget_js() -> FileResponse:
-    return FileResponse(STATIC_DIR / "widget.js", media_type="application/javascript")
+async def widget_js() -> Response:
+    return Response(widget_bundle(), media_type="application/javascript")
 
 
 def _field(item, *names, default=""):
