@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.7]
+
+### Changed
+- Bound hook injections to 9,000 characters by dropping whole entries in priority order; preserve the header and log kept/dropped counts.
+
 ## [1.6.6]
 
 ### Fixed

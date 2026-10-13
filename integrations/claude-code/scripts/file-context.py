@@ -45,6 +45,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(__file__))
+from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (  # noqa: E402
     DEFINITIVE_FAILURE_STATES,
     _float_env,
@@ -469,12 +470,17 @@ def build_context(file_path: str, lane: dict, resolved: dict, deadline: float) -
 
     if not sections:
         return "", stats
-    body = "\n\n".join(sections)
-    footer = (
-        "(Cognee file context — from the code graph; for callers or impact use "
-        '`cognee-search.sh "<symbol>" --code`.)'
+    fitted, budget_stats = fit_sections(
+        [{"entries": [f"## Cognee: about {os.path.basename(file_path)}"], "required": True}]
+        + [
+            {"entries": block.splitlines(), "priority": len(sections) - i}
+            for i, block in enumerate(sections)
+        ]
+        + [{"entries": ["(Cognee file context; use cognee-search.sh for more.)"], "priority": 0}],
+        injection_limit() - 256,
     )
-    return f"## Cognee: about {os.path.basename(file_path)}\n{body}\n{footer}", stats
+    stats.update({k: v for k, v in budget_stats.items() if k != "entries"})
+    return fitted, stats
 
 
 def _int_env(name: str, default: int) -> int:

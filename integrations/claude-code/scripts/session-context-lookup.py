@@ -23,11 +23,13 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
@@ -66,7 +68,13 @@ from _plugin_common import (
     write_connection_state,
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
-from _recall_text import code_facts, format_code_facts, trim_recall_text
+from _recall_text import (
+    code_facts,
+    format_code_facts,
+    split_passages,
+    split_sections,
+    trim_recall_text,
+)
 from config import get_dataset, get_session_id, load_config
 
 #: Per-field caps for recall-audit.log lines (characters).
@@ -186,7 +194,7 @@ def _format_entry(entry: dict) -> str:
             mrv = json.dumps(mrv, default=str)
         mrv = str(mrv)[:TRUNCATE_RETURN]
         parts = [f"[trace] {origin} — {status}"]
-        if feedback:
+        if feedback and not re.fullmatch(r"\s*\w+ succeeded\.?\s*", str(feedback)):
             parts.append(f"  feedback: {feedback}")
         if mrv:
             parts.append(f"  output: {mrv}")
@@ -203,6 +211,43 @@ def _format_entry(entry: dict) -> str:
         a_short = a[:TRUNCATE_ANSWER] + "..." if len(a) > TRUNCATE_ANSWER else a
         lines.append(f"A: {a_short}")
     return "\n".join(lines)
+
+
+def _injection_sections(by_source: dict) -> list[dict]:
+    """Expose individual graph passages to budgeting and session deduplication."""
+    sections = []
+    for source, title, priority in (
+        ("code", "=== Code graph facts ===", 50),
+        ("graph_context", "=== Cognee memory ===", 40),
+        ("session_context", "=== Active agent guidance ===", 30),
+        ("session", "=== Prior session turns ===", 20),
+        ("trace", "=== Prior agent trace ===", 10),
+    ):
+        entries = []
+        for entry in by_source.get(source, []):
+            if source == "graph_context":
+                text = str(entry.get("text") or entry.get("content") or "")
+                parts = split_sections(text)
+                if any(parts.get(k) is not None for k in ("passages", "entities", "facts")):
+                    if parts.get("preamble"):
+                        entries.append("[cognee-memory]\n" + parts["preamble"].strip())
+                    if parts.get("passages"):
+                        entries.extend(
+                            "[cognee-memory]\n## Relevant passages\n" + p
+                            for p in split_passages(parts["passages"])
+                        )
+                    for key in ("entities", "facts"):
+                        if parts.get(key):
+                            heading = (
+                                "## Relevant entities" if key == "entities" else "## Related facts"
+                            )
+                            entries.append(
+                                "[cognee-memory]\n" + heading + "\n" + parts[key].strip()
+                            )
+                    continue
+            entries.append(_format_entry(entry))
+        sections.append({"title": title, "entries": entries, "priority": priority})
+    return sections
 
 
 def _outage_output(state: str) -> dict:
@@ -773,60 +818,37 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
         header += f"; {segment}"
 
-    section_lines = []
-    if by_source.get("code"):
-        section_lines.append("=== Code graph facts ===")
-        for e in by_source["code"]:
-            section_lines.append(_format_entry(e))
-            section_lines.append("")
-    if by_source.get("graph_context"):
-        section_lines.append("=== Cognee memory ===")
-        for e in by_source["graph_context"]:
-            section_lines.append(_format_entry(e))
-            section_lines.append("")
-    # A server older than 1.6.0 answers the graph scope with the bare context
-    # and nothing else arrives on this request; whatever a server does tag with
-    # another source is still rendered rather than dropped.
-    for src, title in (
-        ("session_context", "=== Active agent guidance ==="),
-        ("trace", "=== Prior agent trace ==="),
-        ("session", "=== Prior session turns ==="),
-    ):
-        if by_source.get(src):
-            section_lines.append(title)
-            for e in by_source[src]:
-                section_lines.append(_format_entry(e))
-                section_lines.append("")
-    if total > 0:
-        full_context = (
-            f"{header}\n\nRelevant context from this session's memory:\n\n"
-            + "\n".join(section_lines).strip()
+    sections = [{"entries": [header], "required": True}] + _injection_sections(by_source)
+    if not total:
+        sections.append({"entries": ["(no memory matches for this prompt)"], "priority": 1})
+    if dataset_hint:
+        sections.append({"entries": [dataset_hint], "priority": 0})
+    envelope_chars = (
+        len(
+            json.dumps(
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": "UserPromptSubmit",
+                        "additionalContext": "",
+                        "systemMessage": header,
+                    }
+                }
+            )
         )
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
-        hook_log(
-            "context_lookup_hit",
-            {
-                "counts": counts,
-                "per_scope": per_scope,
-                "saves_last_turn": saves_last_turn,
-                "elapsed_ms": elapsed_ms(recall_start),
-            },
-        )
-        notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
-    else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
-        hook_log(
-            "context_lookup_empty",
-            {
-                "per_scope": per_scope,
-                "saves_last_turn": saves_last_turn,
-                "elapsed_ms": elapsed_ms(recall_start),
-            },
-        )
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
+        + 1
+    )
+    full_context, injection_stats = fit_sections(sections, injection_limit() - envelope_chars)
+    hook_log(
+        "context_lookup_hit" if total else "context_lookup_empty",
+        {
+            "counts": counts,
+            "per_scope": per_scope,
+            "saves_last_turn": saves_last_turn,
+            "elapsed_ms": elapsed_ms(recall_start),
+            **{k: v for k, v in injection_stats.items() if k != "entries"},
+        },
+    )
+    notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.

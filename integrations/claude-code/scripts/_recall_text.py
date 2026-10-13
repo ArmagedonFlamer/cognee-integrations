@@ -48,8 +48,8 @@ PASSAGE_SEPARATOR = "\n---\n"
 
 ENV_PASSAGE_CHARS = "COGNEE_RECALL_PASSAGE_CHARS"
 ENV_CONTEXT_CHARS = "COGNEE_RECALL_CONTEXT_CHARS"
-DEFAULT_PASSAGE_CHARS = 2000
-DEFAULT_CONTEXT_CHARS = 12000
+DEFAULT_PASSAGE_CHARS = 1200
+DEFAULT_CONTEXT_CHARS = 0  # The complete hook output is bounded by _injection_budget.
 
 _SECTION_RE = re.compile(
     r"(?m)^(## Relevant passages|## Relevant entities|## Related facts)[ \t]*\n"
