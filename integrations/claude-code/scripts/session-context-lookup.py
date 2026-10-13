@@ -245,8 +245,25 @@ def _line_entries(text: str) -> list[str]:
 
 
 def _injection_sections(by_source: dict) -> list[dict]:
-    """Expose whole passages, facts and records, retaining their result identity."""
-    sections = []
+    """Expose bare records; shared labels belong to one section heading."""
+    grouped = {}
+
+    def add(source, kind, title, priority, entries, result_id):
+        section = grouped.setdefault(
+            (source, kind),
+            {
+                "title": title,
+                "entries": [],
+                "priority": priority,
+                "source": source,
+                "entry_ids": {},
+            },
+        )
+        for entry in entries:
+            if entry.strip():
+                section["entries"].append(entry)
+                section["entry_ids"][entry] = result_id
+
     for source, title, priority in (
         ("code", "=== Code graph facts ===", 50),
         ("graph_context", "=== Cognee memory ===", 40),
@@ -254,49 +271,35 @@ def _injection_sections(by_source: dict) -> list[dict]:
         ("session", "=== Prior session turns ===", 20),
         ("trace", "=== Prior agent trace ===", 10),
     ):
-        entries = []
-        relations = []
-        entry_ids = {}
         for result_id, entry in enumerate(by_source.get(source, [])):
-            start, relation_start = len(entries), len(relations)
             if source == "graph_context":
                 text = str(entry.get("text") or entry.get("content") or "")
                 parts = split_sections(text)
                 if any(parts.get(k) is not None for k in ("passages", "entities", "facts")):
-                    if parts.get("preamble"):
-                        entries.append("[cognee-memory]\n" + parts["preamble"].strip())
-                    if parts.get("passages"):
-                        entries.extend(
-                            "[cognee-memory]\n## Relevant passages\n" + p
-                            for p in split_passages(parts["passages"])
-                        )
-                    for key in ("entities", "facts"):
-                        if parts.get(key):
-                            heading = (
-                                "## Relevant entities" if key == "entities" else "## Related facts"
+                    for kind, heading, rank in (
+                        ("entities", "## Relevant entities", 41),
+                        ("facts", "## Related facts", 41),
+                        ("passages", "## Relevant passages", 40),
+                        ("preamble", "", 40),
+                    ):
+                        if parts.get(kind):
+                            items = (
+                                split_passages(parts[kind])
+                                if kind == "passages"
+                                else _line_entries(parts[kind])
                             )
-                            relations.extend(
-                                "[cognee-memory]\n" + heading + "\n" + item
-                                for item in _line_entries(parts[key])
-                            )
-                    entry_ids.update(
-                        (item, result_id) for item in entries[start:] + relations[relation_start:]
-                    )
+                            label = f"=== Cognee memory: {kind} ===\n[cognee-memory]"
+                            if heading:
+                                label += "\n" + heading
+                            add(source, kind, label, rank, items, result_id)
                     continue
             formatted = _format_entry(entry)
             if source in {"graph_context", "code", "session_context"}:
                 prefix, _, body = formatted.partition("\n")
-                entries.extend(prefix + "\n" + item for item in _line_entries(body))
+                add(source, "body", title + "\n" + prefix, priority, _line_entries(body), result_id)
             else:
-                entries.append(formatted)
-            entry_ids.update((item, result_id) for item in entries[start:])
-        metadata = {"source": source, "entry_ids": entry_ids}
-        if relations:
-            sections.append(
-                {"title": title, "entries": relations, "priority": priority + 1, **metadata}
-            )
-        sections.append({"title": title, "entries": entries, "priority": priority, **metadata})
-    return sections
+                add(source, "body", title, priority, [formatted], result_id)
+    return list(grouped.values())
 
 
 def _recall_output(context: str, notice: str = "") -> dict:
