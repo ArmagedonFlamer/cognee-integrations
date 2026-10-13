@@ -12,6 +12,7 @@ from _cloud_worker import read, root, target
 from _injection_budget import fit_sections
 from _injection_ledger import atomic_json, entry_hash, seed
 
+ENTRY_FORMAT = "bare-records-v1"
 TTL = 24 * 3600
 REFRESH_INTERVAL = 30 * 60
 QUERY = "project decisions conventions pitfalls user preferences and open tasks"
@@ -51,7 +52,12 @@ def request_refresh(dataset: str, session_id: str = "", host_key: str = "") -> N
 def load(dataset: str, *, now: float = None) -> dict:
     data = read(cache_path(dataset))
     age = (time.time() if now is None else now) - data.get("built_at", 0)
-    if data.get("target") != target() or age < 0 or age > TTL:
+    if (
+        data.get("entry_format") != ENTRY_FORMAT
+        or data.get("target") != target()
+        or age < 0
+        or age > TTL
+    ):
         return {}
     if RAW_HISTORY.search(str(data.get("rendered", ""))):
         return {}
@@ -158,6 +164,7 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
     except Exception:
         pass
     data = {
+        "entry_format": ENTRY_FORMAT,
         "rendered": rendered,
         "entry_hashes": [entry_hash(entry) for entry in stats["entries"]],
         "guidance_hashes": [

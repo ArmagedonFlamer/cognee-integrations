@@ -80,3 +80,12 @@ def test_failed_refresh_preserves_last_good_cache(cache, monkeypatch):
     cache.refresh_pending()
     assert cache.load("ds") == data
     assert cache.cache_path("ds").with_suffix(".wanted.json").exists()
+
+
+def test_old_rendering_hashes_request_a_fresh_digest(cache):
+    data = cache.build("ds", "old", "new-host", request=lambda *a, **k: [])
+    data.pop("entry_format")
+    cache.cache_path("ds").write_text(json.dumps(data))
+    assert cache.load("ds") == {}
+    assert cache.inject("ds", "new-host") == ""
+    assert cache.cache_path("ds").with_suffix(".wanted.json").exists()
