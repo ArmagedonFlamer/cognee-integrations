@@ -240,3 +240,83 @@ def test_worker_rotates_and_reopens_both_inherited_log_handles(worker, monkeypat
     worker._refresh_console_log()
     assert handles == [1, 2]
     assert path.read_text() == "" and path.with_name(path.name + ".1").exists()
+
+
+class _HTTPFailure(Exception):
+    def __init__(self, code):
+        super().__init__(f"HTTP {code}")
+        self.code = code
+
+
+def test_permanently_rejected_capture_never_blocks_the_queue(worker):
+    bad = worker.enqueue("ds", "sid-a", {"type": "qa", "answer": "too big"}, "answer")
+    good = worker.enqueue("ds", "sid-b", {"type": "qa", "answer": "fine"}, "answer")
+    sent = []
+
+    def send(item):
+        if item["entry"]["answer"] == "too big":
+            raise _HTTPFailure(413)
+        sent.append(item["entry"]["answer"])
+        return {"entry_id": "saved"}
+
+    assert worker.drain(send) == 1
+    assert sent == ["fine"]
+    assert not bad.exists() and (bad.parent / "expired" / bad.name).exists()
+    assert not good.exists()
+
+
+def test_a_session_waiting_on_retry_holds_only_its_own_events(worker):
+    first = worker.enqueue("ds", "sid-a", {"type": "qa", "answer": "a1"}, "answer")
+    later = worker.enqueue("ds", "sid-a", {"type": "qa", "answer": "a2"}, "answer")
+    other = worker.enqueue("ds", "sid-b", {"type": "qa", "answer": "b1"}, "answer")
+    sent = []
+
+    def send(item):
+        if item["entry"]["answer"] == "a1":
+            raise _HTTPFailure(404)
+        sent.append(item["entry"]["answer"])
+        return {"entry_id": "saved"}
+
+    now = worker.read(first)["created_at"]
+    assert worker.drain(send, now=now) == 1
+    assert sent == ["b1"]  # a2 stays behind a1, b1 is not held up
+    assert first.exists() and later.exists() and not other.exists()
+    # While a1 waits for its retry, the rest of sid-a waits with it.
+    assert worker.drain(lambda _: pytest.fail("sent out of order"), now=now + 1) == 0
+    assert worker.drain(lambda _: {"entry_id": "saved"}, now=now + 3600) == 2
+
+
+def test_server_wide_failure_ends_the_pass(worker):
+    worker.enqueue("ds", "sid-a", {"type": "qa", "answer": "a"}, "answer")
+    worker.enqueue("ds", "sid-b", {"type": "qa", "answer": "b"}, "answer")
+    calls = []
+
+    def send(item):
+        calls.append(item["session_id"])
+        raise _HTTPFailure(503)
+
+    assert worker.drain(send) == 0
+    assert calls == ["sid-a"]
+
+
+def test_queue_still_ages_out_while_capture_is_off(worker, monkeypatch):
+    old = worker.enqueue("ds", "sid", {"type": "qa", "answer": "old"}, "answer")
+    fresh = worker.enqueue("ds", "sid", {"type": "qa", "answer": "fresh"}, "answer")
+    item = worker.read(old)
+    item["created_at"] -= 7 * 86400 + 1
+    worker.atomic_json(old, item)
+    monkeypatch.setenv("COGNEE_CAPTURE", "false")
+    assert worker.drain(lambda _: pytest.fail("capture is off")) == 0
+    assert not old.exists() and (old.parent / "expired" / old.name).exists()
+    assert fresh.exists()
+
+
+def test_worker_idles_out_only_without_work_or_recent_sessions(worker):
+    assert not worker.has_pending_work()
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "x"}, "answer")
+    assert worker.has_pending_work()
+    path.unlink()
+    launch = worker.session_dir("host-a") / "worker.json"
+    worker.atomic_json(launch, {"activity_at": 1_000})
+    assert worker.has_pending_work(now=1_000 + 60)
+    assert not worker.has_pending_work(now=1_000 + worker.IDLE_EXIT_SECONDS + 1)

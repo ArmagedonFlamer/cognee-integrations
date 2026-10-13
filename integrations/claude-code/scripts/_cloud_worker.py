@@ -18,6 +18,13 @@ from _injection_ledger import atomic_json, session_dir
 
 MAX_AGE = 7 * 86400
 EXPLICIT_IMPROVES = {"final", "precompact", "manual", "switch"}
+#: Answers that will never change for the same payload: expire, keep the queue moving.
+PERMANENT_REJECTIONS = {400, 413, 422}
+#: Answers that mean the server or account is unusable right now, for every item.
+SERVER_WIDE_FAILURES = {401, 402, 403, 408, 429}
+#: The worker exits after this long with no queued work and no active session;
+#: every hook calls ensure_worker(), so the next prompt starts it again.
+IDLE_EXIT_SECONDS = 30 * 60
 
 
 def enabled(runtime: dict = None) -> bool:
@@ -252,15 +259,19 @@ def _retry(path: Path, item: dict, now: float, error: str, *, retry_after=None) 
 
 
 def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
-    """Ordered, bounded replay. Keep failures, quarantine malformed/expired events."""
+    """Ordered per session, bounded replay. Keep failures, quarantine malformed/expired events.
+
+    A session waiting on a retry holds back only its own later events; a server-wide
+    failure ends the pass; a payload the server will never accept is expired.
+    """
     from _capture_policy import allow_tool, capture_enabled, redact
 
-    if not capture_enabled():
-        return 0
     now = time.time() if now is None else now
+    capturing = capture_enabled()
     deadline = time.monotonic() + 20
     delivered = 0
     identity = target()
+    held = set()  # sessions whose earlier event is still pending
     for path in sorted((root() / "spool").glob("*.json")):
         if time.monotonic() >= deadline:
             break
@@ -268,10 +279,15 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
         if not item or now - item.get("created_at", 0) > MAX_AGE:
             _expire(path, "capture")
             continue
-        if item.get("target") != identity:
+        # With capture off nothing is sent, but old events still age out above.
+        if not capturing or item.get("target") != identity:
+            continue
+        session = item.get("session_id")
+        if session in held:
             continue
         if now < item.get("next_attempt", 0):
-            break
+            held.add(session)
+            continue
         try:
             if item.get("kind") == "trace" and not allow_tool(
                 item.get("entry", {}).get("origin_function", ""),
@@ -335,13 +351,34 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                 if conflict:
                     _expire(path, "capture_payload_conflict")
                     continue
-            if getattr(exc, "code", None) == 402:
+            code = getattr(exc, "code", None)
+            if code in PERMANENT_REJECTIONS:
+                log("cloud_capture_rejected", session=session, status=code)
+                _expire(path, "capture_rejected")
+                continue
+            if code == 402:
                 from _plugin_common import record_payment_required
 
                 record_payment_required("save")
             _retry(path, item, now, type(exc).__name__ + ": " + str(exc)[:160])
-            break
+            if not isinstance(code, int) or code >= 500 or code in SERVER_WIDE_FAILURES:
+                break
+            held.add(session)
     return delivered
+
+
+def has_pending_work(*, now: float = None) -> bool:
+    """Queued captures/improves/digest refreshes, or a session active recently."""
+    now = time.time() if now is None else now
+    state = root()
+    if any((state / "spool").glob("*.json")) or any((state / "improve-wanted").glob("*.json")):
+        return True
+    if any((state / "context-cache").glob("*.wanted.json")):
+        return True
+    for launch in (state / "sessions").glob("*/worker.json"):
+        if now - read(launch).get("activity_at", 0) < IDLE_EXIT_SECONDS:
+            return True
+    return False
 
 
 def improve_outcome(result) -> dict:
@@ -619,6 +656,11 @@ def run() -> None:
             )
 
         while True:
+            if not has_pending_work():
+                # Nothing queued and no session active for IDLE_EXIT_SECONDS.
+                log("cloud_worker_idle_exit")
+                (state / "cloud-worker-pid.json").unlink(missing_ok=True)
+                return
             desired = read(state / "cloud-worker-runtime.json")
             if desired.get("script") and desired["script"] != str(Path(__file__).resolve()):
                 os.execv(desired["python"], [desired["python"], desired["script"]])

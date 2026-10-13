@@ -15,6 +15,8 @@ EVENT_NAMES = {
     "hook:cloud_work_retry": "cloud.cloud_work_retry",
     "hook:cloud_capture_delivered": "cloud.cloud_capture_delivered",
     "hook:cloud_worker_error": "cloud.cloud_worker_error",
+    "hook:cloud_capture_rejected": "cloud.cloud_capture_rejected",
+    "hook:cloud_worker_idle_exit": "cloud.cloud_worker_idle_exit",
     "hook:context_digest_inject_failed": "cloud.context_digest_inject_failed",
     "claude-observer:completion": "observer.completion",
     "claude-observer:completion_failed": "observer.completion_failed",
