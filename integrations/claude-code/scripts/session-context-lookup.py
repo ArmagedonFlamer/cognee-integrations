@@ -866,6 +866,19 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     )
     notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
 
+    from _session_stats import update as update_stats
+
+    update_stats(
+        _key,
+        recalls=1,
+        hits=int(total > 0),
+        entries_injected=injection_stats["entries_kept"],
+        entries_deduped=injection_stats.get("entries_deduped", 0),
+        chars_injected=len(full_context),
+        recall_ms=elapsed_ms(recall_start),
+        metadata={"dataset": session_dataset, "session_id": session_id, "server_url": service_url},
+    )
+
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.
     try:
@@ -890,6 +903,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     "hits": counts,
                     "per_scope": per_scope,
                     "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                    **{k: v for k, v in injection_stats.items() if k != "entries"},
                 }
             ),
         )

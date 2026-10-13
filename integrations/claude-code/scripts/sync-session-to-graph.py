@@ -442,6 +442,10 @@ def main():
     # slash-command invocations happen mid-session, and killing the watcher
     # there prevents later idle persistence.
     if is_session_end:
+        from _plugin_common import get_session_key
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), metadata={"ended_at": time.time()})
         _stop_idle_watcher()
         spawned = _spawn_detached_sync()
         hook_log("sync_deferred_to_shutdown_worker", {"spawned": spawned})

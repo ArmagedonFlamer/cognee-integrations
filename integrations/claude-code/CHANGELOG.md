@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.11]
+
+### Changed
+- Record exact per-session memory value counters, show last-session outcomes, and include cumulative recalled items in the status line.
+
 ## [1.6.10]
 
 ### Changed

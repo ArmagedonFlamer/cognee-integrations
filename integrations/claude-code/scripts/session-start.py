@@ -2554,6 +2554,27 @@ def main():
                 output["systemMessage"] = hso["systemMessage"]
     except (OSError, ValueError) as exc:
         hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
+    if payload.get("source") != "resume":
+        from _session_stats import previous, summary
+        from _session_stats import update as update_stats
+
+        config = load_config()
+        key = get_session_key()
+        last_line = summary(previous(key, get_dataset(config), str(config.get("base_url") or "")))
+        update_stats(
+            key,
+            metadata={
+                "dataset": get_dataset(config),
+                "server_url": str(config.get("base_url") or ""),
+            },
+        )
+        if last_line:
+            hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+            hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + last_line).strip()
+            hso["additionalContext"] = (
+                str(hso.get("additionalContext") or "") + "\n" + last_line
+            ).strip()
+            output["systemMessage"] = hso["systemMessage"]
     output = _apply_memory_preference(output)
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)

@@ -731,7 +731,12 @@ def analyze_recalls(
         counts["new_chars"] += new_chars
         if items and repeated_items == len(items):
             counts["fully_repeated"] += 1
-        injected_chars.append(len(context))
+        measured_chars = row.get("context_chars")
+        injected_chars.append(
+            measured_chars
+            if isinstance(measured_chars, int) and measured_chars >= 0
+            else len(context)
+        )
         days.add(ts.astimezone().date())
         if isinstance(row.get("hits"), dict):
             for scope, value in row["hits"].items():

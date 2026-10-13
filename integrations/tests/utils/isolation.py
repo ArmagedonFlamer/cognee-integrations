@@ -48,6 +48,7 @@ ISOLATED_MODULES = (
     "_injection_budget",
     "_injection_ledger",
     "_auto_memory",
+    "_session_stats",
     "_remember_http",
     "_code_graph",
     "_observer",

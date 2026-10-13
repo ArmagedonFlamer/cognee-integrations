@@ -1564,6 +1564,10 @@ def bump_save_counter(session_id: str, kind: str, *, buffered: bool = False) -> 
         kind = f"{kind}_buffered"
     if not session_id or kind not in ALL_SAVE_KINDS:
         return
+    if not buffered:
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), saves=1, metadata={"session_id": session_id})
     try:
         data = (
             json.loads(_SAVE_COUNTER.read_text(encoding="utf-8")) if _SAVE_COUNTER.exists() else {}
@@ -5606,6 +5610,9 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
         },
     )
     if ok:
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), improves_landed=1)
         record_improve_success(session_id, dataset, trigger)
         # Status-line credits: attribute the spend recorded since the previous
         # reading to this improve. Approximate on purpose — the submit is

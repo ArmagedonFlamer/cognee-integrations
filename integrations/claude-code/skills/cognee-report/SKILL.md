@@ -18,7 +18,7 @@ python3 "${CLAUDE_PLUGIN_ROOT}/skills/cognee-report/scripts/plugin_eval.py" repo
 
 Use `--session <cognee-session-id> --since all` for the current session. Resolve the
 session from the current hook context or the host's entry in
-`~/.cognee-plugin/claude-code/launches/`; do not assume a machine-wide last-recall
+`~/.cognee-plugin/claude-code/sessions/<host-session-id>.json`; do not assume a machine-wide last-recall
 marker belongs to this terminal. When present, read this host session's
 `sessions/<host-session-id>/stats.json` for exact injected/deduped counters.
 `--format json` exposes the complete scorecard. `--no-transcripts` is faster but
@@ -36,3 +36,13 @@ item is not proof that it changed an answer.
 Keep recommendations tied to measured failures. Compare equal windows when
 possible. Do not infer seven-day post-release results from a short smoke test.
 Do not use export flags unless the user asks to export the report.
+
+Exact current-session and recent session totals are also available without reading
+transcripts:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_session_stats.py" --session <host-session-id> --days 7
+```
+
+These totals cover sessions that **started** within the window; use the evaluator's
+event timestamps for exact calendar-window recall metrics.

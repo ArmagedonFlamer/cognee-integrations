@@ -382,6 +382,26 @@ Claude-specific contracts are preserved:
 - `hookSpecificOutput` payload format
 - async hook behavior for write hooks
 
+## Memory value
+
+Ask “how did Cognee perform?” to use `cognee-report`, or run:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_session_stats.py" --session <host-session-id> --days 7
+```
+
+Per-session counters live at `sessions/<host-session-id>/stats.json` under the
+plugin state directory. They count recalls, turns with hits, injected and deduped
+entries, characters, accepted saves, completed improves, and delivered digest items.
+“Digest items used” means supplied to context, not proven use in an answer. No prompt
+or memory text is stored in this file. A session-start notice summarizes the last
+completed session for the same dataset/server. The status line shows cumulative
+items injected during this session.
+
+The seven-day counter total includes sessions started within that period. The report
+skill also reads event timestamps for calendar-window metrics and latency. Old logs
+may have clipped context, so exact `context_chars` is used where available.
+
 ## Memory preference
 
 With the plugin active, Cognee is the **preferred** memory system: relevant memory is
