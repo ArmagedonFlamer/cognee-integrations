@@ -554,6 +554,9 @@ def _evict_own_statusline() -> None:
     user set themselves is never touched. Atomic replace to avoid a torn file.
     """
     try:
+        from _auto_memory import restore as restore_auto_memory
+
+        restore_auto_memory()
         settings = _read_json(_USER_SETTINGS)
         sl = settings.get("statusLine")
         cmd = sl.get("command", "") if isinstance(sl, dict) else ""

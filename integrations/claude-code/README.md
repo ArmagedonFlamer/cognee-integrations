@@ -49,6 +49,11 @@ dataset). The plugin never expires server-side memory on its own.
 (`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
 Anthropic, Cognee or any third party beyond the calls above.
 
+**Claude settings.** In cloud mode the plugin disables native auto-memory unless
+you explicitly enabled it, keeping an ownership marker and previous value for
+restoration. Set `COGNEE_DISABLE_AUTO_MEMORY=false` to opt out. Existing memory
+files are retained. See [Memory preference](#memory-preference).
+
 **Stored locally.** `~/.cognee-plugin/claude-code/` (logs, status markers, buffered
 turns, swept automatically; see [Logs and state](#logs-and-state)),
 `~/.cognee-plugin/venv/`, `~/.cognee-plugin/api_key.json`, and your settings in
@@ -386,12 +391,16 @@ automatically, so Claude consults Cognee first when answering. To reinforce this
 Cognee as authoritative and prefer the Cognee tools/skills over Claude Code's built-in
 file memory (`MEMORY.md`).
 
-Note: a plugin **cannot reliably disable** Claude Code's native auto memory
-(`MEMORY.md` is injected as context, not a tool call that hooks can intercept). This
-feature steers the model toward Cognee rather than hard-disabling native memory. To
-turn the steer off, set `COGNEE_PREFER_MEMORY=false`. To additionally suppress native
-auto memory yourself, disable it in Claude Code (e.g. `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`
-in the launching shell, if your Claude Code version supports it).
+In cloud mode, SessionStart sets `autoMemoryEnabled: false` in
+`~/.claude/settings.json` when you have not chosen a value. An explicit `true` is
+preserved and reported once. The change takes effect next session. Set
+`COGNEE_DISABLE_AUTO_MEMORY=false` to restore the previous value the next time
+SessionStart runs. The status-line cleanup also restores it when the plugin is
+removed or disabled, provided its renderer still exists and runs. A later user
+choice is always preserved. `cognee-doctor.sh` reports the setting and ownership.
+See [Claude Code's auto-memory settings](https://code.claude.com/docs/en/memory#enable-or-disable-auto-memory).
+
+`COGNEE_PREFER_MEMORY=false` independently disables the memory preference instruction.
 
 | Env var | Default | Effect |
 |---|---|---|

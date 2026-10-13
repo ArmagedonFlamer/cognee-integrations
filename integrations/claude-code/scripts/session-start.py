@@ -2323,7 +2323,6 @@ async def _start(payload: dict | None = None) -> dict:
 
         reset_injection_ledger(session_key)
 
-
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
     # synchronously here so prompt hooks read back the identical ids before any run.
@@ -2543,6 +2542,18 @@ def main():
             output = asyncio.run(_start(payload))
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
+    try:
+        from _auto_memory import configure as configure_auto_memory
+        from config import is_cloud_mode
+
+        if is_cloud_mode(load_config()):
+            notice = configure_auto_memory()
+            if notice:
+                hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+                hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + notice).strip()
+                output["systemMessage"] = hso["systemMessage"]
+    except (OSError, ValueError) as exc:
+        hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
     output = _apply_memory_preference(output)
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
