@@ -74,6 +74,16 @@ the backend starts in; a variable set in the environment wins over `.env`.
 `WIDGET_ENV_FILE` points at a different file, or turns `.env` loading off when
 set to an empty value.
 
+### How answers are recalled
+
+Three settings control the recall each chat message runs against cognee:
+
+| Variable | Default | Effect |
+| -------- | ------- | ------ |
+| `WIDGET_RECALL_SCOPE` | `graph,code` | Memory sources to recall from, comma-separated. `graph` is the docs answer; `code` adds results from the code graph of any repository ingested into the same dataset, returned next to the answer rather than in it; `session` adds the conversation's own history. |
+| `WIDGET_SEARCH_TYPE` | `GRAPH_COMPLETION` | How the dataset is searched. Empty or `auto` lets cognee choose per question (usually `HYBRID_COMPLETION`). |
+| `WIDGET_SYSTEM_PROMPT` | unset | The instruction the answering model gets. Unset, cognee's own default prompt is used ("Answer the question using the provided context. Be as brief as possible."). A value replaces that default; citations are unaffected. |
+
 ### Rate limits
 
 `/api/chat` and `/api/forget` need no login, and every chat message runs a
