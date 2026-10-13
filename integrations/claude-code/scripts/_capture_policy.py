@@ -85,6 +85,22 @@ def _list_env(name: str, *, separator: str = ",") -> list[str]:
     return [part.strip() for part in raw.split(separator) if part.strip()]
 
 
+def _glob_match(name: str, pattern: str) -> bool:
+    """``fnmatch.fnmatchcase``, with an unusable glob reported as a pattern error.
+
+    Python 3.9's fnmatch hands some globs (a reversed range such as ``[C-A]``) to
+    ``re`` unchanged, which rejects them; 3.10+ turn them into "matches nothing".
+    Without this the 3.9 ``re.error`` escaped the hook as a crash instead of the
+    usual "pattern not understood" report.
+    """
+    try:
+        return fnmatch.fnmatchcase(name, pattern)
+    except re.error as exc:
+        raise CapturePatternError(
+            f"capture pattern {pattern!r} is not a valid glob: {exc}"
+        ) from exc
+
+
 def _sensitive_path(value) -> bool:
     if isinstance(value, (tuple, list)):
         return any(_sensitive_path(item) for item in value)
@@ -93,8 +109,8 @@ def _sensitive_path(value) -> bool:
     normalized = value.replace("\\", "/").lower()
     name = PurePosixPath(normalized).name
     return any(
-        fnmatch.fnmatchcase(name, pattern.lower())
-        or fnmatch.fnmatchcase("/" + normalized.lstrip("/"), pattern.lower())
+        _glob_match(name, pattern.lower())
+        or _glob_match("/" + normalized.lstrip("/"), pattern.lower())
         for pattern in (*_DENY_PATHS, *_list_env("COGNEE_CAPTURE_DENY_PATHS"))
     )
 
@@ -173,7 +189,7 @@ def _tool_patterns(env_name: str, default: list[str]) -> list[tuple[str, str | N
 
 
 def _matches(tool: str, prefix: str | None, name: str, params) -> bool:
-    if not fnmatch.fnmatchcase(name, tool):
+    if not _glob_match(name, tool):
         return False
     if prefix is None:
         return True

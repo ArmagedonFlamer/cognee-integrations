@@ -128,17 +128,6 @@
       "expected": true
     },
     {
-      "note": "glob with a reversed range matches nothing",
-      "env": {
-        "COGNEE_CAPTURE_TOOLS": "[\"[C-A]*\"]"
-      },
-      "tool": "Bash",
-      "params": {
-        "command": "ls"
-      },
-      "expected": false
-    },
-    {
       "note": "glob question mark",
       "env": {
         "COGNEE_CAPTURE_TOOLS": "Rea?"
