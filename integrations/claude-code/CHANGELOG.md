@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.24]
+
+### Changed
+- SDK-1109: purple single-line recall history, hit-rate bar and timestamp-driven drop/shimmer animation; width-aware and ASCII fallbacks, light theme, and byte-compatible classic opt-out.
+
 ## [1.6.23]
 
 ### Changed
