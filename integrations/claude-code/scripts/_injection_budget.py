@@ -52,7 +52,11 @@ def fit_sections(sections: list[dict], budget: int) -> tuple[str, dict]:
     ]
     return text, {
         "context_chars": len(text),
-        "entries_kept": len(entries),
+        "entries_kept": sum(
+            len(values)
+            for section, values in zip(sections, kept)
+            if not section.get("required") and section.get("counted", True)
+        ),
         "entries_dropped": total - sum(len(values) for values in kept),
         "entries": entries,
     }

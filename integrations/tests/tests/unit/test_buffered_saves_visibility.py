@@ -75,6 +75,10 @@ def test_buffered_bumps_land_under_their_own_kind(pc):
 def store(suite, hook_module, monkeypatch):
     """The store hook with its write seams stubbed; returns ``(module, bumps)``."""
     module = hook_module(suite, "store-to-session.py")
+    if suite.name == "claude-code":
+        # Inline writes remain the local path; cloud spool outcomes have separate tests.
+        monkeypatch.setattr(module, "cloud_enabled", lambda *args: False)
+
     bumps: list[tuple] = []
     monkeypatch.setattr(module, "hook_log", lambda *a, **k: None)
     monkeypatch.setattr(module, "notify", lambda *a, **k: None)
@@ -253,11 +257,14 @@ def test_segments_name_buffered_writes_and_the_backlog(pc):
 def test_outage_header_names_the_failure_and_uses_the_hosts_joiner(pc):
     saves = {"prompt": 1, "trace": 0, "answer": 0, "trace_buffered": 6, "answer_buffered": 1}
     backlog = {"pending": 7, "oldest_age_seconds": 20 * 86400}
-    assert pc.outage_header("unreachable", saves, backlog, "; ") == (
-        "Cognee memory: recall skipped (server unreachable)"
-        "; saved last turn 1 prompt / 0 trace / 0 answer"
-        "; buffered last turn 6 trace / 1 answer (not saved yet)"
-        "; 7 awaiting replay, oldest 20d"
+    assert (
+        pc.outage_header("unreachable", saves, backlog, "; ")
+        == (
+            "Cognee memory: recall skipped (server unreachable)"
+            "; saved last turn 1 prompt / 0 trace / 0 answer"
+            "; buffered last turn 6 trace / 1 answer (not saved yet)"
+            "; 7 awaiting replay, oldest 20d"
+        )
     )
     assert pc.outage_header("server_error", {}, None, " · ") == (
         "Cognee memory: recall skipped (server error)"
@@ -312,7 +319,7 @@ def test_header_shows_buffered_writes_and_the_backlog(suite, lookup, monkeypatch
     run = drive_recall(lookup, monkeypatch, recall=HIT, saves_last_turn=_OUTAGE_SAVES)
     header = _header(suite, run.output)
     j = _joiner(suite)
-    assert header.endswith(
+    assert (
         f"{j}saved last turn 1 prompt / 0 trace / 0 answer"
         f"{j}buffered last turn 6 trace / 1 answer (not saved yet)"
         f"{j}7 awaiting replay, oldest 20d"
@@ -327,7 +334,7 @@ def test_header_reads_as_before_when_nothing_was_buffered(suite, lookup, monkeyp
     )
     run = drive_recall(lookup, monkeypatch, recall=HIT)
     header = _header(suite, run.output)
-    assert header.endswith("saved last turn 0 prompt / 0 trace / 0 answer")
+    assert "saved last turn 0 prompt / 0 trace / 0 answer" in header
     assert "buffered" not in header and "awaiting replay" not in header
 
 

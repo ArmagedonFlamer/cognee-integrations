@@ -23,6 +23,7 @@ import urllib.error
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
 from _plugin_common import (
     append_warmup_entry,
     bump_save_counter,
@@ -65,6 +66,11 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
     here leaves behind. Without server auth there is nothing to submit to —
     the session-end sync picks the session up once a key is available.
     """
+    if cloud_enabled():
+        from _cloud_worker import request_improve
+
+        request_improve(dataset, session_id, reason)
+        return
     improve_start = time.monotonic()
     throttled = improve_throttle_reason(session_id)
     if throttled:
@@ -220,6 +226,13 @@ async def _store_tool_call(payload: dict) -> None:
         "generate_feedback_with_llm": False,
     }
 
+    if cloud_enabled(runtime):
+        from _cloud_worker import enqueue
+
+        enqueue(dataset, session_id, entry, "trace")
+        bump_save_counter(session_id, "trace", buffered=True)
+        return
+
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe — a stale marker
         # alone no longer buffers; this hook fires per tool call, so its probe
@@ -337,6 +350,14 @@ async def _store_assistant_stop(payload: dict) -> None:
         "answer": msg,
         "context": redact(pending.get("context", "")),
     }
+
+    if cloud_enabled(runtime):
+        from _cloud_worker import enqueue, request_improve
+
+        enqueue(dataset, session_id, entry, "answer")
+        request_improve(dataset, session_id, "stop")
+        bump_save_counter(session_id, "answer", buffered=True)
+        return
 
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe): buffer the
@@ -470,7 +491,8 @@ def main():
                 asyncio.run(_store_assistant_stop(payload))
                 # End-of-turn code-graph freshness: independent of whether an
                 # assistant message was stored (edits happen either way).
-                _maybe_reingest_code_repo(payload)
+                if not cloud_enabled():
+                    _maybe_reingest_code_repo(payload)
             else:
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:

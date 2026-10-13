@@ -5,6 +5,13 @@ from __future__ import annotations
 import os
 
 EVENT_NAMES = {
+    "hook:auto_memory_setup_failed": "cloud.auto_memory_setup_failed",
+    "hook:injection_ledger_failed": "cloud.injection_ledger_failed",
+    "hook:capture_spooled": "cloud.capture_spooled",
+    "hook:cloud_work_expired": "cloud.cloud_work_expired",
+    "hook:cloud_work_retry": "cloud.cloud_work_retry",
+    "hook:cloud_capture_delivered": "cloud.cloud_capture_delivered",
+    "hook:cloud_worker_error": "cloud.cloud_worker_error",
     "claude-observer:completion": "observer.completion",
     "claude-observer:completion_failed": "observer.completion_failed",
     "claude-observer:handler_exception": "observer.handler_exception",

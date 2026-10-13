@@ -29,6 +29,7 @@ import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
 from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
@@ -324,6 +325,9 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         "server_error",
         "not_responding",
     )
+    if known_bad and cloud_enabled(runtime):
+        hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
+        return _outage_output(prior_state)
     if known_bad:
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
         # auth_failed instead of being masked as "ready" by an unauthenticated
@@ -430,7 +434,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
-    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 20.0)
+    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 4.0 if cloud_enabled(runtime) else 20.0)
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
     # Respect the shared circuit breaker: when the server has been failing (tripped
@@ -818,11 +822,15 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
         header += f"; {segment}"
 
+    if scope_timeouts:
+        header += "; memory recall timed out"
     sections = [{"entries": [header], "required": True}] + _injection_sections(by_source)
-    if not total:
-        sections.append({"entries": ["(no memory matches for this prompt)"], "priority": 1})
+    if not total and not scope_timeouts:
+        sections.append(
+            {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
+        )
     if dataset_hint:
-        sections.append({"entries": [dataset_hint], "priority": 0})
+        sections.append({"entries": [dataset_hint], "priority": 0, "counted": False})
     envelope_chars = (
         len(
             json.dumps(
@@ -837,7 +845,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         )
         + 1
     )
-    if runtime["mode"] == "cloud" and _key_safe and total:
+    if cloud_enabled(runtime) and _key_safe and total:
         from _injection_ledger import render as render_deduped
 
         try:

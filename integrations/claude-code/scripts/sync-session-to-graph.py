@@ -421,6 +421,47 @@ def main():
         },
     )
 
+    from _cloud_worker import enabled as cloud_enabled
+    from _cloud_worker import request_improve
+
+    if cloud_enabled():
+        from _plugin_common import get_session_key, load_resolved, touched_pairs
+        from _session_stats import update as update_stats
+
+        resolved = load_resolved(identity=False)
+        key = get_session_key()
+        requested_at = time.time()
+        pairs = [
+            (
+                os.environ.get("COGNEE_SYNC_SESSION_ID") or resolved.get("session_id"),
+                os.environ.get("COGNEE_SYNC_DATASET") or resolved.get("dataset"),
+            )
+        ]
+        if is_session_end or detached_final:
+            pairs.extend((p["session_id"], p["dataset"]) for p in touched_pairs(key))
+            update_stats(key, metadata={"ended_at": time.time()})
+        for sid, dataset in pairs:
+            if sid and dataset:
+                request_improve(
+                    dataset, sid, "final" if is_session_end or detached_final else "manual"
+                )
+        if _STRICT_ARG in sys.argv:
+            from _cloud_worker import read, session_dir
+
+            deadline = time.monotonic() + 840
+            while time.monotonic() < deadline:
+                result = read(session_dir(key) / "last-improve.json")
+                if (
+                    result.get("ok")
+                    and result.get("session_id") == pairs[0][0]
+                    and result.get("at", 0) >= requested_at
+                ):
+                    return
+                time.sleep(0.2)
+            print("Cognee sync is still queued; the dataset was not switched.", file=sys.stderr)
+            sys.exit(1)
+        return
+
     if detached_final:
         delay_raw = os.environ.get("COGNEE_SYNC_START_DELAY", "")
         try:

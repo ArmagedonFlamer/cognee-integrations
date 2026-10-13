@@ -2281,7 +2281,12 @@ async def _start(payload: dict | None = None) -> dict:
     # to add the fastembed extra, and the server inherits the provider variables
     # at spawn. The shim is started detached now so the server's first LLM call
     # (and the watcher's key check) find it listening.
-    observer = _apply_observer(config, target_url)
+    from _cloud_worker import enabled as cloud_enabled
+
+    cloud = cloud_enabled({"base_url": target_url})
+    observer = (
+        {"active": False, "reason": "cloud"} if cloud else _apply_observer(config, target_url)
+    )
 
     # NOTE: the local server's LLM_API_KEY health is deliberately NOT judged here.
     # A hook-env read (config's llm_api_key / OPENAI_API_KEY) is blind to a key that
@@ -2362,6 +2367,34 @@ async def _start(payload: dict | None = None) -> dict:
             "dataset": dataset,
         },
     )
+
+    if cloud:
+        from _cloud_worker import register_session
+
+        register_session(
+            {
+                "cwd": cwd,
+                "session_id": session_id,
+                "session_key": session_key,
+                "dataset": dataset,
+                "agent_session_name": agent_session_name,
+                "base_url": target_url,
+            }
+        )
+        touch_activity()
+        marker_ready = server_ready_hint(target_url)
+        message = (
+            "Cognee cloud memory ready; background synchronization active."
+            if marker_ready
+            else "Cognee cloud memory connecting in the background; captures are queued."
+        )
+        return {
+            "systemMessage": message,
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "systemMessage": message,
+            },
+        }
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)
@@ -2544,9 +2577,9 @@ def main():
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     try:
         from _auto_memory import configure as configure_auto_memory
-        from config import is_cloud_mode
+        from _cloud_worker import enabled as cloud_enabled
 
-        if is_cloud_mode(load_config()):
+        if cloud_enabled():
             notice = configure_auto_memory()
             if notice:
                 hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})

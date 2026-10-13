@@ -317,7 +317,7 @@ def test_hits_still_offer_the_other_datasets(lookup, monkeypatch):
     hit = dict(HIT, graph=[{"source": "graph", "content": "found something"}])
     run = drive_recall(lookup, monkeypatch, recall=hit)
     ctx = _context(run)
-    assert "Relevant context from this session's memory" in ctx
+    assert "=== Cognee memory ===" in ctx
     assert "Other Cognee datasets you can search" in ctx
     assert "does not answer it, do not conclude that memory has nothing" in ctx
 

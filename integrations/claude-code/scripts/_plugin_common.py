@@ -1656,6 +1656,14 @@ def warmup_backlog() -> dict:
                 age = max(0.0, now - buffered_at)
                 if oldest is None or age > oldest:
                     oldest = age
+    for path in (_PLUGIN_DIR / "spool").glob("*.json"):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+            result["pending"] += 1
+            age = max(0, now - float(item.get("created_at", path.stat().st_mtime)))
+            oldest = max(oldest or 0, age)
+        except (OSError, ValueError, TypeError):
+            continue
     result["oldest_age_seconds"] = oldest
     return result
 
@@ -3744,6 +3752,10 @@ def server_usable(service_url: str = "", probe_timeout: float = 1.0) -> bool:
     hooks keep the marker fresh for the whole turn and the buffer only fills
     when the server is actually unreachable.
     """
+    from _cloud_worker import enabled as cloud_enabled
+
+    if cloud_enabled({"base_url": service_url or _local_api_url()}):
+        return server_ready_hint(service_url)
     if server_ready_hint(service_url):
         return True
     now = datetime.now(timezone.utc).timestamp()

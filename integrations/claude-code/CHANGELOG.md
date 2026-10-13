@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.12]
+
+### Changed
+- Move cloud hooks to a durable per-user capture and improve worker, with ordered retries, cached health, truthful improve results and a four-second recall budget.
+
 ## [1.6.11]
 
 ### Changed

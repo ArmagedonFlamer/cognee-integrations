@@ -88,10 +88,10 @@ def render(
             for entry in section.get("entries", []):
                 digest = entry_hash(entry)
                 if digest in (guidance if is_guidance else seen):
-                    duplicate_count += 1
+                    duplicate_count += int(section.get("counted", True))
                     continue
                 entries.append(entry)
-                candidates += 1
+                candidates += int(section.get("counted", True))
                 # Avoid duplicates returned by different datasets in this response.
                 seen.add(digest)
                 if is_guidance:

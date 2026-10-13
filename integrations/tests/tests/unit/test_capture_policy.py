@@ -88,6 +88,9 @@ def test_filtered_trace_never_reaches_session_or_buffer(suite, hook_module, monk
 def test_online_and_buffered_trace_receive_redacted_content(suite, hook_module, monkeypatch):
     for online in (False, True):
         store = hook_module(suite, "store-to-session.py")
+        if suite.name == "claude-code":
+            monkeypatch.setattr(store, "cloud_enabled", lambda *args: False)
+
         monkeypatch.setattr(store, "_load_session", lambda: ("session", "dataset", "user"))
         monkeypatch.setattr(store, "load_config", lambda: {})
         monkeypatch.setattr(
