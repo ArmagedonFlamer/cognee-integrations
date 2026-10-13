@@ -69,6 +69,34 @@ The widget is embedded cross-origin, so the backend enables CORS for `/api/*`
 restrict it in production). The backend binds `127.0.0.1` by default — set
 `WEB_HOST` / `WEB_PORT` to change it.
 
+Settings are read from the environment and from a `.env` file in the directory
+the backend starts in; a variable set in the environment wins over `.env`.
+`WIDGET_ENV_FILE` points at a different file, or turns `.env` loading off when
+set to an empty value.
+
+### Rate limits
+
+`/api/chat` and `/api/forget` need no login, and every chat message runs a
+cognee recall billed to your cognee account. Two guards keep that bounded:
+
+| Variable | Default | Limits |
+| -------- | ------- | ------ |
+| `WIDGET_RATE_LIMIT_PER_IP_HOUR` | `20` | requests per visitor IP per hour (chat and forget together) |
+| `WIDGET_RATE_LIMIT_PER_IP_DAY` | `100` | requests per visitor IP per day |
+| `WIDGET_RATE_LIMIT_GLOBAL_HOUR` | `500` | chat requests per hour across all visitors |
+
+`0` turns a limit off; any other value that is not a whole number stops the
+backend at startup. A request over a limit gets `429` with a `Retry-After`
+header and `{error, scope, message, retry_after}`, where `scope` is `visitor` or
+`global`; the widget shows the message in the chat. The counters are kept in
+the backend process, so run a single instance.
+
+Behind a reverse proxy every request arrives from the proxy, so all visitors
+would share one per-IP limit. Set `WIDGET_TRUSTED_PROXIES` to the proxy's IPs
+or CIDR ranges (comma-separated), or `*` to believe whichever peer connects, and
+the visitor's IP is read from `X-Forwarded-For`. Leave it unset when the backend
+is reached directly: anyone can send that header.
+
 ### Seed your real docs
 
 ```python
@@ -83,8 +111,8 @@ asyncio.run(adapter.ingest_docs(site_id="acme", documents=["...your docs text...
 
 | Method | Path          | Body                                                                | Returns                          |
 | ------ | ------------- | ------------------------------------------------------------------- | -------------------------------- |
-| POST   | `/api/chat`   | `{message, conversation_id, visitor_id, site_id, opt_in, use_docs}` | `{answer, citations, session_id}`|
-| POST   | `/api/forget` | `{conversation_id, visitor_id, site_id}`                            | `{cleared, session_id}`          |
+| POST   | `/api/chat`   | `{message, conversation_id, visitor_id, site_id, opt_in, use_docs}` | `{answer, citations, session_id}`, or `429` over a [rate limit](#rate-limits) |
+| POST   | `/api/forget` | `{conversation_id, visitor_id, site_id}`                            | `{cleared, session_id}`, or `429` over a [rate limit](#rate-limits) |
 | GET    | `/`           | —                                                                   | demo "ask our docs" page         |
 | GET    | `/widget.js`  | —                                                                   | the embeddable snippet           |
 
