@@ -167,3 +167,65 @@ def test_main_consumes_notices_once_before_rendering(lookup, monkeypatch, capsys
         "URL notice\nCapture notice"
     )
     assert calls == ["url", "capture"]
+
+
+@pytest.mark.parametrize(
+    "source,heading",
+    [
+        ("graph", "## Relevant passages\npassage\n\n## Related facts\n"),
+        ("graph", ""),
+        ("session_context", ""),
+        ("code", ""),
+    ],
+)
+def test_large_real_results_retain_whole_facts(lookup, monkeypatch, source, heading):
+    from utils.recall import arm_code_lane, drive_recall
+
+    if source == "code":
+        arm_code_lane(monkeypatch)
+    facts = [f"- fact-{i}: " + "evidence " * 20 for i in range(100)]
+    body = heading + "\n".join(facts)
+    assert len(body) > 12000
+    run = drive_recall(lookup, monkeypatch, recall={source: [{"source": source, "text": body}]})
+    context = run.output["hookSpecificOutput"]["additionalContext"]
+    assert facts[0] in context
+    assert facts[-1] not in context
+    assert len(json.dumps(run.output)) + 1 <= 9000
+    detail = run.detail("context_lookup_hit")
+    assert detail["entries_kept"] > 0 and detail["entries_dropped"] > 0
+    if heading:
+        assert "## Relevant passages" not in context
+
+
+def test_fenced_code_is_one_atomic_entry(lookup):
+    block = "```python\n" + "first()\n" * 150 + "second()\n```"
+    assert lookup._line_entries("fact\n" + block + "\nafter") == ["fact", block, "after"]
+
+
+@pytest.mark.parametrize("case,expected_hits", [("miss", 0), ("dropped", 0), ("partial", 1)])
+def test_status_counts_only_injected_results(lookup, monkeypatch, case, expected_hits):
+    from utils.recall import drive_recall
+
+    monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", "1024")
+    monkeypatch.setattr(lookup, "get_session_key", lambda: "review-counts")
+    messages = []
+    items = [] if case == "miss" else [{"source": "graph", "text": "```\n" + "x" * 12000 + "\n```"}]
+    if case == "partial":
+        items.append({"source": "graph", "text": "Useful retained fact"})
+
+    def recall(prompt, **kwargs):
+        lookup.notify = messages.append
+        return items if kwargs["scope"] == ["graph"] else []
+
+    run = drive_recall(lookup, monkeypatch, recall=recall)
+    context = run.output["hookSpecificOutput"]["additionalContext"]
+    assert f"recall {expected_hits} memory" in context
+    marker = json.loads((Path.home() / ".cognee-plugin/claude-code/last_recall.json").read_text())
+    assert marker["hits"]["graph_context"] == expected_hits
+    assert marker["retrieved_hits"]["graph_context"] == len(items)
+    assert marker["session_totals"]["turns_with_hits"] == expected_hits
+    if case == "miss":
+        assert messages[0].startswith("no recall matches")
+    else:
+        assert "1 dropped to fit" in context and "1 dropped to fit" in messages[0]
+    assert len(json.dumps(run.output)) + 1 <= 1024
