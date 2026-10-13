@@ -33,10 +33,14 @@ def cache_path(dataset: str) -> Path:
     return root() / "context-cache" / (safe + ".json")
 
 
-def request_refresh(dataset: str, session_id: str = "", host_key: str = "") -> None:
+def request_refresh(
+    dataset: str, session_id: str = "", host_key: str = "", *, record_usage: bool = False
+) -> None:
     from _plugin_common import get_session_key
 
     path = cache_path(dataset).with_suffix(".wanted.json")
+    # A pending usage stamp survives a later plain refresh request.
+    record_usage = record_usage or bool(read(path).get("record_usage"))
     atomic_json(
         path,
         {
@@ -45,6 +49,7 @@ def request_refresh(dataset: str, session_id: str = "", host_key: str = "") -> N
             "host_key": host_key or get_session_key(),
             "target": target(),
             "requested_at": time.time(),
+            "record_usage": record_usage,
         },
     )
 
@@ -78,6 +83,10 @@ def inject(dataset: str, session_key: str, *, source: str = "") -> str:
     from _session_stats import update
 
     update(session_key, digest_items_used=len(data.get("entry_hashes", [])))
+    if data.get("guidance_hashes"):
+        # Guidance reached a session: let the worker's next refresh stamp it as
+        # used. Background rebuilds alone never count as use.
+        request_refresh(dataset, data.get("source_session_id", ""), session_key, record_usage=True)
     return rendered
 
 
@@ -107,7 +116,9 @@ def _sections(rows: list, session_id: str) -> list:
     return renderer._injection_sections(buckets)
 
 
-def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict:
+def build(
+    dataset: str, session_id: str, host_key: str, *, request=None, record_usage: bool = False
+) -> dict:
     from _plugin_common import _json_http_request, dataset_id_for, read_connection_state
     from _session_stats import previous, summary
     from _session_stats import read as read_stats
@@ -159,7 +170,7 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
                 "scope": ["session_context"],
                 "session_id": session_id,
                 "context_profile": "agent",
-                "record_context_usage": "context_usage_v1" in capabilities,
+                "record_context_usage": record_usage and "context_usage_v1" in capabilities,
             },
             timeout=8,
         )
@@ -228,7 +239,12 @@ def refresh_pending() -> None:
         try:
             cached = load(item["dataset"])
             sid = item.get("session_id") or cached.get("source_session_id", "")
-            build(item["dataset"], sid, item.get("host_key", ""))
+            build(
+                item["dataset"],
+                sid,
+                item.get("host_key", ""),
+                record_usage=bool(item.get("record_usage")),
+            )
             # A request arriving during refresh must survive.
             if read(path).get("requested_at") == item.get("requested_at"):
                 path.unlink()

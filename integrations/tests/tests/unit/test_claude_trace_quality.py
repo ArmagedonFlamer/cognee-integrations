@@ -20,6 +20,22 @@ def store(suite, hook_module, monkeypatch):
         ("Grep", "matches", "success", True),
         ("Glob", ["a.py"], "success", True),
         ("Bash", {"stdout": "", "stderr": "", "exit_code": 0}, "success", True),
+        # The shape Claude Code actually sends for a command with no output.
+        (
+            "Bash",
+            {
+                "stdout": "",
+                "stderr": "",
+                "interrupted": False,
+                "isImage": False,
+                "noOutputExpected": False,
+            },
+            "success",
+            True,
+        ),
+        ("Bash", {"stdout": "built", "stderr": "", "isImage": False}, "success", False),
+        ("Bash", {"stdout": "", "stderr": "", "interrupted": True}, "success", False),
+        ("Bash", {"stdout": "", "stderr": "", "isImage": True}, "success", False),
         ("Bash", "", "success", True),
         ("Bash", "changed 3 files", "success", False),
         ("Bash", "", "error", False),

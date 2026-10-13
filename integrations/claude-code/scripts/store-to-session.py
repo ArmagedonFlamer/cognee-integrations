@@ -160,10 +160,14 @@ def _low_signal_trace(tool: str, output, status: str) -> bool:
     if isinstance(output, dict):
         if output.get("exit_code", 0) or output.get("exitCode", 0) or output.get("interrupted"):
             return False
-        metadata = {"stdout", "stderr", "exit_code", "exitCode", "interrupted", "is_error"}
+        # Claude Code adds flags such as isImage/noOutputExpected; only the
+        # output streams decide. A result without either stream is unknown.
+        if "stdout" not in output and "stderr" not in output:
+            return False
+        if output.get("isImage") or output.get("is_error"):
+            return False
         return (
-            set(output) <= metadata
-            and not str(output.get("stdout") or "").strip()
+            not str(output.get("stdout") or "").strip()
             and not str(output.get("stderr") or "").strip()
         )
     return output is None or (isinstance(output, str) and not output.strip())
