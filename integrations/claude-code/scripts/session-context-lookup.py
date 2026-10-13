@@ -216,6 +216,8 @@ def _format_entry(entry: dict) -> str:
 
 def _line_entries(text: str) -> list[str]:
     """Split fact/prose lines while keeping fenced code and entity records whole."""
+    if len(json.dumps(text)) <= 1024:
+        return [text.strip()] if text.strip() else []
     entries, pending = [], []
     fence = ""
     for line in text.strip().splitlines():
