@@ -47,6 +47,7 @@ ISOLATED_MODULES = (
     "_recall_text",
     "_injection_budget",
     "_injection_ledger",
+    "_evidence",
     "_auto_memory",
     "_session_stats",
     "_cloud_worker",

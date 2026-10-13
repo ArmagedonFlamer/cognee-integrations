@@ -552,6 +552,8 @@ def analyze_hook_log(
                 recall_verdicts[str(detail.get("verdict") or "unknown")] += 1
             elif event == "recall_budget_exceeded":
                 budget_recalls.add(recall_key)
+        if event == "trace_skipped_low_signal":
+            out["low_signal_skipped"] += 1
         if event == "skip_self_cognee_bash":
             out["self_skipped"] += 1
         if event in _CONNECTIVITY:
@@ -592,6 +594,7 @@ def analyze_hook_log(
             "landed_rate": ratio(landed, writes),
             "buffered_share": ratio(out["buffered"], writes),
             "skipped_as_self_reference": out["self_skipped"],
+            "skipped_as_low_signal": out["low_signal_skipped"],
             "self_skip_share": ratio(out["self_skipped"], out["self_skipped"] + writes),
         },
         "improve": {
@@ -756,7 +759,26 @@ def analyze_recalls(
                     slowest = max(slowest, float(elapsed))
         if slowest:
             slowest_scope_ms.append(slowest)
-        per_session[sid].append({"ts": ts, "items": items, "chars": len(context)})
+        per_session[sid].append(
+            {
+                "ts": ts,
+                "items": items,
+                "chars": len(context),
+                "hits": hits,
+                "new_chars": new_chars,
+                "repeated_chars": repeated_chars,
+                "graph_hits": sum(
+                    v
+                    for k, v in (row.get("hits") or {}).items()
+                    if _is_graph_scope(k) and isinstance(v, (int, float))
+                )
+                if isinstance(row.get("hits"), dict)
+                else 0,
+                "entries_kept": row.get("entries_kept", len(items)),
+                "entries_deduped": row.get("entries_deduped", 0),
+                "hashes": [h.hex() for h in hashes],
+            }
+        )
 
     recalls = int(counts["recalls"])
     total_hits = sum(scope_hits.values())
@@ -1064,6 +1086,9 @@ def analyze_transcript(
             checked_chars += len(item)
             found = sum(1 for probe in probes if corpus.find(probe, start, end) != -1)
             if found >= 2:
+                recall["transcript_match_chars"] = recall.get("transcript_match_chars", 0) + len(
+                    item
+                )
                 in_transcript_items += 1
                 in_transcript_chars += len(item)
 
@@ -1905,6 +1930,30 @@ def build_scorecard(
             since,
             until,
         )
+    decisions = {}
+    for event_ts, raw in iter_jsonl(rotated_files(plugin_dir, "hook.log"), {}):
+        if event_ts is None or (since and event_ts < since) or (until and event_ts >= until):
+            continue
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("event") != "bash_capture_decision":
+            continue
+        detail = row.get("detail") or {}
+        if not isinstance(detail, dict):
+            continue
+        host = str(detail.get("host_session_id") or "unknown")
+        if args.session and host != host_session_id(args.session):
+            continue
+        outcome = detail.get("outcome")
+        if outcome in {"captured", "skipped_self", "skipped_low_signal"}:
+            counts = decisions.setdefault(
+                host, {"captured": 0, "skipped_self": 0, "skipped_low_signal": 0}
+            )
+            counts[outcome] += 1
+    card["bash_capture"] = decisions
+    card["delivery"] = delivery_summary(per_session, plugin_dir, since, until)
     card["usage"] = usage_level(recall, hook, transcripts)
     card["grade"] = compute_grade(metric_values(card))
     card["advice"] = build_advice(card)
@@ -2014,7 +2063,228 @@ def grade_headline(card: Dict[str, Any]) -> str:
     return "NO GRADE - not enough data in this window"
 
 
-def render_text(card: Dict[str, Any], markdown: bool = False) -> str:
+_DELIVERY_SEGMENTS = (
+    "new graph context",
+    "new session context",
+    "repeated",
+    "already in transcript",
+    "zero-hit injection",
+)
+
+
+def delivery_summary(per_session, plugin_dir, since, until):
+    """Body-free delivery evidence; mutually exclusive recall classifications.
+
+    A recall may contain mixed items. Precedence is zero hit, full transcript
+    match, full repeat, then new graph/session context. Missing bodies without
+    exact delivery counters stay unmeasured instead of pretending novelty.
+    """
+    segments = dict.fromkeys(_DELIVERY_SEGMENTS, 0)
+    sessions = []
+    for sid, rows in per_session.items():
+        new_chars = sum(row["new_chars"] for row in rows)
+        repeated = sum(row["repeated_chars"] for row in rows)
+        graph_hits = sum(row["graph_hits"] for row in rows)
+        hits = sum(row["hits"] for row in rows)
+        for row in rows:
+            body = row["new_chars"] + row["repeated_chars"]
+            if not row["hits"]:
+                category = (
+                    "already in transcript" if row["entries_deduped"] else "zero-hit injection"
+                )
+            elif body and row.get("transcript_match_chars", 0) >= body:
+                category = "already in transcript"
+            elif body and not row["new_chars"]:
+                category = "repeated"
+            elif row["new_chars"] or row["entries_kept"]:
+                category = "new graph context" if row["graph_hits"] else "new session context"
+            else:
+                category = "unmeasured"
+            segments[category] = segments.get(category, 0) + 1
+        hashes = list(dict.fromkeys(h for row in rows for h in row["hashes"]))[:3]
+        # The existing receipt is last-turn only: show it only when its timestamp
+        # lies within this report, never attribute a later receipt to older data.
+        host = host_session_id(sid)
+        if re.fullmatch(r"[A-Za-z0-9_-]+", host):
+            try:
+                receipt = json.loads(
+                    (plugin_dir / "sessions" / host / "injection-receipt.json").read_text()
+                )
+                stamp = parse_ts(receipt.get("recorded_at"))
+                if stamp and (not since or stamp >= since) and (not until or stamp < until):
+                    hashes = (
+                        list(
+                            dict.fromkeys(
+                                item["hash"]
+                                for item in receipt.get("items", [])
+                                if isinstance(item, dict)
+                                and item.get("reason") == "injected"
+                                and re.fullmatch(r"[0-9a-f]{20,64}", str(item.get("hash", "")))
+                            )
+                        )[:3]
+                        or hashes
+                    )
+            except (OSError, ValueError, TypeError, AttributeError):
+                pass
+        sessions.append(
+            {
+                "session": sid,
+                "recalls": len(rows),
+                "hits": sum(bool(row["hits"]) for row in rows),
+                "novel_share": ratio(new_chars, new_chars + repeated),
+                "graph_share": ratio(graph_hits, hits),
+                "entries_injected": sum(row["entries_kept"] for row in rows),
+                "new_tokens_est": int(new_chars / CHARS_PER_TOKEN),
+                "evidence_hashes": hashes,
+            }
+        )
+    sessions.sort(key=lambda row: (-row["hits"], -(row["novel_share"] or 0), row["session"]))
+    return {
+        "sessions": sessions,
+        "segments": segments,
+        "label": "delivery quality",
+        "new_tokens_est": sum(r["new_tokens_est"] for r in sessions),
+        "note": "Delivery is not demonstrated task improvement. "
+        "Novelty is a text-matching estimate; "
+        "mixed recalls use zero-hit, transcript-match, repeated, then new-context precedence. "
+        "Zero-hit includes recalls with no injected memory. Missing evidence is unmeasured.",
+    }
+
+
+def score_bar(value, ascii=False):
+    full, empty = ("#", "-") if ascii else ("█", "░")
+    cells = 0 if value is None else max(0, min(10, int(value / 10 + 0.5)))
+    return "[" + full * cells + empty * (10 - cells) + "]"
+
+
+def render_text(card: Dict[str, Any], markdown: bool = False, *, full=False, ascii=False) -> str:
+    if full:
+        return render_full_text(card, markdown)
+    legacy = render_full_text(card, markdown)
+    h2 = "## " if markdown else ""
+    headline = ("**%s**" if markdown else "%s") % grade_headline(card)
+    prefix = legacy.split(headline, 1)[0].rstrip()
+    delivery = card.get("delivery", {"sessions": [], "segments": {}, "new_tokens_est": 0})
+    recall, hook = card["recall"], card["hook_log"]
+    lines = [
+        prefix,
+        "",
+        h2 + "What Cognee did for you",
+        "%d sessions; %d recalls with a hit; ~%s new context tokens (observed body estimate); "
+        "%d graph facts delivered (retrieval hits)."
+        % (
+            recall["sessions"],
+            sum(r["hits"] for r in delivery["sessions"]),
+            delivery["new_tokens_est"],
+            sum(v for k, v in recall["scope_hits"].items() if _is_graph_scope(k)),
+        ),
+        "Saves landed: %d; improves landed: %d; lessons distilled: %s."
+        % (
+            hook["stores"]["stored_directly"] + hook["stores"]["drained_later"],
+            hook["improve"]["ok"],
+            (card.get("server") or {}).get("lessons_distilled", "unmeasured"),
+        ),
+    ]
+    # Keep existing measured delivery/token/latency numbers and their precision.
+    happened = legacy.split(h2 + "What happened\n", 1)[1].split("\n" + h2 + "Recommendations", 1)[0]
+    lines += [
+        happened.rstrip(),
+        "",
+        h2 + "Where it helped",
+        "Delivery evidence only; a recalled or injected item is not proof "
+        "that it changed an answer.",
+    ]
+    for row in delivery["sessions"]:
+        lines.append(
+            "- %s: %d recalls, %d hits; novel %s; graph %s; %d injected entries; hashes %s"
+            % (
+                row["session"],
+                row["recalls"],
+                row["hits"],
+                _pct(row["novel_share"]),
+                _pct(row["graph_share"]),
+                row["entries_injected"],
+                ", ".join(row["evidence_hashes"]) or "unmeasured",
+            )
+        )
+    if not delivery["sessions"]:
+        lines.append("No session delivery evidence in this window.")
+    lines += ["", h2 + "Quality"]
+    if markdown:
+        lines.append("```")
+    for sub in SUBSCORES:
+        score = card["grade"]["subscores"][sub]
+        lines.append(
+            "%s %s %s" % (score_bar(score, ascii), "n/a" if score is None else "%.0f" % score, sub)
+        )
+    segments = delivery["segments"]
+    total = sum(segments.values())
+    # Largest remainder allocation makes the stacked bar exactly ten cells.
+    sizes = [10 * count / total if total else 0 for count in segments.values()]
+    cells = [int(size) for size in sizes]
+    for i in sorted(range(len(cells)), key=lambda i: sizes[i] - cells[i], reverse=True)[
+        : 10 - sum(cells) if total else 0
+    ]:
+        cells[i] += 1
+    symbols = "GSRTZU"
+    stack = "".join(symbols[i] * count for i, count in enumerate(cells)) if total else "-" * 10
+    lines.append("[%s] delivery quality (%d recalls)" % (stack, total))
+    lines.extend(
+        "%s=%s: %d" % (symbols[i], name, count) for i, (name, count) in enumerate(segments.items())
+    )
+    if markdown:
+        lines.append("```")
+    lines.append(delivery.get("note", "Delivery only; outcomes unmeasured."))
+    # All gates retain values, sample counts, and low-n/no-data status.
+    scorecard = legacy.split(h2 + "Scorecard\n", 1)[1].split("\n" + h2 + "What happened", 1)[0]
+    lines += [scorecard.rstrip()]
+    if card.get("comparison"):
+        lines += [
+            "",
+            h2 + "Before vs after",
+            legacy.split(h2 + "Before vs after\n", 1)[1]
+            .split("\n" + h2 + "Notes", 1)[0]
+            .split("\nAggregates only", 1)[0]
+            .rstrip(),
+        ]
+    if card.get("notes"):
+        lines += ["", h2 + "Notes"] + ["- " + note for note in card["notes"]]
+    lines += ["", h2 + "Needs attention"]
+    for metric in card["grade"]["metrics"]:
+        if metric["status"] != "fail":
+            continue
+        action = _GATE_ACTIONS.get(
+            metric["key"], "Inspect this metric with --full and rerun after the fix."
+        )
+        lines.append(
+            "- %s: %s (n=%d); %s"
+            % (metric["label"], fmt_value(metric["value"], metric["unit"]), metric["n"], action)
+        )
+    if not any(metric["status"] == "fail" for metric in card["grade"]["metrics"]):
+        lines.append("No failed gates; low-n and unmeasured metrics remain listed above.")
+    lines += ["", headline]
+    return "\n".join(lines) + "\n"
+
+
+_GATE_ACTIONS = {
+    "hit_rate": "Check dataset routing and retrieval with representative queries.",
+    "novelty_rate": "Inspect deduplication and receipt reasons for repeated memory.",
+    "graph_hit_share": "Check that improve completed and graph retrieval ran.",
+    "store_landed_rate": "Inspect failed writes and drain the durable queue.",
+    "improve_ok_rate": "Inspect improve failures and retry after resolving their cause.",
+    "hook_crash_rate": "Fix the failing hook shown by --full and rerun it.",
+    "recall_p95_ms": "Inspect slow recall scopes; keep the 45-second cloud limit.",
+    "session_start_p95_ms": "Inspect SessionStart blocking work and connection checks.",
+    "empty_injection_rate": "Inspect empty recall overhead and injection receipts.",
+    "median_injected_tokens": "Inspect injection size and whole-item budget selection.",
+    "overhead_share": "Inspect injected tokens relative to model input.",
+    "recall_error_rate": "Inspect failed recall scopes and their connection diagnostics.",
+    "top_event_share": "Inspect the dominant event and repetitive logging.",
+    "largest_log_mb": "Check bounded log rotation and retention.",
+}
+
+
+def render_full_text(card: Dict[str, Any], markdown: bool = False) -> str:
     h1, h2 = ("# ", "## ") if markdown else ("", "")
     lines: List[str] = []
     install, window = card["install"], card["window"]
@@ -2128,6 +2398,18 @@ def render_text(card: Dict[str, Any], markdown: bool = False) -> str:
             "{:,}".format(recall["reinjection"]["repeated_tokens_est"]),
         ),
     ]
+    for host, counts in card.get("bash_capture", {}).items():
+        bullets.append(
+            "Bash %s: %d traces captured (stored or awaiting write), %d skipped-self, "
+            "%d skipped-low-signal; %d PostToolUse calls classified"
+            % (
+                host,
+                counts["captured"],
+                counts["skipped_self"],
+                counts["skipped_low_signal"],
+                sum(counts.values()),
+            )
+        )
     transcripts = card.get("transcripts")
     if transcripts:
         in_transcript = transcripts["in_transcript"]
@@ -2252,7 +2534,7 @@ def _block(kind: str, text: str = "", **extra: Any) -> Dict[str, Any]:
 def notion_blocks(card: Dict[str, Any]) -> List[Dict[str, Any]]:
     overall = card["grade"]["overall"]
     emoji = {"graded": "✅", "gates_failed": "⚠️", "insufficient_data": "ℹ️"}[overall["status"]]
-    text_report = render_text(card)
+    text_report = render_full_text(card)
     scorecard = text_report.split("Scorecard\n", 1)[-1].split("\nWhat happened", 1)[0].rstrip()
     happened = text_report.split("What happened\n", 1)[-1].split("\nRecommendations", 1)[0]
     blocks = [
@@ -2472,6 +2754,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Claude Code config dir (transcripts, plugin registry)",
     )
     sub = parser.add_subparsers(dest="command")
+    sub.add_parser("outcomes", help="run or report controlled matched task trials")
 
     report = sub.add_parser(
         "report", parents=[common], help="scorecard, grade and recommendations for a time window"
@@ -2494,6 +2777,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     report.add_argument("--session", help="restrict recall analysis to one session id")
     report.add_argument("--format", choices=("text", "markdown", "json"), default="text")
+    report.add_argument(
+        "--full",
+        action="store_true",
+        help="show the original detailed report and all recommendations",
+    )
+    report.add_argument("--ascii", action="store_true", help="use # and - for quality bars")
     report.add_argument("--out", help="write the report to this file as well")
     report.add_argument(
         "--no-transcripts",
@@ -2544,6 +2833,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == "outcomes":
+        from outcome_eval import main as outcome_main
+
+        return outcome_main(argv[1:])
     if not argv or argv[0] not in ("report", "markers", "-h", "--help"):
         argv.insert(0, "report")
     args = build_parser().parse_args(argv)
@@ -2587,7 +2880,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     output = (
         json.dumps(card, indent=2, default=str)
         if args.format == "json"
-        else render_text(card, args.format == "markdown")
+        else render_text(card, args.format == "markdown", full=args.full, ascii=args.ascii)
     )
     sys.stdout.write(output if output.endswith("\n") else output + "\n")
     if args.out:

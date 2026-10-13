@@ -711,14 +711,49 @@ the shim, checks that `claude` can actually answer (one tiny real call), or stop
 
 ## Status line
 
-The status line displays `cognee: <dataset> · <mode>`, for example:
+The default status line uses a purple health square, dataset and mode, with a
+cumulative recalled-entry chip and recent recall history:
 
-```
-cognee: agent_sessions · local
-cognee: my-project · cloud
+```text
+■ cognee: manual · cloud · [124 recalled] · 8 hits · 34/46 turns ▁▂▃▄▅▆▇█ ▰▰▰▰▱
 ```
 
-`<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host; an exported `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` switch overrides that, so the bar always shows the mode the terminal actually resolved. The mode is rendered **bold and coloured** — cyan for `local`, magenta for `cloud` — because it is the one field worth a double-take: it tells you which memory you are about to write to. (Red/green/amber are left to the health glyph and the warnings; bold and colour are set together so a terminal that ignores one still shows the other.)
+`124 recalled` counts entries injected over this session; `8 hits` describes the
+latest lookup, and `34/46 turns` counts prompts with hits out of all prompts.
+The five-cell bar shows that fraction. Up to eight block heights show the latest
+observed turns relative to the largest hit count in that window (a dot means zero).
+History comes from a bounded tail of the existing recall audit logs, filtered to
+this session; missing or rotated history is left absent. A new successful recall
+animates the newest block downward for ten seconds and shimmers the chip. Frames
+come from the recall timestamp and current clock, with no state writes, network
+calls or changes to hook frequency.
+
+The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
+The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xterm
+183. Failures remain red, update notices amber, and credits retain their semantic
+colours. Unknown connection health appears as `?`.
+
+`COLUMNS` controls the single-line width (80 by default, capped at 120). At 60
+columns decorations disappear first; dataset, mode, health and recalled count
+are retained when they fit. Longer optional segments are then omitted, and very
+narrow lines are clipped. Wider terminals add no extra fields. Non-UTF-8 stdout
+uses ASCII (`#`, `-`, `[x]`) instead of block glyphs. A renderer error falls back
+to classic output.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
+| `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Current hits, session hit ratio and history; `full` shows per-scope recall/saved diagnostics; `false` hides these (the cumulative chip remains) |
+
+`<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
+`cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /
+`COGNEE_CLAUDE_BACKEND` overrides it. Both use the same purple as the brand.
+
+**Classic presentation and shared health rules.** The examples below describe
+`COGNEE_STATUSLINE_STYLE=classic`: its green dot, cyan/magenta mode labels and
+verbose counters remain available unchanged. The same connection and credential
+rules apply to the default presentation, using a purple square for healthy state.
 
 A connection glyph precedes the line:
 
@@ -727,11 +762,10 @@ A connection glyph precedes the line:
 ✕ (incorrect_cognee_api_key) cognee: … · cloud   # server reachable, but COGNEE_API_KEY was rejected
 ✕ (unreachable) cognee: … · cloud         # server positively absent (connection refused / DNS)
 ✕ (server_error) cognee: … · cloud        # server returned a 5xx
-✕ (not_responding) cognee: … · cloud      # server up, but N consecutive recalls timed out
 ✕ (missing_cognee_base_url) cognee: … · cloud   # COGNEE_BACKEND=cloud is exported, but no COGNEE_BASE_URL is configured
 ```
 
-`●` shows once the server is confirmed up **and** authenticated. On a failure the glyph flips to `✕ (<reason>)` — `incorrect_cognee_api_key` (a missing, wrong, or expired `COGNEE_API_KEY`), `unreachable` (server positively absent: connection refused or DNS failure, including a server that dies mid-session), `server_error` (5xx), or `not_responding` (the server accepts connections but hasn't answered for several consecutive prompts — a single slow response never triggers it, so a busy server is not misreported as unreachable). One reason is special: `missing_cognee_base_url` means the terminal was pinned to cloud with the `COGNEE_BACKEND` switch but no `COGNEE_BASE_URL` is configured anywhere — a misconfiguration the renderer proves directly from the environment, shown immediately rather than after a failed connection attempt. `cognee_needs_python_3_10` is proven the same way: local mode, and the last session start found no Python 3.10–3.14 for the Cognee server to run on (the plugin does not download one) — install an interpreter and start a new session; see [Install](#install). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so the line stays green until a failure is actually observed, and clears back to `●` on the next success. The glyph is read from local state only — no network on refresh. It is **colour-coded**: a bold green `●` when the connection is confirmed good, and a bold red `✕ (<reason>)` — reason included, so the whole verdict reads as one unit — when it is confirmed bad. The LLM-key failure is red as well — the two are told apart by the reason itself (`incorrect_cognee_api_key` for the key this plugin uses to reach the server, `incorrect_llm_api_key` for the key the local server uses to reach the LLM) rather than by colour.
+`●` shows once the server is confirmed up **and** authenticated. On a failure the glyph flips to `✕ (<reason>)` — `incorrect_cognee_api_key` (a missing, wrong, or expired `COGNEE_API_KEY`), `unreachable` (server positively absent: connection refused or DNS failure, including a server that dies mid-session), `server_error` (5xx). Recall timeouts are recorded as latency diagnostics; even repeated timeouts do not mark the server down or block the next prompt. Legacy `not_responding` markers no longer gate recall. One reason is special: `missing_cognee_base_url` means the terminal was pinned to cloud with the `COGNEE_BACKEND` switch but no `COGNEE_BASE_URL` is configured anywhere — a misconfiguration the renderer proves directly from the environment, shown immediately rather than after a failed connection attempt. `cognee_needs_python_3_10` is proven the same way: local mode, and the last session start found no Python 3.10–3.14 for the Cognee server to run on (the plugin does not download one) — install an interpreter and start a new session; see [Install](#install). The state is recorded by the hooks that already talk to the server (SessionStart, and the per-prompt recall), so the line stays green until a failure is actually observed, and clears back to `●` on the next success. The glyph is read from local state only — no network on refresh. It is **colour-coded**: a bold green `●` when the connection is confirmed good, and a bold red `✕ (<reason>)` — reason included, so the whole verdict reads as one unit — when it is confirmed bad. The LLM-key failure is red as well — the two are told apart by the reason itself (`incorrect_cognee_api_key` for the key this plugin uses to reach the server, `incorrect_llm_api_key` for the key the local server uses to reach the LLM) rather than by colour.
 
 | Env var | Default | Effect |
 |---|---|---|
@@ -796,7 +830,8 @@ The status line reads only local state — no network calls on every refresh:
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
 5. LLM key: `llm-state/<session>.json`, then `llm-state.json`
-6. Counts: `recall/<session>.json`, then `last_recall.json`
+6. Counts: `recall/<session>.json`, then `last_recall.json`; cumulative entries from `sessions/<host id>/stats.json`
+7. Recent-turn history: at most 128 KiB each from `recall-audit.log` and `recall-audit.log.1`
 
 ## Logs and state
 
@@ -1039,7 +1074,29 @@ Each operation has its own client timeout, tunable independently (all in seconds
 | `COGNEE_REGISTER_TIMEOUT` | `15` | Client timeout for the session register call (session start and dataset switch) |
 | `COGNEE_REACHABLE_TIMEOUT` | `2` | Client timeout for the `/health` probe that gates a session sync; raise it for a backend whose `/health` is slow, or every sync is skipped as unreachable |
 
+### Capture retry receipts
+
+Cloud captures persist a unique `client_event_id` with each spool entry. When the
+server advertises `capture_idempotency_v1`, the worker pins the complete request
+before its first POST and reuses it after an uncertain response. It requires the
+matching server receipt before removing the queued event. Separate identical
+events keep separate IDs. A changed-payload conflict is retained in `spool/expired`
+for inspection instead of being retried indefinitely.
+
+This guarantee requires a server with the SQL capture-receipt contract. Older or
+unsupported backends keep the existing best-effort verification path. Already
+ambiguous legacy events cannot acquire server idempotency retroactively.
+
 ### Automatic capture controls
+
+Bash capture excludes actual plugin/CLI invocations, not commands that merely
+mention Cognee in a repository path, search pattern or Python import. Successful
+read-only inspections are low signal; grep/rg exit 1 with no stderr is also an
+inspection. Failures, tests/builds, changes, heredocs and compound pipelines are
+retained. Ambiguous sed/awk programs and mutating options are retained conservatively.
+`COGNEE_CAPTURE_DENY_TOOLS=Bash` opts out of Bash capture entirely.
+`/cognee-report` shows per-session captured, skipped-self and skipped-low-signal
+counts. Captured includes buffered writes; confirmed saves remain a separate metric.
 
 Set these in `~/.cognee/.env` or the host environment. Shell environment values
 win over the shared file. Changes apply when a new hook process starts.
@@ -1134,3 +1191,23 @@ version number guarantees deployment. Current 1.6.3 tenants fall back to distill
 and measured session statistics. After deployment, manually review ten sessions for
 usefulness; the extractor keeps its five-lesson per-batch cap. The seven useful entries per session
 criterion is measured across batches and remains a manual rollout acceptance check.
+
+### Evaluating memory delivery
+
+Ask “evaluate Cognee”, “how is Cognee performing”, “is Cognee worth it” or
+“did the update help” to use `/cognee-report`. Standup and digest requests retain
+their activity-summary skills. Matching evaluation prompts receive one short
+report hint within the existing injection budget; `COGNEE_REPORT_HINT=false`
+disables it.
+
+The report leads with **What Cognee did for you**, per-session delivery evidence,
+quality bars, every failed gate and its measured value, then the unchanged grade.
+`report --full` shows the original complete recommendation layout;
+`report --ascii` uses #/- score bars; `--format markdown` fences the bars.
+Delivery segments classify each recall once (zero hit, fully in transcript,
+fully repeated, then new graph/session context). Missing evidence is explicitly
+unmeasured. Historical clipped text gives a lower-bound novelty estimate;
+receipt hashes refer only to the last recorded turn within the selected window.
+Delivery does not prove that memory changed an answer. Failed gates and low-n
+metrics are never hidden or converted to a positive grade.
+The internal team-skills `cognee-eval` is retained only for legacy Notion export.

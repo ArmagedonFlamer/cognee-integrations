@@ -3183,12 +3183,10 @@ def server_presence(
 # Connection states recorded in the (shared) server-ready marker. "ready" means
 # the server is up AND authenticated; the failure states carry the reason shown
 # in the status line as "✕ (<state>)". Any non-"ready" state makes
-# server_ready_hint return False so recall does not attempt against a bad backend.
+# server_ready_hint return False.
 # "unreachable" is reserved for POSITIVE absence (connection refused / DNS /
-# unroutable). "not_responding" is deliberately distinct: the server exists
-# (connections are not refused) but has not answered within budget for N
-# consecutive prompts — written only by the slow-streak escalation (see
-# record_slow_probe), never by a lone timeout.
+# unroutable). "not_responding" remains readable for compatibility with older
+# state files. Timeout streaks no longer write it or prevent another recall.
 CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error", "not_responding")
 
 
@@ -3277,17 +3275,13 @@ def mark_server_ready(service_url: str, version: str = "") -> None:
     write_connection_state("ready", service_url, version=version)
 
 
-# Slow-server hysteresis. A single timeout is "no verdict" and must not touch
-# the connection marker — but N consecutive timeout-only prompts with no
-# success in between are a pattern (wedged server, packet-dropping network),
-# not a blip. This counter, keyed by base_url, is how a lone blip stays
-# invisible while a persistent stall still escalates to a visible "slow" state
-# (and recall backoff) instead of leaving the bar green forever.
+# Slow-server diagnostics, keyed by base_url. Even a repeated timeout is no
+# outage verdict: the counter produces telemetry without gating future recalls.
 _SLOW_STREAK_FILE = _PLUGIN_DIR / "slow-streak.json"
 
 
 def slow_streak_threshold() -> int:
-    """Consecutive timeout-only prompts before escalating to state "slow"."""
+    """Consecutive timeout-only prompts before logging a slow-streak event."""
     try:
         return max(1, int(os.environ.get("COGNEE_SLOW_STREAK_THRESHOLD", "3") or 3))
     except (TypeError, ValueError):
@@ -3324,9 +3318,8 @@ def record_slow_probe(service_url: str) -> int:
     """Count a consecutive no-verdict (timeout) observation; return the streak.
 
     The streak resets itself when the previous tick is older than the window —
-    two timeouts hours apart are noise, not a pattern. The caller escalates to
-    ``write_connection_state("not_responding", ...)`` once the return value
-    reaches ``slow_streak_threshold()``.
+    two timeouts hours apart are noise, not a pattern. The caller logs diagnostics
+    at ``slow_streak_threshold()`` without changing connection health.
     """
     url = _normalize_service_url(service_url)
     now = datetime.now(timezone.utc).timestamp()
@@ -4704,6 +4697,7 @@ def remember_entry_via_http(
     *,
     dataset_id: str | None = None,
     timeout: float = 30.0,
+    client_event_id: str | None = None,
 ) -> dict | None:
     """Store a typed QA/trace entry through the backend API.
 
@@ -4714,12 +4708,22 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    payload = prepare_remember_entry_payload(dataset, session_id, entry, dataset_id=dataset_id)
+    if payload.get("dataset_id") and not client_event_id:
+        require_typed_dataset_id_support()
+    if client_event_id:
+        payload["client_event_id"] = client_event_id
+    return _json_http_request("/api/v1/remember/entry", payload, timeout=timeout)
+
+
+def prepare_remember_entry_payload(
+    dataset: str, session_id: str, entry: dict, *, dataset_id: str | None = None
+) -> dict:
+    """Resolve the write target locally, so a queued capture can pin its request."""
     from _project_memory import route
 
     target = route(dataset, session_id)
     dataset = target["write"]
-    if parse_dataset_id(dataset):
-        require_typed_dataset_id_support()
     entry = _sanitize_value(entry)
     if target.get("node_set") and entry.get("type") in ("qa", "trace"):
         entry = {**entry, "node_set": target["node_set"]}
@@ -4728,11 +4732,7 @@ def remember_entry_via_http(
     # Otherwise a UUID-shaped dataset is sent as an id and a name as a name.
     resolved_id = dataset_id if dataset_id is not None else dataset_id_for(dataset)
     fields = {"dataset_id": resolved_id} if resolved_id else write_fields(dataset)
-    return _json_http_request(
-        "/api/v1/remember/entry",
-        {"entry": entry, **fields, "session_id": session_id},
-        timeout=timeout,
-    )
+    return {"entry": entry, **fields, "session_id": session_id}
 
 
 def get_session_detail_via_http(session_id: str, *, timeout: float = 8.0) -> dict | None:
@@ -4984,6 +4984,7 @@ def recall_via_http(
     dataset_ids: list[str] | None = None,
     code_query: dict | None = None,
     timeout: float = 10.0,
+    evidence_mode: str | None = None,
 ) -> list:
     payload = {
         "query": query,
@@ -4992,6 +4993,10 @@ def recall_via_http(
         "scope": scope,
         "only_context": only_context,
     }
+    if evidence_mode:
+        payload["evidence_mode"] = evidence_mode
+    elif "graph" in scope and only_context:
+        payload["evidence_mode"] = "context"
     # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
     # the scope includes "code": the server rejects code_query without it.
     if code_query:
@@ -5047,7 +5052,8 @@ def recall_via_http(
     def fetch_scopes():
         started = time.monotonic()
         result = _json_http_request("/api/v1/recall", payload, timeout=timeout)
-        result = result if isinstance(result, list) else []
+        if evidence_mode != "index":
+            result = result if isinstance(result, list) else []
         if dataset != write_dataset and "graph" in scope:
             remaining = timeout - (time.monotonic() - started)
             if remaining > 0.05:
@@ -5055,10 +5061,17 @@ def recall_via_http(
                 primary_payload.pop("session_id", None)
                 try:
                     extra = _json_http_request("/api/v1/recall", primary_payload, timeout=remaining)
-                    if isinstance(extra, list):
+                    if isinstance(extra, list) and isinstance(result, list):
                         result.extend(extra)
+                    elif evidence_mode == "index" and isinstance(result, dict):
+                        from _evidence import merge_indexes
+
+                        result = merge_indexes(result, extra)
                 except (OSError, TimeoutError):
-                    pass
+                    if evidence_mode == "index" and isinstance(result, dict):
+                        result["partial"] = True
+            elif evidence_mode == "index" and isinstance(result, dict):
+                result["partial"] = True
         return result
 
     return bounded_call(fetch_scopes, timeout)

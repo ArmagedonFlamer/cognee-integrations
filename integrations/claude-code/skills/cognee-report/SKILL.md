@@ -1,6 +1,6 @@
 ---
 name: cognee-report
-description: Report how Cognee performed in this session or over a date range using local telemetry, including recall hit rate, latency, saves, improves, injected context, and an evidence-based grade.
+description: "Evaluate Cognee from local telemetry. Use for evaluate Cognee, how is Cognee doing or performing, grade, assess or audit Cognee, is Cognee worth it, did the update help, Cognee stats, and memory quality. Reports delivery evidence, quality bars, failed gates and an evidence-based grade. For coding activity summaries use cognee-standup or cognee-digest instead."
 ---
 
 # Cognee performance report
@@ -33,6 +33,12 @@ Token counts are estimates at four characters per token. Older audit logs are
 clipped; say so if exact context counters are unavailable. A recalled or injected
 item is not proof that it changed an answer.
 
+For controlled comparisons of memory behavior, use the separate `outcomes` command
+and [OUTCOMES.md](OUTCOMES.md). It runs repeated matched task trials and reports
+task success, citation correctness, false-memory adoption, tokens/cost and P50/P95
+latency. Keep the 45-second cloud recall limit. Distinguish the offline smoke
+adapter from live model results; missing usage is unmeasured, not zero.
+
 Keep recommendations tied to measured failures. Compare equal windows when
 possible. Do not infer seven-day post-release results from a short smoke test.
 Do not use export flags unless the user asks to export the report.
@@ -46,3 +52,25 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_session_stats.py" --session <host-sessio
 
 These totals cover sessions that **started** within the window; use the evaluator's
 event timestamps for exact calendar-window recall metrics.
+
+For why a specific memory was or was not injected on the last prompt, inspect
+its body-free receipt:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" explain --session-key <host-session-id>
+```
+
+Report per-item reasons (`injected`, `already_in_context`, `over_budget`,
+`own_session`, or source availability status), retrieval rank and priority.
+Versioned citations can be expanded through the search skill. Unaddressable
+legacy/guidance entries have hashes only; do not present those as source citations.
+The receipt describes delivery selection, not whether an item improved the answer.
+
+The default report leads with **What Cognee did for you**, **Where it helped**,
+**Quality**, **Needs attention**, then the unchanged grade. Keep every failed
+gate and its measured value visible, including low-n markers. Show the generated
+bars rather than inventing scores. Use `--ascii` for #/- bars or `--format markdown`
+for fenced bars. `--full` restores the detailed layout and all recommendation
+why/do lines. Session hashes are evidence references, never memory content;
+new-token counts from clipped historical bodies are estimates. Delivery quality
+is not outcome quality, even when a last-turn receipt exists.

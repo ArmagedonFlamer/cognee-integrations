@@ -891,3 +891,111 @@ def test_server_join_dedupes_runs_and_does_not_double_count_child_tokens():
         99,
     )  # the child's tokens are already in its parent
     assert pe.analyze_server("", "key", None, None)["available"] is False
+
+
+def test_bash_capture_report_counts_all_decisions(env):
+    write_jsonl(
+        env.plugin_dir / "hook.log",
+        *[
+            hook(ts(10), "bash_capture_decision", host_session_id=SESSION_UUID, outcome=outcome)
+            for outcome in ("captured", "skipped_self", "skipped_low_signal", "captured")
+        ],
+    )
+    card = env.card()
+    counts = card["bash_capture"][SESSION_UUID]
+    assert counts == {"captured": 2, "skipped_self": 1, "skipped_low_signal": 1}
+    assert sum(counts.values()) == 4
+    text = pe.render_text(card)
+    assert "2 traces captured" in text
+    assert "1 skipped-self" in text and "1 skipped-low-signal" in text
+
+
+def test_value_report_order_bars_gates_and_full_layout(env):
+    write_jsonl(env.plugin_dir / "recall-audit.log", recall(ts(10), context_of(ITEM_A)))
+    card = env.card()
+    # Exercise six simultaneous failures without changing the evaluator's rules.
+    for i, metric in enumerate(card["grade"]["metrics"]):
+        metric["status"] = "fail" if i < 6 else "low_n"
+        metric["value"] = 0.123
+        metric["n"] = 50 if i < 6 else 1
+    card["grade"]["overall"].update(
+        status="gates_failed",
+        score=42,
+        failed_gates=[m["label"] for m in card["grade"]["metrics"][:6]],
+    )
+    card["grade"]["subscores"] = dict.fromkeys(pe.SUBSCORES, 82)
+    text = pe.render_text(card)
+    sections = [
+        "What Cognee did for you",
+        "Where it helped",
+        "Quality",
+        "Needs attention",
+        "NO GRADE",
+    ]
+    positions = [text.index(section) for section in sections]
+    assert positions == sorted(positions)
+    assert SESSION_ID in text and ITEM_A not in text and SECRET not in text
+    attention = text.split("Needs attention\n")[1].split("\n\n")[0].splitlines()
+    assert len(attention) == 6
+    for line, metric in zip(attention, card["grade"]["metrics"]):
+        assert metric["label"] in line
+        assert pe.fmt_value(metric["value"], metric["unit"]) in line
+    assert text.count("[████████░░] 82") == 5
+    ascii_text = pe.render_text(card, ascii=True)
+    assert ascii_text.count("[########--] 82") == 5
+    markdown = pe.render_text(card, markdown=True)
+    fenced = markdown.split("```")[1]
+    assert "[████████░░] 82 reliability" in fenced
+    assert text.rstrip().endswith(pe.grade_headline(card))
+    assert "low-n" in text
+    assert pe.render_text(card, full=True) == pe.render_full_text(card)
+    assert (
+        pe.render_text(card, full=True).split("Recommendations (evidence-backed)")[1]
+        == pe.render_full_text(card).split("Recommendations (evidence-backed)")[1]
+    )
+
+
+def test_delivery_segments_partition_recalls_and_receipts_are_body_free(env):
+    rows = [
+        recall(ts(10, 10), context_of(ITEM_A), hits={"graph_context": 1}),
+        recall(ts(10, 11), context_of(ITEM_A), hits={"graph_context": 1}),
+        recall(ts(10, 12), context_of(ITEM_B), hits={"session": 1}),
+        recall(ts(10, 13), "", hits={}),
+        {**recall(ts(10, 14), "", hits={}), "entries_deduped": 2},
+    ]
+    write_jsonl(env.plugin_dir / "recall-audit.log", *rows)
+    receipt_dir = env.plugin_dir / "sessions" / SESSION_UUID
+    receipt_dir.mkdir(parents=True)
+    (receipt_dir / "injection-receipt.json").write_text(
+        json.dumps(
+            {
+                "recorded_at": iso(ts(10)),
+                "items": [{"reason": "injected", "hash": "a" * 64, "text": SECRET}],
+            }
+        )
+    )
+    card = env.card(ts(10, 0), ts(11, 0))
+    assert card["delivery"]["segments"] == dict.fromkeys(pe._DELIVERY_SEGMENTS, 1)
+    assert sum(card["delivery"]["segments"].values()) == card["recall"]["recalls"]
+    assert card["delivery"]["label"] == "delivery quality"
+    assert card["delivery"]["sessions"][0]["evidence_hashes"] == ["a" * 64]
+    assert SECRET not in json.dumps(card["delivery"])
+    # A later receipt must not be projected back onto an earlier window.
+    old = env.card(ts(9, 0), ts(10, 10))
+    assert old["delivery"]["sessions"] == []
+
+
+def test_default_and_full_cli_flags(env):
+    args = [
+        "report",
+        "--plugin-dir",
+        str(env.plugin_dir),
+        "--claude-dir",
+        str(env.claude_dir),
+        "--no-transcripts",
+    ]
+    code, compact, _ = _run(args + ["--ascii"])
+    assert code == 0 and "What Cognee did for you" in compact and "[----------]" in compact
+    code, full, _ = _run(args + ["--full"])
+    assert code == 0 and "Recommendations (evidence-backed)" in full
+    assert "What Cognee did for you" not in full

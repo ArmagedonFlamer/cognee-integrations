@@ -10,6 +10,36 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.24]
+
+### Changed
+- SDK-1109: purple single-line recall history, hit-rate bar and timestamp-driven drop/shimmer animation; width-aware and ASCII fallbacks, light theme, and byte-compatible classic opt-out.
+
+## [1.6.23]
+
+### Changed
+- SDK-1107/SDK-1108: retain meaningful Bash evidence and lead evaluation reports with delivery, session evidence, quality bars and explicit failed gates; keep the 45-second cloud recall limit.
+
+## [1.6.22]
+
+### Changed
+- Add compact evidence indexes, batch citation expansion, source/version references and body-free per-item injection receipts. Preserve legacy recall and the 45-second cloud limit.
+
+## [1.6.21]
+
+### Changed
+- Resolve cloud-worker review findings: bounded logs/quarantine, immediate explicit sync retries, short busy retries and non-sticky timeout diagnostics.
+
+## [1.6.20]
+
+### Changed
+- Add isolated repeated memory outcome trials with citation scoring, usage accounting and a 45-second recall deadline.
+
+## [1.6.19]
+
+### Changed
+- Persist capture event IDs and replay frozen requests against server-backed idempotent receipts.
+
 ## [1.6.18]
 
 ### Changed

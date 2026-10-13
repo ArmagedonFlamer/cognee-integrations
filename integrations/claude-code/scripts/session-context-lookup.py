@@ -21,6 +21,7 @@ Configuration:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import re
@@ -30,6 +31,7 @@ import time
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 from _cloud_worker import enabled as cloud_enabled
+from _evidence import evidence_items, render_item, write_receipt
 from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
@@ -275,6 +277,18 @@ def _injection_sections(by_source: dict) -> list[dict]:
         ("trace", "=== Prior agent trace ===", 10),
     ):
         for result_id, entry in enumerate(by_source.get(source, [])):
+            items = evidence_items(entry)
+            available = [(render_item(item), item) for item in items or []]
+            available = [(text, item) for text, item in available if text]
+            if (
+                source == "graph_context"
+                and items
+                and any(item.get("status") not in {"unsupported", "error"} for item in items)
+            ):
+                for text, item in available:
+                    add(source, "evidence", title, priority, [text], result_id)
+                    grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
+                continue
             if source == "graph_context":
                 text = str(entry.get("text") or entry.get("content") or "")
                 parts = split_sections(text)
@@ -329,6 +343,22 @@ def _recall_output(context: str, notice: str = "") -> dict:
     )
 
 
+def _report_hint(prompt: str) -> str:
+    if os.environ.get("COGNEE_REPORT_HINT", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return ""
+    import re
+
+    evaluation = re.search(
+        r"\b(?:evaluate|grade|assess|audit|check on)\s+cognee\b|"
+        r"\bhow\s+is\s+cognee\s+(?:doing|performing)\b|"
+        r"\bis\s+cognee\s+worth\s+it\b|\bdid\s+the\s+update\s+help\b|"
+        r"\bcognee\s+stats\b|\bmemory\s+quality\b",
+        prompt,
+        re.IGNORECASE,
+    )
+    return "Use /cognee-report for an evaluation" if evaluation else ""
+
+
 def _bounded_notice(header: str, notice: str) -> str:
     """Keep a visible diagnostic even when a long URL/pattern exhausts the budget."""
     if len(json.dumps(_recall_output(header, notice))) + 1 <= injection_limit():
@@ -349,6 +379,8 @@ def _has_entry_content(entry: dict) -> bool:
     """Return True when a recall entry has useful content to inject."""
     source = entry.get("source", "")
     if source == "graph_context":
+        if evidence_items(entry):
+            return True
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
@@ -765,7 +797,7 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
             continue
         # Work on a copy: the source is re-tagged and the text trimmed below,
         # and the caller's items are not ours to rewrite.
-        r = dict(r)
+        r = copy.deepcopy(r)
         src = r.get("source", "session")
         # The graph scope tags results source=graph; keep the historical
         # graph_context bucket name so the status line, last_recall.json
@@ -773,11 +805,18 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
         if src == "graph":
             r["source"] = "graph_context"
             src = "graph_context"
+            # Preserve the own-session exclusion for structured source passages too.
+            for item in evidence_items(r) or []:
+                if (
+                    session_id
+                    and f"Session ID: {session_id}\n" in str(item.get("text") or "") + "\n"
+                ):
+                    item["status"] = "own_session"
             # Keep the retrieved context only (SDK-904): the question template
             # goes, own-session passages go, the rest is capped and pruned.
             # Unparsed text (a pre-1.6.0 bare context, an unknown template)
             # is injected whole — fail-open, logged.
-            if r.get("text"):
+            if r.get("text") and not any(render_item(i) for i in evidence_items(r) or []):
                 trimmed, guidance, stats = trim_recall_text(
                     str(r.get("text") or ""), prompt, session_id
                 )
@@ -869,7 +908,9 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     entry_count = sum(len(section["entries"]) for section in memory_sections)
     reserved_drop = f"; {entry_count} dropped to fit" if entry_count else ""
     header += reserved_drop
-    sections = [{"entries": [header], "required": True}] + memory_sections
+    hint = _report_hint(prompt)
+    hint_sections = [{"entries": [hint], "required": True, "counted": False}] if hint else []
+    sections = [{"entries": [header], "required": True}] + hint_sections + memory_sections
     if not total and not scope_timeouts:
         sections.append(
             {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
@@ -899,6 +940,18 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
             )
     else:
         full_context, injection_stats = fit_sections(sections, injection_limit(), measure=measure)
+    if _key_safe:
+        try:
+            unavailable = [
+                item
+                for entries in by_source.values()
+                for entry in entries
+                for item in evidence_items(entry) or []
+                if item.get("status") != "available"
+            ]
+            write_receipt(_key, memory_sections, injection_stats, unavailable)
+        except (OSError, ValueError) as exc:
+            hook_log("injection_receipt_failed", {"error": str(exc)[:200]})
     retrieved_counts = counts
     retrieved_total = total
     counts = {source: injection_stats["source_hits"].get(source, 0) for source in counts}
@@ -966,7 +1019,11 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
             "per_scope": per_scope,
             "saves_last_turn": saves_last_turn,
             "elapsed_ms": elapsed_ms(recall_start),
-            **{k: v for k, v in injection_stats.items() if k not in {"entries", "source_hits"}},
+            **{
+                k: v
+                for k, v in injection_stats.items()
+                if k not in {"entries", "source_hits", "deduped_entries"}
+            },
         },
     )
     message = (

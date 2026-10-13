@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
+import unicodedata
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -867,52 +870,283 @@ def _status_prefix(session_id: str = "") -> str:
     return _llm_prefix(session_id) or server
 
 
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_HISTORY_BYTES = 128 * 1024
+_HISTORY_CELLS = 8
+_ANIMATION_SECONDS = 10
+
+
+def _classic_line(session_id: str) -> str:
+    items = (
+        _items_segment(session_id)
+        if _path_safe(session_id) and session_id not in {".", ".."}
+        else ""
+    )
+    return (
+        f"{_status_prefix(session_id)}{items}"
+        f"cognee: {_active_dataset(session_id)} · {_mode_label()}"
+        f"{_credits_segment()}{_recall_segment(session_id)}{_update_segment()}"
+    )
+
+
+def _purple() -> str:
+    return (
+        "\033[38;5;93m"
+        if os.environ.get("COGNEE_STATUSLINE_THEME", "").lower() == "light"
+        else "\033[38;5;141m"
+    )
+
+
+def _unicode_output() -> bool:
+    encoding = str(getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "")
+    return encoding in {"utf8", "utf_8"}
+
+
+def _clean_label(value: str) -> str:
+    return "".join(
+        c if not unicodedata.category(c).startswith("C") else " " for c in _ANSI.sub("", value)
+    )
+
+
+def _ascii_line(value: str) -> str:
+    replacements = {
+        "■": "#",
+        "●": "#",
+        "✕": "[x]",
+        "·": "|",
+        "⬆": "^",
+        "…": "...",
+        "▰": "#",
+        "▱": "-",
+        "▔": "-",
+        "▀": "#",
+        "▄": "#",
+    }
+    for char in "▁▂▃▄▅▆▇█":
+        replacements[char] = "#"
+    return "".join(replacements.get(c, c if ord(c) < 128 else "?") for c in value)
+
+
+def _width(value: str) -> int:
+    return sum(
+        0 if unicodedata.combining(c) else 2 if unicodedata.east_asian_width(c) in {"W", "F"} else 1
+        for c in _ANSI.sub("", value)
+    )
+
+
+def _columns() -> int:
+    try:
+        return max(1, min(120, int(os.environ.get("COLUMNS", "80"))))
+    except (TypeError, ValueError):
+        return 80
+
+
+def _clip(value: str, width: int) -> str:
+    """Last resort for tiny terminals; keep ANSI sequences intact and reset colour."""
+    output, used, offset = [], 0, 0
+    while offset < len(value):
+        ansi = _ANSI.match(value, offset)
+        if ansi:
+            output.append(ansi.group())
+            offset = ansi.end()
+            continue
+        char = value[offset]
+        size = _width(char)
+        if used + size > width:
+            break
+        output.append(char)
+        used += size
+        offset += 1
+    return "".join(output) + _RESET
+
+
+def _timestamp(value) -> float:
+    try:
+        if isinstance(value, (int, float)):
+            return float(value)
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return stamp.timestamp()
+    except (ValueError, TypeError, OverflowError):
+        return 0.0
+
+
+def _hit_count(hits) -> int:
+    return sum(max(0, _int(hits, key)) for key in hits) if isinstance(hits, dict) else 0
+
+
+def _recent_hits(session_id: str, marker: dict) -> list[int]:
+    """Read at most 256 KiB of existing audit data; never write animation state.
+
+    The marker supplies the session identity and final frame. A missing or
+    rotated-away audit gives a shorter stack, not synthetic historical turns.
+    """
+    if not _path_safe(session_id) or session_id in {".", ".."}:
+        return []
+    identity = marker.get("session_id")
+    latest = _timestamp(marker.get("ts"))
+    history = []
+    if identity and latest:
+        for name in ("recall-audit.log", "recall-audit.log.1"):
+            try:
+                with (_RECALL_DIR.parent / name).open("rb") as handle:
+                    handle.seek(0, 2)
+                    start = max(0, handle.tell() - _HISTORY_BYTES)
+                    handle.seek(start)
+                    lines = handle.read(_HISTORY_BYTES).splitlines()
+                    if start:
+                        lines = lines[1:]
+            except OSError:
+                continue
+            for raw in reversed(lines):
+                try:
+                    row = json.loads(raw)
+                except (ValueError, UnicodeError):
+                    continue
+                if not isinstance(row, dict) or row.get("session_id") != identity:
+                    continue
+                stamp = _timestamp(row.get("ts"))
+                if not stamp or stamp > latest or not isinstance(row.get("hits"), dict):
+                    continue
+                history.append((stamp, _hit_count(row["hits"])))
+                if len(history) >= _HISTORY_CELLS:
+                    break
+            if len(history) >= _HISTORY_CELLS:
+                break
+    history.reverse()
+    if isinstance(marker.get("hits"), dict):
+        current = (latest, _hit_count(marker["hits"]))
+        if not history or history[-1] != current:
+            history.append(current)
+    return [hits for _, hits in history[-_HISTORY_CELLS:]]
+
+
+def _animation_phase(marker: dict, now: float) -> int | None:
+    age = now - _timestamp(marker.get("ts"))
+    return (
+        int(age // 2) if _hit_count(marker.get("hits")) and 0 <= age < _ANIMATION_SECONDS else None
+    )
+
+
+def _stack(history: list[int], phase: int | None) -> str:
+    scale = max(history, default=0)
+    cells = [
+        "▁▂▃▄▅▆▇█"[max(0, min(7, round(hits / scale * 8) - 1))] if hits and scale else "·"
+        for hits in history
+    ]
+    if cells and phase is not None and phase < 4:
+        cells[-1] = ("▔", "▀", "▄", "▂")[phase]
+    return "".join(cells)
+
+
+def _ratio_bar(turns: int, with_hits: int, cells: int = 5) -> str:
+    filled = round(max(0, min(with_hits, turns)) / turns * cells) if turns > 0 else 0
+    return "▰" * filled + "▱" * (cells - filled)
+
+
+def _tetris_line(session_id: str, *, now: float | None = None) -> str:
+    purple = _purple()
+    now = time.time() if now is None else now
+    unicode = _unicode_output()
+    columns = _columns()
+    marker = _recall_marker(session_id)
+    phase = _animation_phase(marker, now)
+    health = _status_prefix(session_id)
+    if "●" in health:
+        health = purple + "■" + _RESET + " "
+    # No verdict is not healthy: retain a visible, neutral unknown indicator.
+    health = health or "? "
+    dataset = _clean_label(_active_dataset(session_id))
+    brand = f"{purple}cognee: {dataset}{_RESET} · {purple}{_active_mode()}{_RESET}"
+    stats = (
+        _read_json(_SESSIONS_DIR / session_id / "stats.json")
+        if _path_safe(session_id) and session_id not in {".", ".."}
+        else {}
+    )
+    count = max(0, _int(stats, "entries_injected"))
+    shimmer = purple
+    if phase is not None and phase % 2 == 0:
+        shimmer = (
+            "\033[38;2;208;180;255m"
+            if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}
+            else "\033[38;5;183m"
+        )
+    chip = f"{shimmer}[{count} recalled]{_RESET}"
+    core = health + brand + " · " + chip
+    counts_mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
+    counts, decoration = "", ""
+    if counts_mode not in {"0", "false", "no", "off"} and isinstance(marker.get("hits"), dict):
+        if counts_mode == "full":
+            counts = _recall_diagnostic_segment(marker, marker["hits"])
+        else:
+            counts = f" · {_plural(_hit_count(marker['hits']), 'hit')}"
+            totals = marker.get("session_totals")
+            if isinstance(totals, dict):
+                turns = max(0, _int(totals, "turns"))
+                with_hits = max(0, min(turns, _int(totals, "turns_with_hits")))
+                counts += f" · {with_hits}/{turns} turns"
+                decoration = _ratio_bar(turns, with_hits)
+            history = _stack(_recent_hits(session_id, marker), phase)
+            decoration = " ".join(part for part in (history, decoration) if part)
+            if decoration:
+                decoration = f" {purple}{decoration}{_RESET}"
+    credits, update = _credits_segment(), _update_segment()
+    # Decorations go before data. Long diagnostics remain available in classic
+    # mode; essential identity/health/counts survive ordinary 60-column widths.
+    candidates = [
+        core + counts + decoration + credits + update,
+        core + counts + credits + update,
+        core + credits + update,
+        core,
+        health + f"{purple}{dataset} · {_active_mode()}{_RESET} " + chip,
+    ]
+    if columns <= 60:
+        candidates = candidates[1:]
+    if not unicode:
+        candidates = [_ascii_line(candidate) for candidate in candidates]
+    for candidate in candidates:
+        if _width(candidate) <= columns:
+            return candidate
+    # Long dataset/reason or a very small terminal: preserve a single safe line.
+    return _clip(candidates[-1], columns)
+
+
 def main() -> None:
-    # Windows defaults stdio to the locale code page (e.g. cp1252), which cannot
-    # encode the status glyphs (●, ✕, ⬆) — the write raises UnicodeEncodeError,
-    # the renderer exits non-zero, and Claude Code drops the whole status line
-    # (cp1252 also fails to decode a non-ASCII cwd from the JSON context). Force
-    # UTF-8 on both streams: the context is UTF-8 and our output is UTF-8. Runtime
-    # reconfigure overrides the inherited encoding; best-effort, since a stream
-    # that can't be reconfigured (e.g. a captured stdout under test) is left as-is,
-    # matching this renderer's never-raise design.
-    for _stream in (sys.stdin, sys.stdout):
+    classic = os.environ.get("COGNEE_STATUSLINE_STYLE", "").strip().lower() == "classic"
+    # Preserve legacy UTF-8 output in classic mode. The default deliberately
+    # honours non-UTF-8 stdout and uses ASCII instead of changing its encoding.
+    for stream in (sys.stdin, sys.stdout) if classic else (sys.stdin,):
         try:
-            _stream.reconfigure(encoding="utf-8")
+            stream.reconfigure(encoding="utf-8")
         except Exception:
             pass
-
-    ctx = {}
     try:
-        ctx = json.load(sys.stdin)  # consume stdin as required by Claude Code
+        ctx = json.load(sys.stdin)
     except Exception:
         ctx = {}
     if not isinstance(ctx, dict):
         ctx = {}
-
-    cwd = str(
-        ctx.get("cwd")
-        or (ctx.get("workspace") or {}).get("current_dir")
-        or (ctx.get("workspace") or {}).get("project_dir")
-        or ""
-    )
-    if not _plugin_enabled(cwd):
-        # Plugin uninstalled/disabled but files linger: drop our own statusLine
-        # entry and render nothing so the line disappears.
-        _evict_own_statusline()
+    workspace = ctx.get("workspace") if isinstance(ctx.get("workspace"), dict) else {}
+    cwd = str(ctx.get("cwd") or workspace.get("current_dir") or workspace.get("project_dir") or "")
+    session_id = str(ctx.get("session_id") or "")
+    if not _path_safe(session_id) or session_id in {".", ".."}:
+        session_id = ""
+    try:
+        if not _plugin_enabled(cwd):
+            _evict_own_statusline()
+            return
+        try:
+            line = _classic_line(session_id) if classic else _tetris_line(session_id)
+        except Exception:
+            line = _classic_line(session_id)
+        line = line.replace("\n", " ").replace("\r", " ")
+        if not classic and not _unicode_output():
+            line = _ascii_line(line)
+        sys.stdout.write(line)
+    except Exception:
+        # Status must never interrupt the host, including partially written markers.
         return
-
-    # Host session id: markers are per-integration, not per-session, so both the
-    # LLM-key verdict and the recall counts are attributed before being shown.
-    _session_id = str(ctx.get("session_id") or "")
-    # The recall counts belong to the cognee core info, so they sit right after the
-    # mode; the update nudge stays last because it is a transient banner, not part
-    # of the steady-state line.
-    sys.stdout.write(
-        f"{_status_prefix(_session_id)}{_items_segment(_session_id)}"
-        f"cognee: {_active_dataset(_session_id)} · {_mode_label()}"
-        f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
-    )
 
 
 if __name__ == "__main__":

@@ -20,6 +20,12 @@ COUNTERS = (
     "improves_landed",
     "digest_items_used",
     "traces_skipped",
+    "traces_skipped_self",
+    "traces_skipped_low_signal",
+    "bash_post_tool_use",
+    "bash_traces_captured",
+    "bash_skipped_self",
+    "bash_skipped_low_signal",
     "distillation_entries",
     "recall_ms",
 )

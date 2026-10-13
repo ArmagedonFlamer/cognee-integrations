@@ -7,6 +7,8 @@ import os
 EVENT_NAMES = {
     "hook:auto_memory_setup_failed": "cloud.auto_memory_setup_failed",
     "hook:injection_ledger_failed": "cloud.injection_ledger_failed",
+    "hook:injection_receipt_failed": "recall.injection_receipt_failed",
+    "hook:bash_capture_decision": "capture.bash_decision",
     "hook:trace_skipped_low_signal": "capture.trace_skipped_low_signal",
     "hook:capture_spooled": "cloud.capture_spooled",
     "hook:cloud_work_expired": "cloud.cloud_work_expired",

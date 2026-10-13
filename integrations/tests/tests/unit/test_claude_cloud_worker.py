@@ -65,6 +65,78 @@ def test_ambiguous_success_is_verified_before_retry(worker):
     assert worker.drain(lambda _: pytest.fail("duplicate POST"), verify=lambda _: True) == 1
 
 
+def test_idempotent_retry_keeps_event_and_request_after_lost_ack(worker):
+    paths = [
+        worker.enqueue("ds", "sid", {"type": "qa", "answer": "same"}, "answer") for _ in range(2)
+    ]
+    ids = [worker.read(path)["client_event_id"] for path in paths]
+    assert len(set(ids)) == 2
+    requests = []
+    receipts = {}
+
+    def prepare(item):
+        return {
+            "idempotent": True,
+            "request": {"entry": item["entry"], "client_event_id": item["client_event_id"]},
+        }
+
+    def send(item):
+        requests.append(item["request"])
+        event = item["client_event_id"]
+        if event not in receipts:
+            receipts[event] = {"entry_id": event, "client_event_id": event, "payload_hash": "hash"}
+            raise TimeoutError("server committed before ACK")
+        return receipts[event]
+
+    def never_verify(_):
+        pytest.fail("content matching must not suppress distinct events")
+
+    assert worker.drain(send, prepare=prepare, verify=never_verify) == 0
+    first = worker.read(paths[0])
+    assert first["ambiguous"] and first["idempotent"]
+    assert (
+        worker.drain(send, now=first["next_attempt"] + 1, verify=never_verify, prepare=prepare) == 1
+    )
+    second = worker.read(paths[1])
+    assert (
+        worker.drain(send, now=second["next_attempt"] + 1, verify=never_verify, prepare=prepare)
+        == 1
+    )
+    assert requests[0] == requests[1] and requests[2] == requests[3]
+    assert len(receipts) == 2 and not any(p.exists() for p in paths)
+
+
+def test_idempotent_capture_requires_matching_receipt(worker):
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "saved?"}, "answer")
+    item = worker.read(path)
+    item["idempotent"] = True
+    worker.atomic_json(path, item)
+    assert worker.drain(lambda _: {"entry_id": "old-server-response"}) == 0
+    assert path.exists()
+
+
+def test_changed_payload_conflict_is_quarantined(worker):
+    import io
+    import urllib.error
+
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "changed"}, "answer")
+    item = worker.read(path)
+    item["idempotent"] = True
+    worker.atomic_json(path, item)
+
+    def conflict(_):
+        raise urllib.error.HTTPError(
+            "https://example",
+            409,
+            "conflict",
+            {},
+            io.BytesIO(b'{"code":"capture_payload_conflict"}'),
+        )
+
+    assert worker.drain(conflict) == 0
+    assert not path.exists() and (path.parent / "expired" / path.name).exists()
+
+
 def test_wrong_tenant_or_principal_never_receives_spool(worker, monkeypatch):
     path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "private"}, "answer")
     monkeypatch.setattr(
