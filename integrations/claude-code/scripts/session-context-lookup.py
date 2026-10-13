@@ -343,6 +343,22 @@ def _recall_output(context: str, notice: str = "") -> dict:
     )
 
 
+def _report_hint(prompt: str) -> str:
+    if os.environ.get("COGNEE_REPORT_HINT", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return ""
+    import re
+
+    evaluation = re.search(
+        r"\b(?:evaluate|grade|assess|audit|check on)\s+cognee\b|"
+        r"\bhow\s+is\s+cognee\s+(?:doing|performing)\b|"
+        r"\bis\s+cognee\s+worth\s+it\b|\bdid\s+the\s+update\s+help\b|"
+        r"\bcognee\s+stats\b|\bmemory\s+quality\b",
+        prompt,
+        re.IGNORECASE,
+    )
+    return "Use /cognee-report for an evaluation" if evaluation else ""
+
+
 def _bounded_notice(header: str, notice: str) -> str:
     """Keep a visible diagnostic even when a long URL/pattern exhausts the budget."""
     if len(json.dumps(_recall_output(header, notice))) + 1 <= injection_limit():
@@ -892,7 +908,9 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     entry_count = sum(len(section["entries"]) for section in memory_sections)
     reserved_drop = f"; {entry_count} dropped to fit" if entry_count else ""
     header += reserved_drop
-    sections = [{"entries": [header], "required": True}] + memory_sections
+    hint = _report_hint(prompt)
+    hint_sections = [{"entries": [hint], "required": True, "counted": False}] if hint else []
+    sections = [{"entries": [header], "required": True}] + hint_sections + memory_sections
     if not total and not scope_timeouts:
         sections.append(
             {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}

@@ -10,9 +10,10 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [1.6.23]
 
-- SDK-1107: capture Bash work in Cognee repositories, exclude actual plugin invocations and proven read-only inspections, and report body-free per-session capture decisions.
+### Changed
+- SDK-1107/SDK-1108: retain meaningful Bash evidence and lead evaluation reports with delivery, session evidence, quality bars and explicit failed gates; keep the 45-second cloud recall limit.
 
 ## [1.6.22]
 

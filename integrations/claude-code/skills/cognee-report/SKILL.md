@@ -1,6 +1,6 @@
 ---
 name: cognee-report
-description: Report how Cognee performed in this session or over a date range using local telemetry, including recall hit rate, latency, saves, improves, injected context, and an evidence-based grade.
+description: "Evaluate Cognee from local telemetry. Use for evaluate Cognee, how is Cognee doing or performing, grade, assess or audit Cognee, is Cognee worth it, did the update help, Cognee stats, and memory quality. Reports delivery evidence, quality bars, failed gates and an evidence-based grade. For coding activity summaries use cognee-standup or cognee-digest instead."
 ---
 
 # Cognee performance report
@@ -65,3 +65,12 @@ Report per-item reasons (`injected`, `already_in_context`, `over_budget`,
 Versioned citations can be expanded through the search skill. Unaddressable
 legacy/guidance entries have hashes only; do not present those as source citations.
 The receipt describes delivery selection, not whether an item improved the answer.
+
+The default report leads with **What Cognee did for you**, **Where it helped**,
+**Quality**, **Needs attention**, then the unchanged grade. Keep every failed
+gate and its measured value visible, including low-n markers. Show the generated
+bars rather than inventing scores. Use `--ascii` for #/- bars or `--format markdown`
+for fenced bars. `--full` restores the detailed layout and all recommendation
+why/do lines. Session hashes are evidence references, never memory content;
+new-token counts from clipped historical bodies are estimates. Delivery quality
+is not outcome quality, even when a last-turn receipt exists.

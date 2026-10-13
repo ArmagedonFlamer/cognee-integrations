@@ -1155,3 +1155,23 @@ version number guarantees deployment. Current 1.6.3 tenants fall back to distill
 and measured session statistics. After deployment, manually review ten sessions for
 usefulness; the extractor keeps its five-lesson per-batch cap. The seven useful entries per session
 criterion is measured across batches and remains a manual rollout acceptance check.
+
+### Evaluating memory delivery
+
+Ask “evaluate Cognee”, “how is Cognee performing”, “is Cognee worth it” or
+“did the update help” to use `/cognee-report`. Standup and digest requests retain
+their activity-summary skills. Matching evaluation prompts receive one short
+report hint within the existing injection budget; `COGNEE_REPORT_HINT=false`
+disables it.
+
+The report leads with **What Cognee did for you**, per-session delivery evidence,
+quality bars, every failed gate and its measured value, then the unchanged grade.
+`report --full` shows the original complete recommendation layout;
+`report --ascii` uses #/- score bars; `--format markdown` fences the bars.
+Delivery segments classify each recall once (zero hit, fully in transcript,
+fully repeated, then new graph/session context). Missing evidence is explicitly
+unmeasured. Historical clipped text gives a lower-bound novelty estimate;
+receipt hashes refer only to the last recorded turn within the selected window.
+Delivery does not prove that memory changed an answer. Failed gates and low-n
+metrics are never hidden or converted to a positive grade.
+The internal team-skills `cognee-eval` is retained only for legacy Notion export.
