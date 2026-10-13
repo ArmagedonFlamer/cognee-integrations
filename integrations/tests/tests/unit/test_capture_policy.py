@@ -228,3 +228,49 @@ def test_malformed_json_list_is_reported_with_its_variable_name(policy, monkeypa
     with pytest.raises(policy.CapturePatternError, match="COGNEE_CAPTURE_TOOLS"):
         policy.allow_tool("Bash", {"command": "git status"})
     assert "COGNEE_CAPTURE_TOOLS" in policy.capture_pattern_error()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat ~/.aws/credentials",
+        "less $HOME/.ssh/id_rsa",
+        'head "${HOME}/.npmrc"',
+        "source .env.local",
+        "grep KEY .env",
+        "wc -l < .env",
+    ],
+)
+def test_shell_reads_of_secret_files_are_not_captured(policy, command):
+    assert not policy.allow_tool("Bash", {"command": command})
+    assert policy.allow_tool("Bash", {"command": "cat README.md"})
+
+
+def test_aws_and_npm_credential_files_are_scrubbed(policy):
+    aws = (
+        "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+    )
+    npmrc = "//registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789\n"
+    scrubbed = policy.redact(aws + npmrc)
+    for secret in ("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI", "npm_abcdef"):
+        assert secret not in scrubbed
+
+
+def test_a_glob_python_cannot_compile_is_a_pattern_error_not_a_crash(policy, monkeypatch):
+    # Python 3.9's fnmatch passes a reversed range such as ``[C-A]`` to ``re``,
+    # which raises re.error; 3.10+ make it match nothing. Simulate the 3.9 error
+    # so every interpreter checks it surfaces as the usual pattern error, for tool
+    # patterns and for deny-path globs alike.
+    import re
+
+    def broken(name, pattern):
+        raise re.error("bad character range C-A at position 5")
+
+    monkeypatch.setattr(policy.fnmatch, "fnmatchcase", broken)
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", '["[C-A]*"]')
+    with pytest.raises(policy.CapturePatternError, match="not a valid glob"):
+        policy.allow_tool("Bash", {"command": "ls"})
+    monkeypatch.delenv("COGNEE_CAPTURE_TOOLS")
+    with pytest.raises(policy.CapturePatternError, match="not a valid glob"):
+        policy.allow_tool("Read", {"file_path": "/project/main.py"})
