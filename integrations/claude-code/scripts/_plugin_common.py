@@ -4704,6 +4704,7 @@ def remember_entry_via_http(
     *,
     dataset_id: str | None = None,
     timeout: float = 30.0,
+    client_event_id: str | None = None,
 ) -> dict | None:
     """Store a typed QA/trace entry through the backend API.
 
@@ -4714,12 +4715,22 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    payload = prepare_remember_entry_payload(dataset, session_id, entry, dataset_id=dataset_id)
+    if payload.get("dataset_id") and not client_event_id:
+        require_typed_dataset_id_support()
+    if client_event_id:
+        payload["client_event_id"] = client_event_id
+    return _json_http_request("/api/v1/remember/entry", payload, timeout=timeout)
+
+
+def prepare_remember_entry_payload(
+    dataset: str, session_id: str, entry: dict, *, dataset_id: str | None = None
+) -> dict:
+    """Resolve the write target locally, so a queued capture can pin its request."""
     from _project_memory import route
 
     target = route(dataset, session_id)
     dataset = target["write"]
-    if parse_dataset_id(dataset):
-        require_typed_dataset_id_support()
     entry = _sanitize_value(entry)
     if target.get("node_set") and entry.get("type") in ("qa", "trace"):
         entry = {**entry, "node_set": target["node_set"]}
@@ -4728,11 +4739,7 @@ def remember_entry_via_http(
     # Otherwise a UUID-shaped dataset is sent as an id and a name as a name.
     resolved_id = dataset_id if dataset_id is not None else dataset_id_for(dataset)
     fields = {"dataset_id": resolved_id} if resolved_id else write_fields(dataset)
-    return _json_http_request(
-        "/api/v1/remember/entry",
-        {"entry": entry, **fields, "session_id": session_id},
-        timeout=timeout,
-    )
+    return {"entry": entry, **fields, "session_id": session_id}
 
 
 def get_session_detail_via_http(session_id: str, *, timeout: float = 8.0) -> dict | None:

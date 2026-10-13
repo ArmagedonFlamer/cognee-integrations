@@ -1039,6 +1039,19 @@ Each operation has its own client timeout, tunable independently (all in seconds
 | `COGNEE_REGISTER_TIMEOUT` | `15` | Client timeout for the session register call (session start and dataset switch) |
 | `COGNEE_REACHABLE_TIMEOUT` | `2` | Client timeout for the `/health` probe that gates a session sync; raise it for a backend whose `/health` is slow, or every sync is skipped as unreachable |
 
+### Capture retry receipts
+
+Cloud captures persist a unique `client_event_id` with each spool entry. When the
+server advertises `capture_idempotency_v1`, the worker pins the complete request
+before its first POST and reuses it after an uncertain response. It requires the
+matching server receipt before removing the queued event. Separate identical
+events keep separate IDs. A changed-payload conflict is retained in `spool/expired`
+for inspection instead of being retried indefinitely.
+
+This guarantee requires a server with the SQL capture-receipt contract. Older or
+unsupported backends keep the existing best-effort verification path. Already
+ambiguous legacy events cannot acquire server idempotency retroactively.
+
 ### Automatic capture controls
 
 Set these in `~/.cognee/.env` or the host environment. Shell environment values

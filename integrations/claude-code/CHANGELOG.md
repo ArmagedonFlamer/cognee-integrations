@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.19]
+
+### Changed
+- Persist capture event IDs and replay frozen requests against server-backed idempotent receipts.
+
 ## [1.6.18]
 
 ### Changed

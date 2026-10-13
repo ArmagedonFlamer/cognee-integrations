@@ -155,6 +155,7 @@ def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
         "attempts": 0,
         "next_attempt": 0,
         "ambiguous": False,
+        "client_event_id": str(uuid.uuid4()),
     }
     path = root() / "spool" / f"{time.time_ns():020d}-{key}-{uuid.uuid4().hex}.json"
     atomic_json(path, item)
@@ -215,7 +216,7 @@ def _retry(path: Path, item: dict, now: float, error: str) -> None:
     log("cloud_work_retry", file=path.name, attempts=item["attempts"], error=error[:200])
 
 
-def drain(send, *, now: float = None, verify=None) -> int:
+def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
     """Ordered, bounded replay. Keep failures, quarantine malformed/expired events."""
     from _capture_policy import allow_tool, capture_enabled, redact
 
@@ -243,8 +244,18 @@ def drain(send, *, now: float = None, verify=None) -> int:
             ):
                 _expire(path, "capture_disabled_by_policy")
                 continue
-            item["entry"] = redact(item["entry"])
-            already_stored = bool(item.get("ambiguous") and verify and verify(item))
+            redacted = redact(item["entry"])
+            if item.get("request") and redacted != item["entry"]:
+                # Never change a payload after its event ID may have committed.
+                _expire(path, "capture_policy_changed")
+                continue
+            item["entry"] = redacted
+            item.setdefault("client_event_id", str(uuid.uuid4()))
+            if prepare and not item.get("request"):
+                item.update(prepare(item))
+            already_stored = bool(
+                not item.get("idempotent") and item.get("ambiguous") and verify and verify(item)
+            )
             if not already_stored:
                 # Write before POST: an interrupted worker must verify before replay.
                 item["ambiguous"] = True
@@ -254,6 +265,12 @@ def drain(send, *, now: float = None, verify=None) -> int:
                     result.get("entry_id") or result.get("ok") is True
                 ):
                     raise RuntimeError("capture response did not confirm acceptance")
+                if item.get("idempotent") and (
+                    result.get("client_event_id") != item["client_event_id"]
+                    or not result.get("entry_id")
+                    or not result.get("payload_hash")
+                ):
+                    raise RuntimeError("capture response did not confirm the event receipt")
             from _plugin_common import bump_turn_counter, clear_payment_required
             from _session_stats import update
 
@@ -275,6 +292,14 @@ def drain(send, *, now: float = None, verify=None) -> int:
                 verified=already_stored,
             )
         except Exception as exc:
+            if getattr(exc, "code", None) == 409 and item.get("idempotent"):
+                try:
+                    conflict = json.loads(exc.read()).get("code") == "capture_payload_conflict"
+                except (AttributeError, ValueError, OSError):
+                    conflict = False
+                if conflict:
+                    _expire(path, "capture_payload_conflict")
+                    continue
             if getattr(exc, "code", None) == 402:
                 from _plugin_common import record_payment_required
 
@@ -479,8 +504,9 @@ def run() -> None:
         dataset_id_for,
         get_session_detail_via_http,
         mark_server_ready,
+        prepare_remember_entry_payload,
         refresh_credits,
-        remember_entry_via_http,
+        require_typed_dataset_id_support,
         set_session_key,
         write_connection_state,
         write_fields,
@@ -495,12 +521,35 @@ def run() -> None:
 
         sweep_stale_state()
         last_health = 0.0
+        capture_capability = {"checked_at": 0.0, "target": None, "supported": False}
+
+        def prepare(item):
+            set_session_key(item["host_key"])
+            current_target = target()
+            if (
+                capture_capability["target"] != current_target
+                or time.monotonic() - capture_capability["checked_at"] > 60
+            ):
+                health = _json_http_request("/health", method="GET", timeout=4)
+                capture_capability.update(
+                    checked_at=time.monotonic(),
+                    target=current_target,
+                    supported="capture_idempotency_v1" in (health or {}).get("capabilities", []),
+                )
+            # An ambiguous legacy POST cannot acquire a new idempotency key retroactively.
+            idempotent = capture_capability["supported"] and not item.get("ambiguous")
+            payload = prepare_remember_entry_payload(
+                item["dataset"], item["session_id"], item["entry"]
+            )
+            if idempotent:
+                payload["client_event_id"] = item["client_event_id"]
+            elif payload.get("dataset_id"):
+                require_typed_dataset_id_support()
+            return {"request": payload, "idempotent": idempotent}
 
         def send(item):
             set_session_key(item["host_key"])
-            return remember_entry_via_http(
-                item["dataset"], item["session_id"], item["entry"], timeout=10
-            )
+            return _json_http_request("/api/v1/remember/entry", item["request"], timeout=10)
 
         def verify(item):
             set_session_key(item["host_key"])
@@ -547,7 +596,7 @@ def run() -> None:
                             write_connection_state(health, url)
                     refresh_credits()
                     maintain_sessions()
-                drain(send, verify=verify)
+                drain(send, verify=verify, prepare=prepare)
                 process_improves(improve)
                 from _context_cache import refresh_pending, schedule_active_refreshes
 
