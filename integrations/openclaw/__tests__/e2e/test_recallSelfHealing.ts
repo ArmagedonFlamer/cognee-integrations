@@ -272,3 +272,30 @@ describe("slow streak", () => {
     }
   });
 });
+
+describe("a dataset created after the first prompt", () => {
+  it("is found once the cached miss expires, instead of staying invisible until a restart", async () => {
+    datasetState = {};
+    mockListDatasets.mockResolvedValue([]); // fresh install: nothing yet
+    mockRecall.mockResolvedValue([{ id: "r1", text: "hello", score: 0.9 }]);
+    const { emit } = createApi();
+
+    await emit("before_prompt_build", { prompt: "what did we discuss" }, { agentId: "will" });
+    expect(mockRecall).not.toHaveBeenCalled();
+
+    // The first capture or sync creates it on the server.
+    mockListDatasets.mockResolvedValue([{ id: "new-id", name: "testds" }]);
+    await emit("before_prompt_build", { prompt: "what did we discuss" }, { agentId: "will" });
+    expect(mockListDatasets).toHaveBeenCalledTimes(1); // the miss is still cached: no listing per prompt
+
+    const now = Date.now();
+    const clock = jest.spyOn(Date, "now").mockReturnValue(now + 31_000);
+    try {
+      await emit("before_prompt_build", { prompt: "what did we discuss" }, { agentId: "will" });
+    } finally {
+      clock.mockRestore();
+    }
+    expect(mockListDatasets).toHaveBeenCalledTimes(2);
+    expect(mockRecall).toHaveBeenCalledWith(expect.objectContaining({ datasetIds: ["new-id"] }));
+  });
+});

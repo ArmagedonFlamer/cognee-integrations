@@ -500,3 +500,27 @@ describe("session-end improve on an exhausted LLM budget", () => {
     }
   });
 });
+
+describe("capture dataset on session start", () => {
+  it("creates the capture dataset before the session's first write, so the server records it on the session", async () => {
+    const ensureDataset = jest.fn(async (_name: string) => "ds-created");
+    (CogneeHttpClient as unknown as jest.Mock).mockImplementation(() => ({
+      rememberEntry: mockRememberEntry,
+      registerAgent: mockRegisterAgent,
+      unregisterAgent: mockUnregisterAgent,
+      improve: mockImprove,
+      health: mockHealth,
+      setApiKey: jest.fn(),
+      ensureDataset,
+    }));
+    const { emit } = createApi();
+    const ctx = { agentId: "will", sessionId: "fresh" };
+    await emit("before_prompt_build", { prompt: "first prompt ever" }, ctx);
+    await emit("llm_output", { assistantTexts: ["hello"] }, ctx);
+    await flush();
+
+    expect(ensureDataset).toHaveBeenCalledWith("testds");
+    expect(ensureDataset.mock.invocationCallOrder[0]!).toBeLessThan(mockRememberEntry.mock.invocationCallOrder[0]!);
+    expect(ensureDataset.mock.invocationCallOrder[0]!).toBeLessThan(mockRegisterAgent.mock.invocationCallOrder[0]!);
+  });
+});

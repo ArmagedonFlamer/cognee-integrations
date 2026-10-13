@@ -156,7 +156,15 @@ const memoryCogneePlugin = {
     // Lazy dataset-ID resolver: fires listDatasets() once per unknown name,
     // caches the result so subsequent prompts skip the API call.
     const datasetIdLookups = new Map<string, Promise<string | undefined>>();
+    /** When a lookup last found no dataset by that name; such a miss is retried after the TTL. */
+    const datasetIdMisses = new Map<string, number>();
+    const DATASET_MISS_TTL_MS = 30_000;
     function resolveDatasetIdFromServer(name: string): Promise<string | undefined> {
+      const missedAt = datasetIdMisses.get(name);
+      if (missedAt !== undefined && Date.now() - missedAt >= DATASET_MISS_TTL_MS) {
+        datasetIdMisses.delete(name);
+        datasetIdLookups.delete(name);
+      }
       if (!datasetIdLookups.has(name)) {
         datasetIdLookups.set(name, client.listDatasets()
           .then(async (datasets) => {
@@ -165,6 +173,11 @@ const memoryCogneePlugin = {
               api.logger.info?.(`cognee-openclaw: resolved existing dataset "${name}" → ${match.id}`);
               const state = await loadDatasetState();
               await saveDatasetState({ ...state, [name]: match.id });
+            } else {
+              // Not there yet (a fresh install's first prompt): remember the
+              // miss only briefly, or the dataset the first capture or sync
+              // creates would stay invisible to recall until a restart.
+              datasetIdMisses.set(name, Date.now());
             }
             return match?.id;
           })
@@ -1498,6 +1511,22 @@ const memoryCogneePlugin = {
     // awaits this set (per session) before calling improve.
     const pendingStores = new Map<string, Set<Promise<void>>>();
 
+    /** Create-or-return the conversation's capture dataset and cache its id. Never throws. */
+    async function ensureCaptureDataset(rawAgentId: string | undefined, ctx: ConvoCtx): Promise<void> {
+      const name = captureDatasetName(rawAgentId, ctx);
+      try {
+        const id = await client.ensureDataset(name);
+        if (!id) return;
+        const state = await loadDatasetState();
+        if (state[name] !== id) await saveDatasetState({ ...state, [name]: id });
+        if (!multiScope && name === cfg.datasetName && !datasetId) datasetId = id;
+        datasetIdMisses.delete(name);
+        datasetIdLookups.delete(name);
+      } catch (e) {
+        api.logger.warn?.(`cognee-openclaw: could not create dataset "${name}" (captures go on; the server records no dataset for them): ${String(e)}`);
+      }
+    }
+
     // Last bridge target written per registered conversation, so the sidecar
     // file is rewritten only when a dataset switch actually moved it.
     const exitBridgeTargets = new Map<string, string>();
@@ -1690,6 +1719,12 @@ const memoryCogneePlugin = {
             // its own client, and only key-authenticated calls work on servers
             // without the login route (cloud pods).
             if (resolvedApiKey) client.setApiKey(resolvedApiKey);
+            // The capture dataset must exist before this session's first write:
+            // /remember/entry does not create it, and the server records a
+            // session's dataset from the write that opens it, so a session that
+            // starts on a fresh install would stay dataset-less (invisible to
+            // the dataset-scoped recap) and recall could not resolve it either.
+            await ensureCaptureDataset(ctx.agentId, ctx);
             const { connectionId } = await client.registerAgent({
               agentSessionName,
               sessionId: ctx.sessionId,

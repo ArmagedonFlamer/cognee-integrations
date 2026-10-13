@@ -169,6 +169,15 @@ server is away, the recap tool, and a boot that never downloads an interpreter.
   `memory_switch_dataset` bridged the old session into the old dataset and left the
   new one unbridged. The plugin now keeps the current pair next to the watcher's
   pidfile.
+- **Recall finds a dataset created after the gateway started.** A lookup that found
+  no dataset by name (a fresh install's first prompt, before anything was stored)
+  was cached for the gateway's lifetime, so recall stayed off until a restart even
+  after memory had been written. A miss is now retried after 30 s.
+- **Sessions are recorded with their dataset from the first turn.** `/remember/entry`
+  does not create the capture dataset, and the server records a session's dataset
+  from the write that opens it, so the first session on a fresh install was stored
+  without one. Session start now creates the capture dataset (create-or-return)
+  before the first capture, which also lets recall and recaps find it at once.
 - **A configured `apiKey` is honored at session end.** The session-end chain
   resolved the key without the configured one, so a cached minted key in
   `~/.cognee-plugin/api_key.json` could win over it.
