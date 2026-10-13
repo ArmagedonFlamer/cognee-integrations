@@ -82,6 +82,81 @@ def test_failed_refresh_preserves_last_good_cache(cache, monkeypatch):
     assert cache.cache_path("ds").with_suffix(".wanted.json").exists()
 
 
+@pytest.mark.parametrize("capable", [False, True])
+def test_summary_and_usage_require_advertised_server_capability(cache, capable):
+    calls = []
+
+    def request(path, body, **kwargs):
+        if path == "/health":
+            return {
+                "version": "1.6.4",
+                "capabilities": ["session_summary_v1", "context_usage_v1"] if capable else [],
+            }
+        calls.append(body)
+        if body["scope"] == ["session_context"]:
+            return [
+                {
+                    "source": "session_context",
+                    "content": "",
+                    "session_summary": {
+                        "goal": "Safe outbox",
+                        "outcome": "Atomic cursor implemented",
+                        "open_items": ["Crash test"],
+                    },
+                }
+            ]
+        return []
+
+    data = cache.build("ds", "old", "new-host", request=request)
+    assert ("Atomic cursor" in data["rendered"]) is capable
+    # A background rebuild alone never counts as use.
+    assert calls[-1]["record_context_usage"] is False
+    assert data["server_version"] == "1.6.4"
+    cache.build("ds", "old", "new-host", request=request, record_usage=True)
+    assert calls[-1]["record_context_usage"] is capable
+
+
+def test_usage_is_stamped_only_after_a_session_receives_guidance(cache, monkeypatch):
+    def request(path, body, **kwargs):
+        if path == "/health":
+            return {"version": "1.6.4", "capabilities": ["context_usage_v1"]}
+        if body["scope"] == ["session_context"]:
+            return [{"source": "session_context", "content": "Use Postgres for transactions."}]
+        return []
+
+    data = cache.build("ds", "old", "new-host", request=request)
+    assert data["guidance_hashes"]
+    wanted = cache.cache_path("ds").with_suffix(".wanted.json")
+    assert not wanted.exists()
+
+    assert "Postgres" in cache.inject("ds", "new-host")
+    assert json.loads(wanted.read_text())["record_usage"] is True
+    # A plain refresh queued afterwards keeps the pending stamp.
+    cache.request_refresh("ds", "old", "new-host")
+    assert json.loads(wanted.read_text())["record_usage"] is True
+
+    seen = []
+    monkeypatch.setattr(cache, "build", lambda *a, **k: seen.append(k.get("record_usage")))
+    cache.refresh_pending()
+    assert seen == [True]
+    assert not wanted.exists()
+
+
+def test_digest_without_guidance_requests_no_usage_stamp(cache):
+    cache.build(
+        "ds",
+        "old",
+        "new-host",
+        request=lambda path, body, **k: (
+            [{"source": "graph", "text": "The project uses an outbox."}]
+            if body and body.get("scope") == ["graph"]
+            else []
+        ),
+    )
+    assert "outbox" in cache.inject("ds", "new-host")
+    assert not cache.cache_path("ds").with_suffix(".wanted.json").exists()
+
+
 def test_old_rendering_hashes_request_a_fresh_digest(cache):
     data = cache.build("ds", "old", "new-host", request=lambda *a, **k: [])
     data.pop("entry_format")

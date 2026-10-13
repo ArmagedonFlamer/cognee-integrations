@@ -33,10 +33,14 @@ def cache_path(dataset: str) -> Path:
     return root() / "context-cache" / (safe + ".json")
 
 
-def request_refresh(dataset: str, session_id: str = "", host_key: str = "") -> None:
+def request_refresh(
+    dataset: str, session_id: str = "", host_key: str = "", *, record_usage: bool = False
+) -> None:
     from _plugin_common import get_session_key
 
     path = cache_path(dataset).with_suffix(".wanted.json")
+    # A pending usage stamp survives a later plain refresh request.
+    record_usage = record_usage or bool(read(path).get("record_usage"))
     atomic_json(
         path,
         {
@@ -45,6 +49,7 @@ def request_refresh(dataset: str, session_id: str = "", host_key: str = "") -> N
             "host_key": host_key or get_session_key(),
             "target": target(),
             "requested_at": time.time(),
+            "record_usage": record_usage,
         },
     )
 
@@ -78,6 +83,10 @@ def inject(dataset: str, session_key: str, *, source: str = "") -> str:
     from _session_stats import update
 
     update(session_key, digest_items_used=len(data.get("entry_hashes", [])))
+    if data.get("guidance_hashes"):
+        # Guidance reached a session: let the worker's next refresh stamp it as
+        # used. Background rebuilds alone never count as use.
+        request_refresh(dataset, data.get("source_session_id", ""), session_key, record_usage=True)
     return rendered
 
 
@@ -107,7 +116,9 @@ def _sections(rows: list, session_id: str) -> list:
     return renderer._injection_sections(buckets)
 
 
-def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict:
+def build(
+    dataset: str, session_id: str, host_key: str, *, request=None, record_usage: bool = False
+) -> dict:
     from _plugin_common import _json_http_request, dataset_id_for, read_connection_state
     from _session_stats import previous, summary
     from _session_stats import read as read_stats
@@ -121,6 +132,24 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
         if "dataset_id" in scoped
         else {"datasets": [dataset]}
     )
+    version = read_connection_state().get("version", "")
+    capabilities = []
+    try:
+        health = request("/health", None, method="GET", timeout=4)
+        if isinstance(health, dict):
+            version = str(health.get("version") or version)
+            capabilities = health.get("capabilities") or []
+            atomic_json(
+                root() / "server-capabilities.json",
+                {
+                    "version": version,
+                    "capabilities": capabilities,
+                    "target": target(),
+                    "checked_at": time.time(),
+                },
+            )
+    except Exception:
+        pass
     base = {"query": QUERY, **fields, "top_k": 5, "only_context": True}
     rows = request(
         "/api/v1/recall",
@@ -141,12 +170,33 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
                 "scope": ["session_context"],
                 "session_id": session_id,
                 "context_profile": "agent",
+                "record_context_usage": record_usage and "context_usage_v1" in capabilities,
             },
             timeout=8,
         )
         if isinstance(guidance, list):
             rows.extend(guidance)
     sections = _sections(rows, session_id)
+    if "session_summary_v1" in capabilities:
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("session_summary"), dict):
+                summary_data = row["session_summary"]
+                paragraph = " ".join(
+                    label + ": " + ("; ".join(value) if isinstance(value, list) else str(value))
+                    for key, label in (
+                        ("goal", "Goal"),
+                        ("outcome", "Outcome"),
+                        ("decisions", "Decisions"),
+                        ("open_items", "Open items"),
+                    )
+                    for value in [summary_data.get(key)]
+                    if value
+                )
+                if paragraph and not RAW_HISTORY.search(paragraph):
+                    sections.insert(
+                        0, {"title": "=== Last session ===", "entries": [paragraph], "priority": 45}
+                    )
+                break
     current = read_stats(host_key)
     last = summary(
         current if current.get("ended_at") else previous(host_key, dataset, target()["base_url"])
@@ -156,13 +206,6 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
         header += "\n" + last
     rendered, stats = fit_sections([{"entries": [header], "required": True}] + sections, 6000)
     kept = set(stats["entries"])
-    version = read_connection_state().get("version", "")
-    try:
-        health = request("/health", None, method="GET", timeout=4)
-        if isinstance(health, dict):
-            version = str(health.get("version") or version)
-    except Exception:
-        pass
     data = {
         "entry_format": ENTRY_FORMAT,
         "rendered": rendered,
@@ -196,7 +239,12 @@ def refresh_pending() -> None:
         try:
             cached = load(item["dataset"])
             sid = item.get("session_id") or cached.get("source_session_id", "")
-            build(item["dataset"], sid, item.get("host_key", ""))
+            build(
+                item["dataset"],
+                sid,
+                item.get("host_key", ""),
+                record_usage=bool(item.get("record_usage")),
+            )
             # A request arriving during refresh must survive.
             if read(path).get("requested_at") == item.get("requested_at"):
                 path.unlink()

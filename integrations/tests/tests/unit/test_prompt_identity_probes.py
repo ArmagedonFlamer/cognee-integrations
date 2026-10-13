@@ -27,3 +27,7 @@ def test_other_callers_still_resolve_identity(
 
     assert pc.load_resolved()["user_id"] == "user-123"
     assert request.call_count == (1 if connection_has_identity else 2)
+    assert request.call_args_list[0].args[0].startswith("/api/v1/agents/connections/me")
+    assert request.call_args_list[0].kwargs["timeout"] == (
+        15.0 if suite.name == "claude-code" else 10.0
+    )
