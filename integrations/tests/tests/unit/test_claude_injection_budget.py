@@ -229,3 +229,24 @@ def test_status_counts_only_injected_results(lookup, monkeypatch, case, expected
     else:
         assert "1 dropped to fit" in context and "1 dropped to fit" in messages[0]
     assert len(json.dumps(run.output)) + 1 <= 1024
+
+
+def test_many_evictions_measure_the_hook_envelope_only_twice():
+    measurements = []
+
+    def measure(text):
+        measurements.append(len(text))
+        return len(json.dumps({"additionalContext": text, "notice": "🧠\\" * 50})) + 1
+
+    text, stats = budget.fit_sections(
+        [
+            {"entries": ["Cognee memory"], "required": True},
+            {"title": "Facts", "entries": [f"fact-{i}: " + "🧠\\" * 100 for i in range(2000)]},
+        ],
+        9000,
+        measure=measure,
+    )
+    assert len(measurements) == 2
+    assert measurements[0] == len("Cognee memory")
+    assert 0 < stats["entries_kept"] < 2000
+    assert len(json.dumps({"additionalContext": text, "notice": "🧠\\" * 50})) + 1 <= 9000
