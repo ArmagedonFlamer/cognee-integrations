@@ -2593,34 +2593,47 @@ def main():
             output["systemMessage"] = hso["systemMessage"]
     except Exception as exc:
         hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
-    if payload.get("source") != "resume":
-        from _session_stats import previous, summary
-        from _session_stats import update as update_stats
+    try:
+        if payload.get("source") != "resume":
+            from _session_stats import previous, summary
+            from _session_stats import update as update_stats
 
-        config = load_config()
-        key = get_session_key()
-        last_line = summary(previous(key, get_dataset(config), str(config.get("base_url") or "")))
-        update_stats(
-            key,
-            metadata={
-                "dataset": get_dataset(config),
-                "server_url": str(config.get("base_url") or ""),
-            },
-        )
-        if last_line:
-            hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
-            hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + last_line).strip()
-            hso["additionalContext"] = (
-                str(hso.get("additionalContext") or "") + "\n" + last_line
-            ).strip()
-            output["systemMessage"] = hso["systemMessage"]
+            config = load_config()
+            key = get_session_key()
+            last_line = summary(
+                previous(key, get_dataset(config), str(config.get("base_url") or ""))
+            )
+            update_stats(
+                key,
+                metadata={
+                    "dataset": get_dataset(config),
+                    "server_url": str(config.get("base_url") or ""),
+                },
+            )
+            if last_line:
+                hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+                hso["systemMessage"] = (
+                    str(hso.get("systemMessage") or "") + "\n" + last_line
+                ).strip()
+                hso["additionalContext"] = (
+                    str(hso.get("additionalContext") or "") + "\n" + last_line
+                ).strip()
+                output["systemMessage"] = hso["systemMessage"]
+    except Exception as exc:
+        # The recap is a courtesy; it must never cost the startup output.
+        hook_log("session_stats_failed", {"op": "recap", "error": str(exc)[:200]})
     output = _apply_memory_preference(output)
-    if cloud_enabled() and payload.get("source") != "resume":
-        from _context_cache import inject as inject_digest
-
+    if payload.get("source") != "resume":
         try:
-            digest = inject_digest(
-                get_dataset(load_config()), get_session_key(), source=payload.get("source", "")
+            from _cloud_worker import enabled as cloud_enabled
+            from _context_cache import inject as inject_digest
+
+            digest = (
+                inject_digest(
+                    get_dataset(load_config()), get_session_key(), source=payload.get("source", "")
+                )
+                if cloud_enabled()
+                else ""
             )
             if digest:
                 # Lead with the digest, keeping what is already there (the
