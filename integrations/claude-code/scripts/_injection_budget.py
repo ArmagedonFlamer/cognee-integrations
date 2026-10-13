@@ -25,18 +25,37 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
     ``measure`` can account for the complete serialized hook envelope and notices.
     """
     kept = [[str(e) for e in s.get("entries", []) if str(e).strip()] for s in sections]
-    total = sum(len(entries) for entries in kept)
+    total = sum(
+        len(values)
+        for section, values in zip(sections, kept)
+        if not section.get("required") and section.get("counted", True)
+    )
 
-    def render():
+    def render(values=None):
         blocks = []
-        for section, entries in zip(sections, kept):
+        for section, entries in zip(sections, kept if values is None else values):
             if entries:
                 title = section.get("title", "")
                 blocks.append((title + "\n" if title else "") + "\n\n".join(entries))
         return "\n\n".join(blocks)
 
-    text = render()
     size = measure or (lambda value: max(len(value), len(json.dumps(value)) - 2))
+    # An indivisible entry that cannot fit even alone must not evict every
+    # smaller result before it is itself removed (e.g. one enormous code fence).
+    required = [
+        values if section.get("required") else [] for section, values in zip(sections, kept)
+    ]
+    for i, section in enumerate(sections):
+        if section.get("required"):
+            continue
+        eligible = []
+        for entry in kept[i]:
+            candidate = list(required)
+            candidate[i] = [entry]
+            if size(render(candidate)) <= budget:
+                eligible.append(entry)
+        kept[i] = eligible
+    text = render()
     while size(text) > budget:
         choices = [
             i for i, section in enumerate(sections) if kept[i] and not section.get("required")
@@ -52,9 +71,22 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
         if not section.get("required")
         for entry in values
     ]
+    source_ids = {}
+    for section, values in zip(sections, kept):
+        source = section.get("source")
+        if source:
+            source_ids.setdefault(source, set()).update(
+                section["entry_ids"][entry] for entry in values
+            )
+    entries_kept = sum(
+        len(values)
+        for section, values in zip(sections, kept)
+        if not section.get("required") and section.get("counted", True)
+    )
     return text, {
         "context_chars": len(text),
-        "entries_kept": len(entries),
-        "entries_dropped": total - sum(len(values) for values in kept),
+        "entries_kept": entries_kept,
+        "entries_dropped": total - entries_kept,
         "entries": entries,
+        "source_hits": {source: len(ids) for source, ids in source_ids.items()},
     }
