@@ -2831,6 +2831,22 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _utf8_stdout() -> bool:
+    """Make stdout UTF-8 where possible; report False if it cannot carry the bars.
+
+    Windows pipes default to a legacy code page (cp1252 on Python 3.9), which cannot
+    encode the quality-bar glyphs and would crash the whole report.
+    """
+    encoding = (getattr(sys.stdout, "encoding", "") or "").lower().replace("-", "")
+    if encoding == "utf8":
+        return True
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        return True
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "outcomes":
@@ -2880,7 +2896,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     output = (
         json.dumps(card, indent=2, default=str)
         if args.format == "json"
-        else render_text(card, args.format == "markdown", full=args.full, ascii=args.ascii)
+        else render_text(
+            card,
+            args.format == "markdown",
+            full=args.full,
+            ascii=args.ascii or not _utf8_stdout(),
+        )
     )
     sys.stdout.write(output if output.endswith("\n") else output + "\n")
     if args.out:
