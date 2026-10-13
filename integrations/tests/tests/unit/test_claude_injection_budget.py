@@ -198,7 +198,7 @@ def test_large_real_results_retain_whole_facts(lookup, monkeypatch, source, head
 
 
 def test_fenced_code_is_one_atomic_entry(lookup):
-    block = "```python\nfirst()\nsecond()\n```"
+    block = "```python\n" + "first()\n" * 150 + "second()\n```"
     assert lookup._line_entries("fact\n" + block + "\nafter") == ["fact", block, "after"]
 
 
