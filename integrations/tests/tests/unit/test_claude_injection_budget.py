@@ -254,11 +254,14 @@ def test_many_evictions_measure_the_hook_envelope_only_twice():
 
 def test_graph_sections_render_shared_headings_once(lookup):
     facts = "\n".join(f"- entity-{i} relates to useful concept-{i}" for i in range(60))
-    passages = "first passage\n---\nsecond passage"
+    passages = "first passage\n\nstill the first passage\n---\nsecond passage"
     sections = lookup._injection_sections(
         {
             "graph_context": [
-                {"text": f"## Relevant passages\n{passages}\n\n## Related facts\n{facts}"}
+                {
+                    "text": "Global retrieval context\n\n"
+                    f"## Relevant passages\n{passages}\n\n## Related facts\n{facts}"
+                }
             ]
         }
     )
@@ -272,3 +275,6 @@ def test_graph_sections_render_shared_headings_once(lookup):
         "[cognee-memory]" not in entry for section in sections for entry in section["entries"]
     )
     assert "entity-59 relates to useful concept-59" in text
+    assert passages in text
+    assert text.index("Global retrieval context") < text.index("## Related facts")
+    assert text.index("Global retrieval context") < text.index("## Relevant passages")
