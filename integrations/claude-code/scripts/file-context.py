@@ -472,12 +472,15 @@ def build_context(file_path: str, lane: dict, resolved: dict, deadline: float) -
         return "", stats
     fitted, budget_stats = fit_sections(
         [{"entries": [f"## Cognee: about {os.path.basename(file_path)}"], "required": True}]
+        + [{"entries": [block], "priority": len(sections) - i} for i, block in enumerate(sections)]
         + [
-            {"entries": block.splitlines(), "priority": len(sections) - i}
-            for i, block in enumerate(sections)
-        ]
-        + [{"entries": ["(Cognee file context; use cognee-search.sh for more.)"], "priority": 0}],
-        injection_limit() - 256,
+            {
+                "entries": ['(For more: cognee-search.sh "<symbol>" --code)'],
+                "priority": 0,
+            }
+        ],
+        injection_limit(),
+        measure=lambda text: len(json.dumps(_output(text))) + 1,
     )
     stats.update({k: v for k, v in budget_stats.items() if k != "entries"})
     return fitted, stats
@@ -490,17 +493,17 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _output(context: str) -> dict:
+    return {
+        "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "additionalContext": context,
+        }
+    }
+
+
 def emit(context: str) -> None:
-    print(
-        json.dumps(
-            {
-                "hookSpecificOutput": {
-                    "hookEventName": "PreToolUse",
-                    "additionalContext": context,
-                }
-            }
-        )
-    )
+    print(json.dumps(_output(context)))
 
 
 def run(payload: dict) -> str:
