@@ -2581,16 +2581,17 @@ def main():
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     try:
-        from _auto_memory import configure as configure_auto_memory
+        from _auto_memory import sync as sync_auto_memory
         from _cloud_worker import enabled as cloud_enabled
 
-        if cloud_enabled():
-            notice = configure_auto_memory()
-            if notice:
-                hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
-                hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + notice).strip()
-                output["systemMessage"] = hso["systemMessage"]
-    except (OSError, ValueError) as exc:
+        # Native memory is only taken over in cloud mode; anywhere else, give back
+        # a setting we changed earlier.
+        notice = sync_auto_memory(cloud_enabled())
+        if notice:
+            hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+            hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + notice).strip()
+            output["systemMessage"] = hso["systemMessage"]
+    except Exception as exc:
         hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
     if payload.get("source") != "resume":
         from _session_stats import previous, summary

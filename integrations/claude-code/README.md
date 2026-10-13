@@ -416,8 +416,11 @@ In cloud mode, SessionStart sets `autoMemoryEnabled: false` in
 preserved and reported once. The change takes effect next session. Set
 `COGNEE_DISABLE_AUTO_MEMORY=false` to restore the previous value the next time
 SessionStart runs. The status-line cleanup also restores it when the plugin is
-removed or disabled, provided its renderer still exists and runs. A later user
-choice is always preserved. `cognee-doctor.sh` reports the setting and ownership.
+removed or disabled, provided its renderer still exists and runs, and when the plugin
+next starts outside cloud mode. A later user choice is always preserved, including
+removing the key. The file is edited in place: a symlinked `settings.json`, its
+permissions and its indentation are kept. `cognee-doctor.sh` reports the setting
+and ownership.
 See [Claude Code's auto-memory settings](https://code.claude.com/docs/en/memory#enable-or-disable-auto-memory).
 
 `COGNEE_PREFER_MEMORY=false` independently disables the memory preference instruction.
