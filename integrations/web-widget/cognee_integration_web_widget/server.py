@@ -21,8 +21,8 @@ widget on your own site::
             data-site-id="acme" data-api="http://127.0.0.1:8000"></script>
 
 Endpoints:
-    POST /api/chat    -> {answer, citations, session_id}
-    POST /api/forget  -> clear one conversation's memory
+    POST /api/chat    -> {answer, citations, session_id}, or 429 when rate-limited
+    POST /api/forget  -> clear one conversation's memory, or 429 when rate-limited
     GET  /            -> demo "ask our docs" page
     GET  /widget.js   -> the embeddable snippet
 """
@@ -42,7 +42,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
@@ -50,6 +50,7 @@ from pydantic import BaseModel
 from .adapter import ChatMemoryAdapter
 from .docs_drift import drift_for_items
 from .docs_ingest import item_name, render_for_ingest, upload_filename
+from .rate_limit import RateLimits, client_ip, parse_trusted_proxies
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
@@ -120,6 +121,48 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Per-visitor and global request limits on the public endpoints; see
+# rate_limit.py. Read once at startup, so a bad value stops the backend here.
+limits = RateLimits.from_env()
+TRUSTED_PROXIES = parse_trusted_proxies(os.getenv("WIDGET_TRUSTED_PROXIES", ""))
+
+_LIMIT_MESSAGES = {
+    "visitor": "You've asked a lot of questions in a short time. Please try again in {wait}.",
+    "global": "The assistant is getting a lot of questions right now. Please try again in {wait}.",
+}
+
+
+def _wait_text(seconds: int) -> str:
+    if seconds < 60:
+        return "a minute"
+    minutes = -(-seconds // 60)
+    if minutes < 120:
+        return f"{minutes} minutes"
+    return f"{-(-minutes // 60)} hours"
+
+
+def _rate_limited(request: Request, *, chat: bool) -> Optional[JSONResponse]:
+    """A 429 for a request over its limit, or ``None`` to let it through.
+
+    Checked before anything reaches cognee. Only chat counts against the
+    global limit, since that is what spends tenant credits.
+    """
+    peer = request.client.host if request.client else "unknown"
+    ip = client_ip(peer, request.headers.get("x-forwarded-for", ""), TRUSTED_PROXIES)
+    hit = limits.check(ip, counts_globally=chat)
+    if hit is None:
+        return None
+    return JSONResponse(
+        {
+            "error": "rate_limited",
+            "scope": hit.scope,
+            "message": _LIMIT_MESSAGES[hit.scope].format(wait=_wait_text(hit.retry_after)),
+            "retry_after": hit.retry_after,
+        },
+        status_code=429,
+        headers={"Retry-After": str(hit.retry_after)},
+    )
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -136,7 +179,10 @@ class ForgetRequest(BaseModel):
 
 
 @app.post("/api/chat")
-async def chat(req: ChatRequest) -> JSONResponse:
+async def chat(req: ChatRequest, request: Request) -> JSONResponse:
+    limited = _rate_limited(request, chat=True)
+    if limited is not None:
+        return limited
     conversation = adapter.conversation(
         site_id=req.site_id, visitor_id=req.visitor_id, conversation_id=req.conversation_id
     )
@@ -169,7 +215,10 @@ async def chat(req: ChatRequest) -> JSONResponse:
 
 
 @app.post("/api/forget")
-async def forget(req: ForgetRequest) -> JSONResponse:
+async def forget(req: ForgetRequest, request: Request) -> JSONResponse:
+    limited = _rate_limited(request, chat=False)
+    if limited is not None:
+        return limited
     conversation = adapter.conversation(
         site_id=req.site_id, visitor_id=req.visitor_id, conversation_id=req.conversation_id
     )

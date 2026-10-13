@@ -404,6 +404,8 @@
     return row;
   }
   var pendingChat = null;
+  // Shown when the backend refuses a request over its rate limit without saying more.
+  var LIMITED = "You've asked a lot of questions in a short time. Please try again later.";
   function renderChat() {
     var chat = activeChat();
     log.textContent = "";
@@ -411,7 +413,8 @@
       if (m.role === "user") {
         addUser(m.text);
       } else {
-        addBot(m.text);
+        var row = addBot(m.text);
+        if (m.notice) row.style.color = "var(--muted)";
         addCitations(m.citations);
       }
     });
@@ -526,7 +529,14 @@
         }),
       });
       var data = await res.json();
-      reply = { role: "bot", text: data.answer || "…", citations: data.citations || [] };
+      if (res.status === 429) {
+        // Over a rate limit: the backend says which and when to try again.
+        reply = { role: "bot", text: data.message || LIMITED, citations: [], notice: true };
+      } else if (!res.ok) {
+        reply = { role: "bot", text: "Sorry — I couldn't reach memory right now.", citations: [] };
+      } else {
+        reply = { role: "bot", text: data.answer || "…", citations: data.citations || [] };
+      }
     } catch (e) {
       reply = { role: "bot", text: "Sorry — I couldn't reach memory right now.", citations: [] };
     } finally {
@@ -586,8 +596,9 @@
   root.querySelector("#cognee-forget").onclick = async function () {
     closeMenu();
     var chat = activeChat();
+    var limited = null;
     try {
-      await fetch(API + "/api/forget", {
+      var res = await fetch(API + "/api/forget", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -596,8 +607,18 @@
           site_id: SITE_ID,
         }),
       });
+      if (res.status === 429) {
+        limited = LIMITED; // kept even if the body cannot be read
+        limited = (await res.json()).message || LIMITED;
+      }
     } catch (e) {
       /* nothing on screen to keep either way */
+    }
+    if (limited) {
+      // Nothing was forgotten, so the chat stays where it is.
+      var notice = addBot(limited);
+      notice.style.color = "var(--muted)";
+      return;
     }
     chats.list = chats.list.filter(function (c) {
       return c.id !== chat.id;
