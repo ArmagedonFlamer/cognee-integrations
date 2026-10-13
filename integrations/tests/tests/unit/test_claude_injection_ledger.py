@@ -38,6 +38,22 @@ def test_guidance_injected_only_when_changed_including_reversion(ledger):
     assert render("Use SQLite")["entries_kept"] == 1
 
 
+def test_partial_guidance_change_settles_after_one_injection(ledger):
+    # Large guidance is split into several entries; changing one of them must
+    # not make the unchanged ones look new on every later prompt.
+    def render(*values):
+        return ledger.render(
+            "session-a", "header", [{"entries": list(values), "priority": 30}], 9000
+        )[1]
+
+    assert render("G1", "G2")["entries_kept"] == 2
+    changed = render("G1", "G2b")
+    assert (changed["entries_kept"], changed["entries_deduped"]) == (1, 1)
+    settled = render("G1", "G2b")
+    assert (settled["entries_kept"], settled["entries_deduped"]) == (0, 2)
+    assert render("G1", "G2")["entries_kept"] == 1
+
+
 def test_only_fitted_entries_are_recorded(ledger):
     sections = [{"entries": ["tiny", "x" * 10000], "priority": 40}]
     ledger.render("session-a", "header", sections, 100)

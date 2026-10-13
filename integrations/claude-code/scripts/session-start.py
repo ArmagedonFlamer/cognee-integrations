@@ -2320,8 +2320,18 @@ async def _start(payload: dict | None = None) -> dict:
     os.environ["COGNEE_SESSION_KEY"] = session_key
     if payload.get("source") in {"clear", "compact"}:
         from _injection_ledger import reset as reset_injection_ledger
+        from _injection_ledger import session_dir as ledger_dir
 
-        reset_injection_ledger(session_key)
+        try:
+            reset_injection_ledger(session_key)
+        except Exception as exc:
+            # Never block startup on the ledger. A stale ledger would claim the
+            # forgotten context is still present, so drop it instead.
+            hook_log("injection_ledger_failed", {"op": "reset", "error": str(exc)[:200]})
+            try:
+                (ledger_dir(session_key) / "injected.json").unlink()
+            except (OSError, ValueError):
+                pass
 
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written

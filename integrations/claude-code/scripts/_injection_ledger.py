@@ -84,6 +84,9 @@ def render(
         guidance = set(data.get("guidance_hashes", []))
         filtered, duplicate_count, candidates = [], 0, 0
         new_guidance = set()
+        # Guidance hashes this response saw that are already in context: with the
+        # new ones kept below, they are the full guidance set Claude now holds.
+        present_guidance = set()
         deduped_entries = []
         for section in sections:
             entries = []
@@ -91,6 +94,8 @@ def render(
             for entry in section.get("entries", []):
                 digest = entry_hash(entry)
                 if digest in (guidance if is_guidance else seen):
+                    if is_guidance:
+                        present_guidance.add(digest)
                     duplicate_count += int(section.get("counted", True))
                     deduped_entries.append(entry)
                     continue
@@ -112,7 +117,9 @@ def render(
         kept = {entry_hash(entry) for entry in stats["entries"]}
         data["entry_hashes"] = sorted(set(data.get("entry_hashes", [])) | kept)
         if new_guidance & kept:
-            data["guidance_hashes"] = sorted(new_guidance & kept)
+            # Record all guidance now in context, not just the changed part:
+            # otherwise unchanged entries look new on every later prompt.
+            data["guidance_hashes"] = sorted(present_guidance | (new_guidance & kept))
         atomic_json(path, data)
         stats.update(
             entries_deduped=duplicate_count,
