@@ -23,6 +23,7 @@ import urllib.error
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
 from _plugin_common import (
     append_warmup_entry,
     bump_save_counter,
@@ -65,6 +66,11 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
     here leaves behind. Without server auth there is nothing to submit to —
     the session-end sync picks the session up once a key is available.
     """
+    if cloud_enabled():
+        from _cloud_worker import request_improve
+
+        request_improve(dataset, session_id, reason)
+        return
     improve_start = time.monotonic()
     throttled = improve_throttle_reason(session_id)
     if throttled:
@@ -146,6 +152,27 @@ def _load_session() -> tuple[str, str, str]:
     return session_id, dataset, user_id
 
 
+def _low_signal_trace(tool: str, output, status: str) -> bool:
+    if tool in {"Read", "Grep", "Glob"}:
+        return True
+    if tool != "Bash" or status != "success":
+        return False
+    if isinstance(output, dict):
+        if output.get("exit_code", 0) or output.get("exitCode", 0) or output.get("interrupted"):
+            return False
+        # Claude Code adds flags such as isImage/noOutputExpected; only the
+        # output streams decide. A result without either stream is unknown.
+        if "stdout" not in output and "stderr" not in output:
+            return False
+        if output.get("isImage") or output.get("is_error"):
+            return False
+        return (
+            not str(output.get("stdout") or "").strip()
+            and not str(output.get("stderr") or "").strip()
+        )
+    return output is None or (isinstance(output, str) and not output.strip())
+
+
 async def _store_tool_call(payload: dict) -> None:
     """Write a PostToolUse event as a TraceEntry."""
     tool_name = payload.get("tool_name", "unknown")
@@ -178,6 +205,13 @@ async def _store_tool_call(payload: dict) -> None:
             return
 
     status, error_message = _infer_status(payload)
+    if cloud_enabled() and _low_signal_trace(tool_name, tool_output, status):
+        from _plugin_common import get_session_key
+        from _session_stats import update
+
+        update(get_session_key(), traces_skipped=1)
+        hook_log("trace_skipped_low_signal", {"tool": tool_name})
+        return
 
     # Normalize method_params: small structured dict is ideal; fall back
     # to a truncated-string dict if we got something non-JSON-safe.
@@ -219,6 +253,13 @@ async def _store_tool_call(payload: dict) -> None:
         # LLM summary can flip this in a future config.
         "generate_feedback_with_llm": False,
     }
+
+    if cloud_enabled(runtime):
+        from _cloud_worker import enqueue
+
+        enqueue(dataset, session_id, entry, "trace")
+        bump_save_counter(session_id, "trace", buffered=True)
+        return
 
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe — a stale marker
@@ -337,6 +378,14 @@ async def _store_assistant_stop(payload: dict) -> None:
         "answer": msg,
         "context": redact(pending.get("context", "")),
     }
+
+    if cloud_enabled(runtime):
+        from _cloud_worker import enqueue, request_improve
+
+        enqueue(dataset, session_id, entry, "answer")
+        request_improve(dataset, session_id, "stop")
+        bump_save_counter(session_id, "answer", buffered=True)
+        return
 
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe): buffer the
@@ -470,7 +519,8 @@ def main():
                 asyncio.run(_store_assistant_stop(payload))
                 # End-of-turn code-graph freshness: independent of whether an
                 # assistant message was stored (edits happen either way).
-                _maybe_reingest_code_repo(payload)
+                if not cloud_enabled():
+                    _maybe_reingest_code_repo(payload)
             else:
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:

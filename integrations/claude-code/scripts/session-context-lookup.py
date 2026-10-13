@@ -29,6 +29,7 @@ import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
 from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
@@ -398,12 +399,15 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     # tests/test_connection_target_match.py).
     prior_same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
     prior_state = str(prior.get("state") or ("ready" if prior.get("ready_at") else ""))
+    # Ignore legacy not_responding markers: a slow recall is not an outage.
     known_bad = prior_same_target and prior_state in (
         "auth_failed",
         "unreachable",
         "server_error",
-        "not_responding",
     )
+    if known_bad and cloud_enabled(runtime):
+        hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
+        return _outage_output(prior_state)
     if known_bad:
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
         # auth_failed instead of being masked as "ready" by an unauthenticated
@@ -508,11 +512,11 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     # very same interval. COGNEE_RECALL_TIMEOUT is NOT read here — it still
     # bounds the explicit cognee-search path (_cognee_client.py).
     #
-    # The default (20s) is sized for the graph scope, the only expensive call.
+    # Defaults are 45s for cloud and 20s for local graph recall.
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
-    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 20.0)
+    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 45.0 if cloud_enabled(runtime) else 20.0)
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
     # Respect the shared circuit breaker: when the server has been failing (tripped
@@ -738,18 +742,10 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
             except Exception:
                 pass
         elif scope_timeouts and not scopes_answered_err:
-            # Every attempted scope timed out and none got an HTTP answer: no
-            # verdict on its own, but N consecutive such prompts are a pattern.
-            # Escalate to "not_responding" — deliberately distinct from
-            # "unreachable" (positively absent: refused/DNS): the server exists
-            # but is not answering. A lone timeout never writes anything.
+            # Timeouts describe latency, not an outage. Keep streak diagnostics
+            # without writing a failure marker that would block later recalls.
             streak = record_slow_probe(service_url)
             if streak >= slow_streak_threshold():
-                write_connection_state(
-                    "not_responding",
-                    service_url,
-                    detail="%d consecutive timeout-only prompts" % streak,
-                )
                 hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
     except Exception as exc:
         hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})
@@ -865,6 +861,8 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
         header += f"; {segment}"
 
+    if scope_timeouts:
+        header += "; memory recall timed out"
     memory_sections = _injection_sections(by_source)
     # Reserve the largest possible drop notice before fitting. Replacing it
     # with the actual smaller count (or removing it) can only shrink output.
@@ -872,18 +870,35 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     reserved_drop = f"; {entry_count} dropped to fit" if entry_count else ""
     header += reserved_drop
     sections = [{"entries": [header], "required": True}] + memory_sections
-    if not total:
+    if not total and not scope_timeouts:
         sections.append(
             {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
         )
     if dataset_hint:
         sections.append({"entries": [dataset_hint], "priority": 0, "counted": False})
     notice = _bounded_notice(header, notice)
-    full_context, injection_stats = fit_sections(
-        sections,
-        injection_limit(),
-        measure=lambda text: len(json.dumps(_recall_output(text, notice))) + 1,
-    )
+
+    def measure(text):
+        return len(json.dumps(_recall_output(text, notice))) + 1
+
+    if cloud_enabled(runtime) and _key_safe and total:
+        from _injection_ledger import render as render_deduped
+
+        try:
+            full_context, injection_stats, header = render_deduped(
+                _key,
+                header,
+                sections[1:],
+                injection_limit(),
+                measure=measure,
+            )
+        except (OSError, ValueError) as exc:
+            hook_log("injection_ledger_failed", {"error": str(exc)[:200]})
+            full_context, injection_stats = fit_sections(
+                sections, injection_limit(), measure=measure
+            )
+    else:
+        full_context, injection_stats = fit_sections(sections, injection_limit(), measure=measure)
     retrieved_counts = counts
     retrieved_total = total
     counts = {source: injection_stats["source_hits"].get(source, 0) for source in counts}
@@ -965,6 +980,19 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
         message += f"; {dropped} dropped to fit"
     notify(f"{message}; saves last turn {saves_last_turn}")
 
+    from _session_stats import update as update_stats
+
+    update_stats(
+        _key,
+        recalls=1,
+        hits=int(total > 0),
+        entries_injected=injection_stats["entries_kept"],
+        entries_deduped=injection_stats.get("entries_deduped", 0),
+        chars_injected=len(full_context),
+        recall_ms=elapsed_ms(recall_start),
+        metadata={"dataset": session_dataset, "session_id": session_id, "server_url": service_url},
+    )
+
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.
     try:
@@ -990,6 +1018,7 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                     "retrieved_hits": retrieved_counts,
                     "per_scope": per_scope,
                     "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                    **{k: v for k, v in injection_stats.items() if k != "entries"},
                 }
             ),
         )

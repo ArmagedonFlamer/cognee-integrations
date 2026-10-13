@@ -554,6 +554,9 @@ def _evict_own_statusline() -> None:
     user set themselves is never touched. Atomic replace to avoid a torn file.
     """
     try:
+        from _auto_memory import restore as restore_auto_memory
+
+        restore_auto_memory()
         settings = _read_json(_USER_SETTINGS)
         sl = settings.get("statusLine")
         cmd = sl.get("command", "") if isinstance(sl, dict) else ""
@@ -831,6 +834,13 @@ def _runtime_python_missing() -> bool:
         return False
 
 
+def _items_segment(session_id: str) -> str:
+    from _session_stats import read as read_stats
+
+    count = read_stats(session_id).get("entries_injected", 0)
+    return f"{count} recalled · " if count else ""
+
+
 def _status_prefix(session_id: str = "") -> str:
     """The single left glyph slot shared by the server- and LLM-key signals.
 
@@ -899,7 +909,7 @@ def main() -> None:
     # mode; the update nudge stays last because it is a transient banner, not part
     # of the steady-state line.
     sys.stdout.write(
-        f"{_status_prefix(_session_id)}"
+        f"{_status_prefix(_session_id)}{_items_segment(_session_id)}"
         f"cognee: {_active_dataset(_session_id)} · {_mode_label()}"
         f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
     )

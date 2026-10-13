@@ -1171,7 +1171,7 @@ def load_resolved(session_key: str = "", *, identity: bool = True) -> dict:
         conn = _json_http_request(
             f"/api/v1/agents/connections/me{query}",
             method="GET",
-            timeout=10.0,
+            timeout=15.0,
         )
         if isinstance(conn, dict):
             agent = conn.get("agent") if isinstance(conn.get("agent"), dict) else {}
@@ -1564,6 +1564,10 @@ def bump_save_counter(session_id: str, kind: str, *, buffered: bool = False) -> 
         kind = f"{kind}_buffered"
     if not session_id or kind not in ALL_SAVE_KINDS:
         return
+    if not buffered:
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), saves=1, metadata={"session_id": session_id})
     try:
         data = (
             json.loads(_SAVE_COUNTER.read_text(encoding="utf-8")) if _SAVE_COUNTER.exists() else {}
@@ -1652,6 +1656,14 @@ def warmup_backlog() -> dict:
                 age = max(0.0, now - buffered_at)
                 if oldest is None or age > oldest:
                     oldest = age
+    for path in (_PLUGIN_DIR / "spool").glob("*.json"):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+            result["pending"] += 1
+            age = max(0, now - float(item.get("created_at", path.stat().st_mtime)))
+            oldest = max(oldest or 0, age)
+        except (OSError, ValueError, TypeError):
+            continue
     result["oldest_age_seconds"] = oldest
     return result
 
@@ -3743,6 +3755,10 @@ def server_usable(service_url: str = "", probe_timeout: float = 1.0) -> bool:
     hooks keep the marker fresh for the whole turn and the buffer only fills
     when the server is actually unreachable.
     """
+    from _cloud_worker import enabled as cloud_enabled
+
+    if cloud_enabled({"base_url": service_url or _local_api_url()}):
+        return server_ready_hint(service_url)
     if server_ready_hint(service_url):
         return True
     now = datetime.now(timezone.utc).timestamp()
@@ -5609,6 +5625,9 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
         },
     )
     if ok:
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), improves_landed=1)
         record_improve_success(session_id, dataset, trigger)
         # Status-line credits: attribute the spend recorded since the previous
         # reading to this improve. Approximate on purpose — the submit is
@@ -5664,6 +5683,7 @@ _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS = 30 * 24 * 3600
 #: writer; this catches files that predate the cap and logs only ever written
 #: by a child process.
 _SWEEP_LOG_FILES = (
+    "cloud-worker.log",
     "hook.log",
     "bootstrap.log",
     "watcher.log",
@@ -5762,8 +5782,19 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             (_BRIDGE_DIR, "bridge"),
             (_PENDING_DIR, "pending"),
             (_IMPROVE_STATE_DIR, "improve_state"),
+            (_PLUGIN_DIR / "spool" / "expired", "expired_cloud_work"),
+            (_PLUGIN_DIR / "improve-wanted" / "expired", "expired_cloud_work"),
         ):
             _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
+        sessions = _PLUGIN_DIR / "sessions"
+        if sessions.is_dir():
+            for directory in sessions.iterdir():
+                if not directory.is_dir() or directory.is_symlink():
+                    continue
+                newest = max((p.stat().st_mtime for p in directory.iterdir()), default=0)
+                if now - newest > _SWEEP_SESSION_FILE_MAX_AGE_SECONDS:
+                    shutil.rmtree(directory)
+                    counts["sessions"] = counts.get("sessions", 0) + 1
         _sweep_pending_husks(counts)
         _sweep_launch_records(now, counts)
         for name in _SWEEP_LEGACY_FILES:

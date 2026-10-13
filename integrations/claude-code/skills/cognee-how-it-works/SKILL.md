@@ -1,0 +1,31 @@
+---
+name: cognee-how-it-works
+description: Explain what the Cognee Claude Code plugin captures, recalls, stores, and sends, and how to inspect or disable those behaviors.
+---
+
+# Explain the installed plugin
+
+Read `${CLAUDE_PLUGIN_ROOT}/README.md`, especially “What this plugin runs, stores
+and sends”, “Automatic capture controls”, and “Logs and state”. Those shipped
+instructions describe this installed version. Run
+`"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh" --json` when the user asks about
+their connection or settings. Do not expose keys or raw private memory in an answer.
+
+Explain the paths relevant to the question:
+
+- Prompts, answers, and selected tool traces are captured by hooks, with credential
+  redaction and sensitive-file exclusions. `COGNEE_CAPTURE=false` opts out.
+- Cloud calls go to `COGNEE_BASE_URL` using `COGNEE_API_KEY`; local mode uses a local
+  server. Cloud credit status comes from the Cognee platform API.
+- Recall injects selected memory into Claude's context. The injection budget drops
+  whole entries and the session ledger avoids repeating cloud memory until context
+  is cleared or compacted.
+- Local logs and markers live in `~/.cognee-plugin/claude-code/`. Server memory stays
+  until explicitly deleted. `cognee-report` measures observed outcomes.
+- Cloud setup manages native auto-memory only when there is no explicit user choice;
+  `COGNEE_DISABLE_AUTO_MEMORY=false` restores the plugin-owned setting.
+
+Distinguish an accepted capture, a landed graph improve, and recalled context.
+Consult the installed README for background retries/cache behavior before claiming
+it is available. Explain limitations directly when telemetry cannot establish an
+outcome.

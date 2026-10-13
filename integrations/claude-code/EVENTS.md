@@ -343,3 +343,16 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:stopfile_unlink_failed` | `idle_watcher.stopfile_unlink_failed` |
 | `idle-watcher:throttle_check_failed` | `idle_watcher.throttle_check_failed` |
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
+
+## Cloud queues and context
+
+- `cloud.auto_memory_setup_failed`: auto memory setup failed.
+- `cloud.injection_ledger_failed`: injection ledger failed.
+- `cloud.capture_spooled`: capture spooled.
+- `cloud.cloud_work_expired`: cloud work expired.
+- `cloud.cloud_work_retry`: cloud work retry.
+- `cloud.cloud_capture_delivered`: cloud capture delivered.
+- `cloud.cloud_worker_error`: cloud worker error.
+- `cloud.context_digest_inject_failed`: startup digest skipped because its cache could not be read.
+
+- `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.

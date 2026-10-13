@@ -49,6 +49,11 @@ dataset). The plugin never expires server-side memory on its own.
 (`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
 Anthropic, Cognee or any third party beyond the calls above.
 
+**Claude settings.** In cloud mode the plugin disables native auto-memory unless
+you explicitly enabled it, keeping an ownership marker and previous value for
+restoration. Set `COGNEE_DISABLE_AUTO_MEMORY=false` to opt out. Existing memory
+files are retained. See [Memory preference](#memory-preference).
+
 **Stored locally.** `~/.cognee-plugin/claude-code/` (logs, status markers, buffered
 turns, swept automatically; see [Logs and state](#logs-and-state)),
 `~/.cognee-plugin/venv/`, `~/.cognee-plugin/api_key.json`, and your settings in
@@ -377,6 +382,26 @@ Claude-specific contracts are preserved:
 - `hookSpecificOutput` payload format
 - async hook behavior for write hooks
 
+## Memory value
+
+Ask “how did Cognee perform?” to use `cognee-report`, or run:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_session_stats.py" --session <host-session-id> --days 7
+```
+
+Per-session counters live at `sessions/<host-session-id>/stats.json` under the
+plugin state directory. They count recalls, turns with hits, injected and deduped
+entries, characters, accepted saves, completed improves, and delivered digest items.
+“Digest items used” means supplied to context, not proven use in an answer. No prompt
+or memory text is stored in this file. A session-start notice summarizes the last
+completed session for the same dataset/server. The status line shows cumulative
+items injected during this session.
+
+The seven-day counter total includes sessions started within that period. The report
+skill also reads event timestamps for calendar-window metrics and latency. Old logs
+may have clipped context, so exact `context_chars` is used where available.
+
 ## Memory preference
 
 With the plugin active, Cognee is the **preferred** memory system: relevant memory is
@@ -386,12 +411,16 @@ automatically, so Claude consults Cognee first when answering. To reinforce this
 Cognee as authoritative and prefer the Cognee tools/skills over Claude Code's built-in
 file memory (`MEMORY.md`).
 
-Note: a plugin **cannot reliably disable** Claude Code's native auto memory
-(`MEMORY.md` is injected as context, not a tool call that hooks can intercept). This
-feature steers the model toward Cognee rather than hard-disabling native memory. To
-turn the steer off, set `COGNEE_PREFER_MEMORY=false`. To additionally suppress native
-auto memory yourself, disable it in Claude Code (e.g. `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`
-in the launching shell, if your Claude Code version supports it).
+In cloud mode, SessionStart sets `autoMemoryEnabled: false` in
+`~/.claude/settings.json` when you have not chosen a value. An explicit `true` is
+preserved and reported once. The change takes effect next session. Set
+`COGNEE_DISABLE_AUTO_MEMORY=false` to restore the previous value the next time
+SessionStart runs. The status-line cleanup also restores it when the plugin is
+removed or disabled, provided its renderer still exists and runs. A later user
+choice is always preserved. `cognee-doctor.sh` reports the setting and ownership.
+See [Claude Code's auto-memory settings](https://code.claude.com/docs/en/memory#enable-or-disable-auto-memory).
+
+`COGNEE_PREFER_MEMORY=false` independently disables the memory preference instruction.
 
 | Env var | Default | Effect |
 |---|---|---|
@@ -993,11 +1022,15 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 ### Per-operation timeouts
 
+The `/api/v1/agents/connections/me` identity lookup has a 15-second client timeout
+in both runtime resolution and the explicit-search fallback. Prompt recall resolves
+its session locally and keeps its separate 45-second cloud budget.
+
 Each operation has its own client timeout, tunable independently (all in seconds):
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_RECALL_BUDGET` | `20` | Whole-recall deadline for the per-prompt lookup; a scope that overruns contributes no hits |
+| `COGNEE_RECALL_BUDGET` | `45` cloud / `20` local | Whole-recall deadline in seconds for the per-prompt lookup; a scope that overruns contributes no hits |
 | `COGNEE_INJECT_MAX_CHARS` | `9000` | Maximum serialized hook output, including headers and notices. Values are clamped to `1024`–`9000` so the JSON envelope and visibility header fit; whole memory entries are dropped first. |
 | `COGNEE_RECALL_PASSAGE_CHARS` | `1200` | Per-passage cap, cut at a paragraph break and marked with how much was cut; `0` disables this trimming. The final output still obeys `COGNEE_INJECT_MAX_CHARS`. |
 | `COGNEE_RECALL_CONTEXT_CHARS` | `0` | Optional passage-trimming budget, disabled by default. The final `COGNEE_INJECT_MAX_CHARS` cap drops whole entries, including entities and facts when necessary; graph facts have priority over passages. |
@@ -1078,3 +1111,26 @@ companion endpoint currently requires the primary owner and copies an ACL snapsh
 later sharing changes must be reconciled explicitly. Connection credentials are
 hashed in the local decision record, and a changed principal cannot reuse it.
 Defaults remain off. Start a new host session when changing project routing policy.
+
+Cloud sessions read a distilled project digest from `context-cache/<dataset-id>.json` at
+startup without a network request. The worker refreshes it after confirmed improve and
+at most every 30 minutes while active. Caches older than 24 hours or from another tenant
+or credential are ignored. Resuming a conversation skips the digest. The digest is capped
+at 6,000 characters and seeds the injection ledger. Its sources are the `agent` guidance
+profile and graph node sets `session_learnings` and `project_docs`; raw turns are excluded.
+
+Discovery on the configured 1.6.3 tenant found both guidance and distilled graph context,
+but no `session_summaries` records. Structured last-session prose therefore depends on
+the WS7 server release; measured prior-session statistics are available independently.
+
+Cloud trace capture skips Read, Grep and Glob plus successful Bash commands with empty
+output. These skips remain visible as `traces_skipped` in session statistics. Bash errors and
+nonempty output remain eligible for capture under the configured capture policy.
+
+Structured summaries and guidance usage tracking require a server release advertising
+`session_summary_v1` / `context_usage_v1` in `/health`. The cache records the actual server
+version and checks capabilities before using those fields; it does not assume a future
+version number guarantees deployment. Current 1.6.3 tenants fall back to distilled facts
+and measured session statistics. After deployment, manually review ten sessions for
+usefulness; the extractor keeps its five-lesson per-batch cap. The seven useful entries per session
+criterion is measured across batches and remains a manual rollout acceptance check.

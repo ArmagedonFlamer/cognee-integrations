@@ -10,6 +10,61 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.18]
+
+### Changed
+- Allow 15 seconds for connections/me in runtime resolution and explicit search. Preserve passage boundaries and global context order; correct documented trimming defaults. Cloud recall remains 45 seconds.
+
+## [1.6.17]
+
+### Changed
+- Render shared recall headings once, retain file symbols individually within the output budget, and refresh digest hashes for the new entry format.
+
+## [1.6.16]
+
+### Changed
+- Apply review fixes across the preview stack: retain graph facts, preserve file context and its search hint, and cap complete hook output including notices.
+
+## [1.6.15]
+
+### Changed
+- Raise the cloud per-prompt recall budget to 45 seconds; retain the local 20-second default and explicit environment overrides.
+
+## [1.6.14]
+
+### Changed
+- Skip and count low-signal cloud traces; consume structured session summaries only when the server advertises support.
+
+## [1.6.13]
+
+### Changed
+- Inject a bounded, tenant-scoped distilled-memory cache at cloud session start, seed deduplication and refresh from the worker.
+
+## [1.6.12]
+
+### Changed
+- Move cloud hooks to a durable per-user capture and improve worker, with ordered retries, cached health, truthful improve results and a four-second recall budget.
+
+## [1.6.11]
+
+### Changed
+- Record exact per-session memory value counters, show last-session outcomes, and include cumulative recalled items in the status line.
+
+## [1.6.10]
+
+### Changed
+- Ship performance reporting, project handoffs, plugin behavior explanations, and version-gated Enola architecture skills.
+
+## [1.6.9]
+
+### Changed
+- Manage Claude native auto-memory reversibly in cloud mode, respecting explicit user choices and exposing the setting in doctor.
+
+## [1.6.8]
+
+### Changed
+- Deduplicate injected cloud memory per session with an atomic hash ledger; reset on clear/compact and report new versus already present entries.
+
 ## [1.6.7]
 
 ### Changed
