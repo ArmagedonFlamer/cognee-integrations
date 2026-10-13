@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.21]
+
+### Changed
+- Resolve cloud-worker review findings: bounded logs/quarantine, immediate explicit sync retries, short busy retries and non-sticky timeout diagnostics.
+
 ## [1.6.20]
 
 ### Changed

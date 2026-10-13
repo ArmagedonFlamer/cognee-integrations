@@ -3183,12 +3183,10 @@ def server_presence(
 # Connection states recorded in the (shared) server-ready marker. "ready" means
 # the server is up AND authenticated; the failure states carry the reason shown
 # in the status line as "✕ (<state>)". Any non-"ready" state makes
-# server_ready_hint return False so recall does not attempt against a bad backend.
+# server_ready_hint return False.
 # "unreachable" is reserved for POSITIVE absence (connection refused / DNS /
-# unroutable). "not_responding" is deliberately distinct: the server exists
-# (connections are not refused) but has not answered within budget for N
-# consecutive prompts — written only by the slow-streak escalation (see
-# record_slow_probe), never by a lone timeout.
+# unroutable). "not_responding" remains readable for compatibility with older
+# state files. Timeout streaks no longer write it or prevent another recall.
 CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error", "not_responding")
 
 
@@ -3277,17 +3275,13 @@ def mark_server_ready(service_url: str, version: str = "") -> None:
     write_connection_state("ready", service_url, version=version)
 
 
-# Slow-server hysteresis. A single timeout is "no verdict" and must not touch
-# the connection marker — but N consecutive timeout-only prompts with no
-# success in between are a pattern (wedged server, packet-dropping network),
-# not a blip. This counter, keyed by base_url, is how a lone blip stays
-# invisible while a persistent stall still escalates to a visible "slow" state
-# (and recall backoff) instead of leaving the bar green forever.
+# Slow-server diagnostics, keyed by base_url. Even a repeated timeout is no
+# outage verdict: the counter produces telemetry without gating future recalls.
 _SLOW_STREAK_FILE = _PLUGIN_DIR / "slow-streak.json"
 
 
 def slow_streak_threshold() -> int:
-    """Consecutive timeout-only prompts before escalating to state "slow"."""
+    """Consecutive timeout-only prompts before logging a slow-streak event."""
     try:
         return max(1, int(os.environ.get("COGNEE_SLOW_STREAK_THRESHOLD", "3") or 3))
     except (TypeError, ValueError):
@@ -3324,9 +3318,8 @@ def record_slow_probe(service_url: str) -> int:
     """Count a consecutive no-verdict (timeout) observation; return the streak.
 
     The streak resets itself when the previous tick is older than the window —
-    two timeouts hours apart are noise, not a pattern. The caller escalates to
-    ``write_connection_state("not_responding", ...)`` once the return value
-    reaches ``slow_streak_threshold()``.
+    two timeouts hours apart are noise, not a pattern. The caller logs diagnostics
+    at ``slow_streak_threshold()`` without changing connection health.
     """
     url = _normalize_service_url(service_url)
     now = datetime.now(timezone.utc).timestamp()
