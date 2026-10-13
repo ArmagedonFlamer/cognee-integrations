@@ -70,6 +70,7 @@ from _plugin_common import (
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
+    PASSAGE_SEPARATOR,
     code_facts,
     format_code_facts,
     split_passages,
@@ -249,7 +250,7 @@ def _injection_sections(by_source: dict) -> list[dict]:
     """Expose bare records; shared labels belong to one section heading."""
     grouped = {}
 
-    def add(source, kind, title, priority, entries, result_id):
+    def add(source, kind, title, priority, entries, result_id, separator="\n\n"):
         section = grouped.setdefault(
             (source, kind),
             {
@@ -258,6 +259,7 @@ def _injection_sections(by_source: dict) -> list[dict]:
                 "priority": priority,
                 "source": source,
                 "entry_ids": {},
+                "separator": separator,
             },
         )
         for entry in entries:
@@ -278,10 +280,10 @@ def _injection_sections(by_source: dict) -> list[dict]:
                 parts = split_sections(text)
                 if any(parts.get(k) is not None for k in ("passages", "entities", "facts")):
                     for kind, heading, rank in (
+                        ("preamble", "", 40),
                         ("entities", "## Relevant entities", 41),
                         ("facts", "## Related facts", 41),
                         ("passages", "## Relevant passages", 40),
-                        ("preamble", "", 40),
                     ):
                         if parts.get(kind):
                             items = (
@@ -292,7 +294,15 @@ def _injection_sections(by_source: dict) -> list[dict]:
                             label = f"=== Cognee memory: {kind} ===\n[cognee-memory]"
                             if heading:
                                 label += "\n" + heading
-                            add(source, kind, label, rank, items, result_id)
+                            add(
+                                source,
+                                kind,
+                                label,
+                                rank,
+                                items,
+                                result_id,
+                                PASSAGE_SEPARATOR if kind == "passages" else "\n\n",
+                            )
                     continue
             formatted = _format_entry(entry)
             if source in {"graph_context", "code", "session_context"}:
