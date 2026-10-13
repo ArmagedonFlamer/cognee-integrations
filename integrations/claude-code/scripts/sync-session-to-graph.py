@@ -440,13 +440,16 @@ def main():
         if is_session_end or detached_final:
             pairs.extend((p["session_id"], p["dataset"]) for p in touched_pairs(key))
             update_stats(key, metadata={"ended_at": time.time()})
+        pending_paths = []
         for sid, dataset in pairs:
             if sid and dataset:
-                request_improve(
-                    dataset, sid, "final" if is_session_end or detached_final else "manual"
+                pending_paths.append(
+                    request_improve(
+                        dataset, sid, "final" if is_session_end or detached_final else "manual"
+                    )
                 )
         if _STRICT_ARG in sys.argv:
-            from _cloud_worker import read, session_dir
+            from _cloud_worker import improve_wait_detail, read, session_dir
 
             deadline = time.monotonic() + 840
             while time.monotonic() < deadline:
@@ -458,7 +461,13 @@ def main():
                 ):
                     return
                 time.sleep(0.2)
-            print("Cognee sync is still queued; the dataset was not switched.", file=sys.stderr)
+            detail = (
+                improve_wait_detail(pending_paths[0]) if pending_paths else "No target session."
+            )
+            print(
+                "Cognee sync is still queued; the dataset was not switched. " + detail,
+                file=sys.stderr,
+            )
             sys.exit(1)
         return
 

@@ -5683,6 +5683,7 @@ _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS = 30 * 24 * 3600
 #: writer; this catches files that predate the cap and logs only ever written
 #: by a child process.
 _SWEEP_LOG_FILES = (
+    "cloud-worker.log",
     "hook.log",
     "bootstrap.log",
     "watcher.log",
@@ -5781,6 +5782,8 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             (_BRIDGE_DIR, "bridge"),
             (_PENDING_DIR, "pending"),
             (_IMPROVE_STATE_DIR, "improve_state"),
+            (_PLUGIN_DIR / "spool" / "expired", "expired_cloud_work"),
+            (_PLUGIN_DIR / "improve-wanted" / "expired", "expired_cloud_work"),
         ):
             _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
         sessions = _PLUGIN_DIR / "sessions"

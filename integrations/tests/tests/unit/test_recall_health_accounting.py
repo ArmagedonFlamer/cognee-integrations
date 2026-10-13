@@ -183,7 +183,7 @@ def test_a_single_slow_prompt_earns_no_verdict(lookup, monkeypatch):
     )
 
 
-def test_a_streak_of_slow_prompts_escalates_but_never_to_unreachable(lookup, monkeypatch):
+def test_a_streak_of_slow_prompts_escalates_but_never_to_unreachable(lookup, monkeypatch, suite):
     """Nothing was refused, so the server is there — just not answering."""
     run = drive_recall(
         lookup,
@@ -193,12 +193,26 @@ def test_a_streak_of_slow_prompts_escalates_but_never_to_unreachable(lookup, mon
         slow_threshold=3,
     )
 
-    assert any(write[0] == "not_responding" for write in run.writes), run.writes
+    if suite.name == "claude-code":
+        assert run.writes == [], "slow cloud recalls must not become a sticky outage"
+    else:
+        assert any(write[0] == "not_responding" for write in run.writes), run.writes
     assert not any(write[0] == "unreachable" for write in run.writes), (
         f"a slow server must not be reported as down: {run.writes}"
     )
     assert run.breaker == [], "timeouts must not feed the breaker even at the threshold"
     assert run.fired("slow_streak_escalated"), run.events
+
+
+def test_claude_cloud_ignores_legacy_slow_marker(lookup, monkeypatch, suite):
+    if suite.name != "claude-code":
+        pytest.skip("Claude cloud worker")
+    monkeypatch.setattr(lookup, "cloud_enabled", lambda *_: True)
+    run = drive_recall(
+        lookup, monkeypatch, recall={}, prior_state={"state": "not_responding", "base_url": URL}
+    )
+    assert sorted(run.calls) == sorted(CODE_SCOPES)
+    assert not run.fired("recall_skipped_not_ready")
 
 
 # ── success: the attempt is the ready probe ───────────────────────────────────
