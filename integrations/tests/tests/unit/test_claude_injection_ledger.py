@@ -78,7 +78,7 @@ def test_deduped_hits_are_not_reported_as_new_injections(suite, hook_module, mon
     assert "recall 1 memory" in first.output["hookSpecificOutput"]["additionalContext"]
     context = second.output["hookSpecificOutput"]["additionalContext"]
     assert "recall 0 memory" in context and "0 new, 1 already in context" in context
-    assert second.detail("context_lookup_empty")["retrieved_counts"]["graph_context"] == 1
+    assert second.detail("context_lookup_empty")["retrieved_hits"] == 1
     from pathlib import Path
 
     marker = json.loads((Path.home() / ".cognee-plugin/claude-code/last_recall.json").read_text())
