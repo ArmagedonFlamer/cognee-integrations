@@ -4708,8 +4708,13 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    from _project_memory import route
+
     payload = prepare_remember_entry_payload(dataset, session_id, entry, dataset_id=dataset_id)
-    if payload.get("dataset_id") and not client_event_id:
+    # Probe the server only for a UUID-shaped write target, as before: hooks are
+    # short-lived processes, so probing every shared-memory write would fetch
+    # /openapi.json on each PostToolUse and Stop.
+    if parse_dataset_id(route(dataset, session_id)["write"]) and not client_event_id:
         require_typed_dataset_id_support()
     if client_event_id:
         payload["client_event_id"] = client_event_id
