@@ -9,12 +9,12 @@ import os
 def injection_limit() -> int:
     """Configuration can lower the limit, but cannot exceed the host's safe ceiling."""
     try:
-        return max(256, min(9000, int(os.environ.get("COGNEE_INJECT_MAX_CHARS", "9000"))))
+        return max(1024, min(9000, int(os.environ.get("COGNEE_INJECT_MAX_CHARS", "9000"))))
     except ValueError:
         return 9000
 
 
-def fit_sections(sections: list[dict], budget: int) -> tuple[str, dict]:
+def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, dict]:
     """Render sections, evicting the lowest priority last entry until they fit.
 
     A section has ``title``, ``entries`` (whole strings), ``priority`` (higher
@@ -22,6 +22,7 @@ def fit_sections(sections: list[dict], budget: int) -> tuple[str, dict]:
     evict later entries first, preserving retrieval order. Empty section titles
     disappear with their last entry. Inputs are never mutated. A required header
     larger than the budget is a caller error; silently truncating it is unsafe.
+    ``measure`` can account for the complete serialized hook envelope and notices.
     """
     kept = [[str(e) for e in s.get("entries", []) if str(e).strip()] for s in sections]
     total = sum(len(entries) for entries in kept)
@@ -35,7 +36,8 @@ def fit_sections(sections: list[dict], budget: int) -> tuple[str, dict]:
         return "\n\n".join(blocks)
 
     text = render()
-    while max(len(text), len(json.dumps(text)) - 2) > budget:
+    size = measure or (lambda value: max(len(value), len(json.dumps(value)) - 2))
+    while size(text) > budget:
         choices = [
             i for i, section in enumerate(sections) if kept[i] and not section.get("required")
         ]

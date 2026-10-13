@@ -3453,21 +3453,24 @@ def capture_policy_notice() -> str:
     return f"Cognee: automatic capture is off until this is fixed: {error}"
 
 
-def with_base_url_notice(output: dict | None, hook_event: str) -> dict | None:
+def with_base_url_notice(
+    output: dict | None, hook_event: str, *, notice: str | None = None
+) -> dict | None:
     """Add the session's notices to a hook's output (user- and model-visible).
 
     Covers ``base_url_change_notice`` and ``capture_policy_notice``.
     """
-    notices = []
-    for source in (base_url_change_notice, capture_policy_notice):
-        try:
-            text = source()
-        except Exception as exc:
-            hook_log("hook_notice_failed", {"source": source.__name__, "error": str(exc)[:200]})
-            continue
-        if text:
-            notices.append(text)
-    notice = "\n".join(notices)
+    if notice is None:
+        notices = []
+        for source in (base_url_change_notice, capture_policy_notice):
+            try:
+                text = source()
+            except Exception as exc:
+                hook_log("hook_notice_failed", {"source": source.__name__, "error": str(exc)[:200]})
+                continue
+            if text:
+                notices.append(text)
+        notice = "\n".join(notices)
     if not notice:
         return output
     result = dict(output or {})

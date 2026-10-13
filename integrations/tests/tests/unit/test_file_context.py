@@ -176,6 +176,8 @@ def test_read_in_indexed_repo_injects_code_context(fc, repo, wire, capsys, monke
     assert "permissionDecision" not in hso  # additive only: never blocks the read
     assert hso["additionalContext"].startswith("## Cognee: about mod.py")
     assert "Widget:10" in hso["additionalContext"]
+    assert "\n  classes: Widget:10\n" in hso["additionalContext"]
+    assert 'cognee-search.sh "<symbol>" --code' in hso["additionalContext"]
     # The code lane queried the repo's OWN dataset, filtered to this file.
     (call,) = wire
     assert call["dataset"] == "codebase-repo-1234"
@@ -184,6 +186,17 @@ def test_read_in_indexed_repo_injects_code_context(fc, repo, wire, capsys, monke
         "file": "pkg/mod.py",
         "limit": fc.CODE_LIMIT,
     }
+
+
+def test_small_injection_limit_preserves_file_header(fc, repo, wire, capsys, monkeypatch):
+    monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", "256")
+    monkeypatch.setattr(fc, "format_code_facts", lambda *args: "Symbols\n" + "🧠" * 2000)
+    _run(fc, monkeypatch, _payload(repo / "pkg" / "mod.py", cwd=repo))
+    raw = capsys.readouterr().out
+    output = json.loads(raw)
+    assert len(raw) <= fc.injection_limit() == 1024
+    assert output["hookSpecificOutput"]["additionalContext"].startswith("## Cognee: about mod.py")
+    assert "🧠" not in output["hookSpecificOutput"]["additionalContext"]
 
 
 def test_same_file_is_served_once_per_ttl(fc, repo, wire, capsys, monkeypatch):
