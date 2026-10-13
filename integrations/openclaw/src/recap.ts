@@ -103,7 +103,9 @@ export const DEFAULT_MAX_LEARNINGS = 40;
 const DETAIL_WORKERS = 6;
 // Raw lesson fetches stream files; a local server times out at six in flight.
 const RAW_WORKERS = 2;
-const PAGE = 200;
+// The server's page maximum (cognee 1.6.3 `limit` <= 500): five pages reach
+// 2,500 rows, newest first. Past that the recap says it stopped.
+const PAGE = 500;
 const MAX_PAGES = 5;
 export const DATA_PAGE = 200;
 export const DATA_MAX_PAGES = 50;
@@ -660,20 +662,27 @@ function errText(e: unknown, n: number): string {
 export async function listSessionRows(
   api: RecapApi,
   cutoff: Date,
-  opts: { now: Date; allSessions: boolean; prefixes: readonly string[]; sessionDatasetIds?: readonly string[] },
-): Promise<Row[]> {
+  opts: { now: Date; allSessions: boolean; prefixes: readonly string[]; sessionDatasetIds?: readonly string[]; page?: number; maxPages?: number },
+): Promise<{ rows: Row[]; truncated: boolean; scanned: number }> {
   // The server lists every session the credential can see, which on a shared
   // gateway includes other agents' and users' conversations. Keep only those
   // recorded into the caller's own datasets; allSessions lifts the prefix
   // filter, never this one. A row without a dataset is excluded.
   const allowed = opts.sessionDatasetIds ? new Set(opts.sessionDatasetIds) : undefined;
   const range = rangeBucket(cutoff, opts.now);
+  const page = opts.page ?? PAGE;
+  const maxPages = opts.maxPages ?? MAX_PAGES;
   const rows: Row[] = [];
-  for (let p = 0; p < MAX_PAGES; p++) {
-    const body = asRow(await api.listSessions({ range, limit: PAGE, offset: p * PAGE }));
+  // The server has no dataset filter, so on a shared gateway the caller's own
+  // sessions can sit behind everyone else's: running out of pages while the
+  // server still has more is reported, never passed off as the whole window.
+  let truncated = false;
+  for (let p = 0; p < maxPages; p++) {
+    const body = asRow(await api.listSessions({ range, limit: page, offset: p * page }));
     if (!Array.isArray(body.sessions)) break;
     rows.push(...body.sessions.filter((r) => r && typeof r === "object").map(asRow));
     if (!body.has_more) break;
+    if (p === maxPages - 1) truncated = true;
   }
   const out = rows.filter((row) => {
     const sid = str(row.session_id);
@@ -683,7 +692,7 @@ export async function listSessionRows(
     return !!last && last >= cutoff;
   });
   const key = (r: Row) => (parseTime(r.last_activity_at) ?? cutoff).getTime();
-  return out.sort((a, b) => key(b) - key(a));
+  return { rows: out.sort((a, b) => key(b) - key(a)), truncated, scanned: rows.length };
 }
 
 type Ctx = {
@@ -698,7 +707,16 @@ async function collectSessions(
   cutoff: Date,
   opts: { now: Date; allSessions: boolean; prefixes: readonly string[]; sessionDatasetIds?: readonly string[]; maxSessions: number; projects: string[]; roots: string[]; groupOf?: GroupOf },
 ): Promise<SessionRecord[]> {
-  const rows = (await listSessionRows(ctx.api, cutoff, opts)).slice(0, opts.maxSessions);
+  const listed = await listSessionRows(ctx.api, cutoff, opts);
+  if (listed.truncated) {
+    ctx.warnings.push(
+      `session listing stopped after ${listed.scanned} rows (the server has more); older sessions in this window may be missing`,
+    );
+  }
+  if (listed.rows.length > opts.maxSessions) {
+    ctx.warnings.push(`showing the newest ${opts.maxSessions} of ${listed.rows.length} sessions; raise maxSessions to see the rest`);
+  }
+  const rows = listed.rows.slice(0, opts.maxSessions);
   // One detail call per session, a few in flight; one broken session must not sink the recap.
   const details = await mapLimit(rows, DETAIL_WORKERS, async (row) => {
     const sid = str(row.session_id);

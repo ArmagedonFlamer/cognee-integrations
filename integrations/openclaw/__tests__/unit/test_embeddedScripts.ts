@@ -87,6 +87,49 @@ describe("ensure_and_boot.py", () => {
     }
   });
 
+  itPy("falls back to pip in a venv uv built, seeding pip first, and keeps uv's own error", () => {
+    const home = mkdtempSync(join(tmpdir(), "ensure-fallback-"));
+    try {
+      const base = join(home, ".cognee-plugin");
+      const scriptPath = join(home, "ensure.py");
+      // Everything but the module body that installs and boots on import.
+      writeFileSync(scriptPath, script.replace(/\nif needs_install\(\):\n    install_cognee\(\)\nboot_server\(\)\s*$/, "\n"));
+      // A fake uv: `uv venv` makes a venv WITHOUT pip (as uv does); `uv pip install` fails.
+      const fakeUv = join(base, "uv", "uv");
+      execFileSync("mkdir", ["-p", join(base, "uv")]);
+      writeFileSync(fakeUv, [
+        "#!/bin/sh",
+        'if [ "$1" = "venv" ]; then exec ' + PYTHON + ' -m venv --without-pip "$2"; fi',
+        'echo "error: Failed to fetch: https://pypi.org/simple/cognee/ (offline test)" >&2',
+        "exit 2",
+      ].join("\n"), { mode: 0o755 });
+      const probe = [
+        "import json, os, sys",
+        "sys.argv = ['ensure.py', '9999', '--daemon']",
+        "ns = {'__file__': sys.argv[0], '__name__': 'ensure'}",
+        "exec(open(sys.argv[0] if False else os.environ['ENSURE']).read(), ns)",
+        "ok = ns['install_cognee']()",
+        "venv_py = ns['VENV_PYTHON']",
+        "has_pip = __import__('subprocess').run([venv_py, '-m', 'pip', '--version'], capture_output=True).returncode == 0",
+        "err = json.load(open(ns['ERROR_MARKER']))['error'] if os.path.exists(ns['ERROR_MARKER']) else ''",
+        "print(json.dumps({'ok': ok, 'has_pip': has_pip, 'error': err}))",
+      ].join("\n");
+      const out = JSON.parse(execFileSync(PYTHON!, ["-c", probe], {
+        encoding: "utf-8",
+        // No index: the pip fallback fails fast and offline, after seeding pip.
+        env: { ...process.env, HOME: home, ENSURE: scriptPath, PIP_NO_INDEX: "1", PIP_DISABLE_PIP_VERSION_CHECK: "1" },
+        timeout: 240_000,
+      }).trim().split("\n").pop()!);
+      expect(out.ok).toBe(false);
+      expect(out.has_pip).toBe(true); // ensurepip ran on the uv-built venv
+      expect(out.error).not.toMatch(/No module named pip/);
+      expect(out.error).toMatch(/^uv failed first: .*Failed to fetch/);
+      expect(out.error).toMatch(/installing cognee with pip failed \(exit 1\): .*cognee==1\.6\.3/);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 300_000);
+
   itPy("is valid Python, and its interpreter probe only accepts 3.10-3.14", () => {
     const dir = mkdtempSync(join(tmpdir(), "ensure-script-"));
     try {

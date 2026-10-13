@@ -15,6 +15,7 @@ import {
   formatLocal,
   gitRoot,
   lessonRows,
+  listSessionRows,
   lessonSession,
   nodeSetTags,
   openclawAgentOf,
@@ -607,5 +608,51 @@ describe("sessionDatasetIds keeps recaps inside the caller's datasets", () => {
   it("no allowed datasets means no sessions", async () => {
     const { json } = await runRecap(twoAgents(), { kind: "standup", datasetIds: [], sessionDatasetIds: [], now: NOW });
     expect(json.sessions).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Listing caps are reported, never passed off as the whole window
+// ---------------------------------------------------------------------------
+
+describe("session listing caps", () => {
+  const many = (n: number, dataset = "ds-mine") =>
+    Array.from({ length: n }, (_, i) => row(`open_claw_s${i}`, { dataset_id: dataset, last_activity_at: ago(H + i * 1000) }));
+
+  it("listSessionRows reports has_more on the last allowed page", async () => {
+    const api = new FakeApi();
+    api.sessions = many(5);
+    const capped = await listSessionRows(api, new Date(NOW.getTime() - D), { now: NOW, allSessions: false, prefixes: ["open_claw_"], page: 2, maxPages: 2 });
+    expect(capped.truncated).toBe(true);
+    expect(capped.scanned).toBe(4);
+    expect(capped.rows).toHaveLength(4);
+
+    const whole = await listSessionRows(api, new Date(NOW.getTime() - D), { now: NOW, allSessions: false, prefixes: ["open_claw_"], page: 2, maxPages: 3 });
+    expect(whole.truncated).toBe(false);
+    expect(whole.rows).toHaveLength(5);
+  });
+
+  it("a recap whose listing stopped early says so, even when the caller's sessions were all cut off", async () => {
+    const api = new FakeApi();
+    // Others' sessions fill every page the recap reads; the caller's sit behind them.
+    api.sessions = [...many(2500, "ds-other"), ...many(3, "ds-mine")];
+    const { json, warnings } = await runRecap(api, { kind: "standup", datasetIds: ["ds-mine"], sessionDatasetIds: ["ds-mine"], now: NOW });
+    expect(json.sessions).toEqual([]);
+    expect(warnings.some((w) => /session listing stopped after 2500 rows/.test(w))).toBe(true);
+  });
+
+  it("says when maxSessions dropped sessions", async () => {
+    const api = new FakeApi();
+    api.sessions = many(5);
+    const { json, warnings } = await runRecap(api, { kind: "standup", datasetIds: ["ds-mine"], sessionDatasetIds: ["ds-mine"], maxSessions: 2, now: NOW });
+    expect(json.sessions).toHaveLength(2);
+    expect(warnings).toContain("showing the newest 2 of 5 sessions; raise maxSessions to see the rest");
+  });
+
+  it("stays quiet when everything fit", async () => {
+    const api = new FakeApi();
+    api.sessions = many(3);
+    const { warnings } = await runRecap(api, { kind: "standup", datasetIds: ["ds-mine"], sessionDatasetIds: ["ds-mine"], now: NOW });
+    expect(warnings).toEqual([]);
   });
 });

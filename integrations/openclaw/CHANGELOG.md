@@ -50,7 +50,10 @@ server is away, the recap tool, and a boot that never downloads an interpreter.
   Sessions are grouped by agent. A recap only covers sessions recorded into the
   calling agent's own datasets, so on a shared gateway one agent never sees another
   agent's or user's conversations (`allSessions` adds other clients' sessions in
-  those datasets, never other datasets). `recapTool: false` leaves the tool out.
+  those datasets, never other datasets). The server cannot filter sessions by
+  dataset, so a recap reads up to 2,500 of the newest sessions and says so when the
+  server had more, or when `maxSessions` left some out, instead of passing a partial
+  window off as complete. `recapTool: false` leaves the tool out.
 - **`recallPassageChars` / `recallContextChars`** (defaults 2000 / 12000, or
   `COGNEE_RECALL_PASSAGE_CHARS` / `COGNEE_RECALL_CONTEXT_CHARS`) bound the injected
   recall; see Changed.
@@ -108,7 +111,9 @@ server is away, the recap tool, and a boot that never downloads an interpreter.
   for any 3.10–3.14 already on the machine with `UV_PYTHON_DOWNLOADS=never`, and
   falls back to `python3.14` … `python3.10`, `python3`, `python` with `-m venv` (also
   when uv finds none). The pinned `cognee` package is the only download. With no
-  suitable interpreter it refuses and says so, as before.
+  suitable interpreter it refuses and says so, as before. When uv's install fails,
+  the pip fallback first seeds pip into the venv uv built (uv venvs have none), and
+  the boot error recorded for the gateway log leads with uv's own reason.
 - **The local server starts in `~/.cognee-plugin`, and reads its settings from
   `~/.cognee/.env`.** cognee >= 1.6.2 loads the first `.env` it finds walking up from
   its working directory and lets it override the process environment, so a `.env`
