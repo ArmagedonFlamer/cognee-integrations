@@ -156,3 +156,37 @@ The session cache is never a search source; it reaches the graph through the syn
 | Auto context insufficient | `cognee-search.sh "<query>" 10` (memory is graph + code only; the session cache is written, never searched) |
 | **Server says empty and the user is recalling something** | **Offer the other readable datasets (`list-datasets.py --others` + AskUserQuestion), then `cognee-search.sh "<query>" 10 --graph --dataset-id <id>`** |
 | **Result empty but you expect content** | **Ground-truth via the credential-resolving `curl` above before concluding "not found"** |
+
+### Inspectable evidence
+
+For source inspection, use the compact index and expand only the useful references:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" index "retry policy"
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" details 'cognee://datasets/...'
+# Or pass 1–5 reference objects copied from index.items[].reference in one request:
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" details --references '[{...}]'
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" explain
+```
+
+The index returns at most 20 records without source bodies. Each available item has
+its dataset, artifact identity, content version, source locator and a resolvable
+`cognee://` citation. `details` accepts up to five citations or reference objects.
+Use `--dataset-id UUID` on `index` for another readable dataset; this does not switch
+sessions. `explain --session-key HOST_SESSION_ID` selects a specific session receipt.
+
+Cite the exact reference attached to a passage you actually use. A reference means
+retrieval used that artifact, not that it proves every claim in an answer. Graph
+entities/relationships are explicitly marked derived; prefer source passages for
+original evidence. Raw source downloads are current documents, not historical copies.
+On `changed`, the old version no longer matches: inspect the returned current
+reference before citing it. `unavailable` covers deleted or unauthorized artifacts;
+`error` means the store failed, not that evidence is absent. Never silently replace
+an old citation. Bounded excerpts report `truncated`.
+
+Automatic recall attaches versioned evidence in its existing graph request and
+keeps the 45-second cloud limit. Its body-free last-turn receipt explains each
+candidate: injected, already in context, over budget, or unavailable. Selection
+uses retrieval rank and source priority; it is not a causal attribution of answer
+quality. Legacy servers keep normal recall and report the evidence index as
+unsupported; unversioned context is marked unaddressable in the receipt.

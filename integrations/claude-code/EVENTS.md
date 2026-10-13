@@ -355,3 +355,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.cloud_worker_error`: cloud worker error.
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
+
+`recall.injection_receipt_failed`: writing the body-free last-turn injection receipt failed; recall output remains available.

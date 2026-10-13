@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.22]
+
+### Changed
+- Add compact evidence indexes, batch citation expansion, source/version references and body-free per-item injection receipts. Preserve legacy recall and the 45-second cloud limit.
+
 ## [1.6.21]
 
 ### Changed

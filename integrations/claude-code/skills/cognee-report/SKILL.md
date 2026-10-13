@@ -52,3 +52,16 @@ python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_session_stats.py" --session <host-sessio
 
 These totals cover sessions that **started** within the window; use the evaluator's
 event timestamps for exact calendar-window recall metrics.
+
+For why a specific memory was or was not injected on the last prompt, inspect
+its body-free receipt:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/cognee-evidence.py" explain --session-key <host-session-id>
+```
+
+Report per-item reasons (`injected`, `already_in_context`, `over_budget`,
+`own_session`, or source availability status), retrieval rank and priority.
+Versioned citations can be expanded through the search skill. Unaddressable
+legacy/guidance entries have hashes only; do not present those as source citations.
+The receipt describes delivery selection, not whether an item improved the answer.

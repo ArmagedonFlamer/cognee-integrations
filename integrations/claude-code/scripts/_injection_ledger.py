@@ -84,6 +84,7 @@ def render(
         guidance = set(data.get("guidance_hashes", []))
         filtered, duplicate_count, candidates = [], 0, 0
         new_guidance = set()
+        deduped_entries = []
         for section in sections:
             entries = []
             is_guidance = section.get("priority") == 30
@@ -91,6 +92,7 @@ def render(
                 digest = entry_hash(entry)
                 if digest in (guidance if is_guidance else seen):
                     duplicate_count += int(section.get("counted", True))
+                    deduped_entries.append(entry)
                     continue
                 entries.append(entry)
                 candidates += int(section.get("counted", True))
@@ -112,5 +114,9 @@ def render(
         if new_guidance & kept:
             data["guidance_hashes"] = sorted(new_guidance & kept)
         atomic_json(path, data)
-        stats.update(entries_deduped=duplicate_count, context_chars=len(text))
+        stats.update(
+            entries_deduped=duplicate_count,
+            context_chars=len(text),
+            deduped_entries=deduped_entries,
+        )
         return text, stats, actual_header

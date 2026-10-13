@@ -4984,6 +4984,7 @@ def recall_via_http(
     dataset_ids: list[str] | None = None,
     code_query: dict | None = None,
     timeout: float = 10.0,
+    evidence_mode: str | None = None,
 ) -> list:
     payload = {
         "query": query,
@@ -4992,6 +4993,10 @@ def recall_via_http(
         "scope": scope,
         "only_context": only_context,
     }
+    if evidence_mode:
+        payload["evidence_mode"] = evidence_mode
+    elif "graph" in scope and only_context:
+        payload["evidence_mode"] = "context"
     # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
     # the scope includes "code": the server rejects code_query without it.
     if code_query:
@@ -5047,7 +5052,8 @@ def recall_via_http(
     def fetch_scopes():
         started = time.monotonic()
         result = _json_http_request("/api/v1/recall", payload, timeout=timeout)
-        result = result if isinstance(result, list) else []
+        if evidence_mode != "index":
+            result = result if isinstance(result, list) else []
         if dataset != write_dataset and "graph" in scope:
             remaining = timeout - (time.monotonic() - started)
             if remaining > 0.05:
@@ -5055,10 +5061,17 @@ def recall_via_http(
                 primary_payload.pop("session_id", None)
                 try:
                     extra = _json_http_request("/api/v1/recall", primary_payload, timeout=remaining)
-                    if isinstance(extra, list):
+                    if isinstance(extra, list) and isinstance(result, list):
                         result.extend(extra)
+                    elif evidence_mode == "index" and isinstance(result, dict):
+                        from _evidence import merge_indexes
+
+                        result = merge_indexes(result, extra)
                 except (OSError, TimeoutError):
-                    pass
+                    if evidence_mode == "index" and isinstance(result, dict):
+                        result["partial"] = True
+            elif evidence_mode == "index" and isinstance(result, dict):
+                result["partial"] = True
         return result
 
     return bounded_call(fetch_scopes, timeout)
