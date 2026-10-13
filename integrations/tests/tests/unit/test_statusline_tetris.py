@@ -19,6 +19,8 @@ def sl(suite, statusline, monkeypatch):
     if suite.name != "claude-code":
         pytest.skip("Claude Code presentation only")
     monkeypatch.delenv("COGNEE_STATUSLINE_STYLE", raising=False)
+    # The developer's terminal may advertise truecolor; tests opt in explicitly.
+    monkeypatch.delenv("COLORTERM", raising=False)
     monkeypatch.setenv("COGNEE_PLUGIN_DATASET", "manual")
     monkeypatch.setenv("COGNEE_BASE_URL", "https://memory.example.test")
     monkeypatch.setenv("COLUMNS", "80")
