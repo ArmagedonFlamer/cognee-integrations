@@ -319,8 +319,9 @@ describe("session_end final chain", () => {
       for (let i = 0; i < 10; i++) await jest.advanceTimersByTimeAsync(100);
 
       await emit("session_end", { sessionId: "s1", messageCount: 1 }, { agentId: "will", sessionId: "s1" });
-      // 3 attempts with 10s between them.
-      for (let i = 0; i < 40; i++) await jest.advanceTimersByTimeAsync(1_000);
+      // 3 attempts with 10s between them; the chain's real fs I/O (buffer
+      // drain, state loading) needs real loop turns, so step until unregister.
+      await advanceUntil(() => mockUnregisterAgent.mock.calls.length > 0);
 
       expect(mockImprove).toHaveBeenCalledTimes(3);
       expect(mockUnregisterAgent).toHaveBeenCalledTimes(1);
