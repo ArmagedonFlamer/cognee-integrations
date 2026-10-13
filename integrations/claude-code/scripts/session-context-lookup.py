@@ -213,8 +213,37 @@ def _format_entry(entry: dict) -> str:
     return "\n".join(lines)
 
 
+def _line_entries(text: str) -> list[str]:
+    """Split fact/prose lines while keeping fenced code and entity records whole."""
+    entries, pending = [], []
+    fence = ""
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        marker = re.match(r"^(`{3,}|~{3,})", stripped)
+        if fence:
+            pending.append(line)
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                entries.append("\n".join(pending))
+                pending, fence = [], ""
+        elif marker:
+            pending.append(line)
+            fence = marker[1]
+        elif stripped.startswith("### "):
+            if pending:
+                entries.append("\n".join(pending))
+            pending = [line]
+        elif pending and pending[0].lstrip().startswith("### ") and stripped:
+            pending.append(line)
+        elif stripped:
+            entries.append("\n".join(pending + [line]))
+            pending = []
+    if pending:
+        entries.append("\n".join(pending))
+    return entries
+
+
 def _injection_sections(by_source: dict) -> list[dict]:
-    """Expose individual graph passages to budgeting and session deduplication."""
+    """Expose whole passages, facts and records, retaining their result identity."""
     sections = []
     for source, title, priority in (
         ("code", "=== Code graph facts ===", 50),
@@ -225,7 +254,9 @@ def _injection_sections(by_source: dict) -> list[dict]:
     ):
         entries = []
         relations = []
-        for entry in by_source.get(source, []):
+        entry_ids = {}
+        for result_id, entry in enumerate(by_source.get(source, [])):
+            start, relation_start = len(entries), len(relations)
             if source == "graph_context":
                 text = str(entry.get("text") or entry.get("content") or "")
                 parts = split_sections(text)
@@ -242,14 +273,27 @@ def _injection_sections(by_source: dict) -> list[dict]:
                             heading = (
                                 "## Relevant entities" if key == "entities" else "## Related facts"
                             )
-                            relations.append(
-                                "[cognee-memory]\n" + heading + "\n" + parts[key].strip()
+                            relations.extend(
+                                "[cognee-memory]\n" + heading + "\n" + item
+                                for item in _line_entries(parts[key])
                             )
+                    entry_ids.update(
+                        (item, result_id) for item in entries[start:] + relations[relation_start:]
+                    )
                     continue
-            entries.append(_format_entry(entry))
+            formatted = _format_entry(entry)
+            if source in {"graph_context", "code", "session_context"}:
+                prefix, _, body = formatted.partition("\n")
+                entries.extend(prefix + "\n" + item for item in _line_entries(body))
+            else:
+                entries.append(formatted)
+            entry_ids.update((item, result_id) for item in entries[start:])
+        metadata = {"source": source, "entry_ids": entry_ids}
         if relations:
-            sections.append({"title": title, "entries": relations, "priority": priority + 1})
-        sections.append({"title": title, "entries": entries, "priority": priority})
+            sections.append(
+                {"title": title, "entries": relations, "priority": priority + 1, **metadata}
+            )
+        sections.append({"title": title, "entries": entries, "priority": priority, **metadata})
     return sections
 
 
@@ -768,8 +812,6 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
         except Exception:
             pass
     _totals["turns"] += 1
-    if total > 0:
-        _totals["turns_with_hits"] += 1
 
     # Name the other datasets the user could search instead (see
     # _other_datasets_hint). The block is static text, so it rides along on
@@ -793,6 +835,64 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                 {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
             )
 
+    # Build a one-line visibility header so the user (via the assistant's
+    # context) can tell that memory fired on this turn — both what it
+    # recalled right now and what the previous turn persisted.
+    header = (
+        "Cognee memory: recall "
+        f"{counts['graph_context']} memory"
+        + (f" / {counts['code']} code" if code_lane else "")
+        + "; "
+        + saves_segment(saves_last_turn)
+    )
+    # Writes the server never received are not saves: a buffering outage gets
+    # its own segment, plus whatever still waits for replay (SDK-467).
+    for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
+        header += f"; {segment}"
+
+    memory_sections = _injection_sections(by_source)
+    # Reserve the largest possible drop notice before fitting. Replacing it
+    # with the actual smaller count (or removing it) can only shrink output.
+    entry_count = sum(len(section["entries"]) for section in memory_sections)
+    reserved_drop = f"; {entry_count} dropped to fit" if entry_count else ""
+    header += reserved_drop
+    sections = [{"entries": [header], "required": True}] + memory_sections
+    if not total:
+        sections.append(
+            {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
+        )
+    if dataset_hint:
+        sections.append({"entries": [dataset_hint], "priority": 0, "counted": False})
+    notice = _bounded_notice(header, notice)
+    full_context, injection_stats = fit_sections(
+        sections,
+        injection_limit(),
+        measure=lambda text: len(json.dumps(_recall_output(text, notice))) + 1,
+    )
+    retrieved_counts = counts
+    retrieved_total = total
+    counts = {source: injection_stats["source_hits"].get(source, 0) for source in counts}
+    total = sum(counts.values())
+    dropped = injection_stats["entries_dropped"]
+    actual_header = full_context.split("\n", 1)[0]
+    actual_header = actual_header.replace(
+        f"recall {retrieved_counts['graph_context']} memory",
+        f"recall {counts['graph_context']} memory",
+        1,
+    )
+    if code_lane:
+        actual_header = actual_header.replace(
+            f" / {retrieved_counts['code']} code", f" / {counts['code']} code", 1
+        )
+    if reserved_drop:
+        actual_header = actual_header.replace(
+            reserved_drop, f"; {dropped} dropped to fit" if dropped else "", 1
+        )
+    full_context = actual_header + full_context[len(full_context.split("\n", 1)[0]) :]
+    injection_stats["context_chars"] = len(full_context)
+    if total:
+        _totals["turns_with_hits"] += 1
+
     # Write last-turn counts so the status line script can render them.
     # Best-effort; failure here must not break the hook output.
     try:
@@ -808,6 +908,8 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                 .datetime.now(__import__("datetime").timezone.utc)
                 .isoformat(timespec="seconds"),
                 "hits": counts,
+                "retrieved_hits": retrieved_counts,
+                "entries_dropped": dropped,
                 "per_scope": per_scope,
                 "saves_last_turn": saves_last_turn,
                 "session_totals": _totals,
@@ -826,43 +928,27 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     except Exception as exc:
         hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
 
-    # Build a one-line visibility header so the user (via the assistant's
-    # context) can tell that memory fired on this turn — both what it
-    # recalled right now and what the previous turn persisted.
-    header = (
-        "Cognee memory: recall "
-        f"{counts['graph_context']} memory"
-        + (f" / {counts['code']} code" if code_lane else "")
-        + "; "
-        + saves_segment(saves_last_turn)
-    )
-    # Writes the server never received are not saves: a buffering outage gets
-    # its own segment, plus whatever still waits for replay (SDK-467).
-    for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
-        header += f"; {segment}"
-
-    sections = [{"entries": [header], "required": True}] + _injection_sections(by_source)
-    if not total:
-        sections.append({"entries": ["(no memory matches for this prompt)"], "priority": 1})
-    if dataset_hint:
-        sections.append({"entries": [dataset_hint], "priority": 0})
-    notice = _bounded_notice(header, notice)
-    full_context, injection_stats = fit_sections(
-        sections,
-        injection_limit(),
-        measure=lambda text: len(json.dumps(_recall_output(text, notice))) + 1,
-    )
     hook_log(
         "context_lookup_hit" if total else "context_lookup_empty",
         {
             "counts": counts,
+            "retrieved_counts": retrieved_counts,
             "per_scope": per_scope,
             "saves_last_turn": saves_last_turn,
             "elapsed_ms": elapsed_ms(recall_start),
             **{k: v for k, v in injection_stats.items() if k != "entries"},
         },
     )
-    notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
+    message = (
+        f"injected context ({counts})"
+        if total
+        else "no recall matches"
+        if not retrieved_total
+        else "no new memory injected"
+    )
+    if dropped:
+        message += f"; {dropped} dropped to fit"
+    notify(f"{message}; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.
@@ -886,6 +972,7 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                     "session_id": session_id,
                     "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
                     "hits": counts,
+                    "retrieved_hits": retrieved_counts,
                     "per_scope": per_scope,
                     "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
                 }
