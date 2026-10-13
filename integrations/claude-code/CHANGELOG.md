@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.16]
+
+### Changed
+- Apply review fixes across the preview stack: retain graph facts, preserve file context and its search hint, and cap complete hook output including notices.
+
 ## [1.6.15]
 
 ### Changed
