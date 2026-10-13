@@ -512,7 +512,7 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     # very same interval. COGNEE_RECALL_TIMEOUT is NOT read here — it still
     # bounds the explicit cognee-search path (_cognee_client.py).
     #
-    # The default (20s) is sized for the graph scope, the only expensive call.
+    # Defaults are 45s for cloud and 20s for local graph recall.
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.

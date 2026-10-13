@@ -1022,11 +1022,15 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 ### Per-operation timeouts
 
+The `/api/v1/agents/connections/me` identity lookup has a 15-second client timeout
+in both runtime resolution and the explicit-search fallback. Prompt recall resolves
+its session locally and keeps its separate 45-second cloud budget.
+
 Each operation has its own client timeout, tunable independently (all in seconds):
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_RECALL_BUDGET` | `20` | Whole-recall deadline for the per-prompt lookup; a scope that overruns contributes no hits |
+| `COGNEE_RECALL_BUDGET` | `45` cloud / `20` local | Whole-recall deadline in seconds for the per-prompt lookup; a scope that overruns contributes no hits |
 | `COGNEE_INJECT_MAX_CHARS` | `9000` | Maximum serialized hook output, including headers and notices. Values are clamped to `1024`–`9000` so the JSON envelope and visibility header fit; whole memory entries are dropped first. |
 | `COGNEE_RECALL_PASSAGE_CHARS` | `1200` | Per-passage cap, cut at a paragraph break and marked with how much was cut; `0` disables this trimming. The final output still obeys `COGNEE_INJECT_MAX_CHARS`. |
 | `COGNEE_RECALL_CONTEXT_CHARS` | `0` | Optional passage-trimming budget, disabled by default. The final `COGNEE_INJECT_MAX_CHARS` cap drops whole entries, including entities and facts when necessary; graph facts have priority over passages. |
@@ -1107,3 +1111,26 @@ companion endpoint currently requires the primary owner and copies an ACL snapsh
 later sharing changes must be reconciled explicitly. Connection credentials are
 hashed in the local decision record, and a changed principal cannot reuse it.
 Defaults remain off. Start a new host session when changing project routing policy.
+
+Cloud sessions read a distilled project digest from `context-cache/<dataset-id>.json` at
+startup without a network request. The worker refreshes it after confirmed improve and
+at most every 30 minutes while active. Caches older than 24 hours or from another tenant
+or credential are ignored. Resuming a conversation skips the digest. The digest is capped
+at 6,000 characters and seeds the injection ledger. Its sources are the `agent` guidance
+profile and graph node sets `session_learnings` and `project_docs`; raw turns are excluded.
+
+Discovery on the configured 1.6.3 tenant found both guidance and distilled graph context,
+but no `session_summaries` records. Structured last-session prose therefore depends on
+the WS7 server release; measured prior-session statistics are available independently.
+
+Cloud trace capture skips Read, Grep and Glob plus successful Bash commands with empty
+output. These skips remain visible as `traces_skipped` in session statistics. Bash errors and
+nonempty output remain eligible for capture under the configured capture policy.
+
+Structured summaries and guidance usage tracking require a server release advertising
+`session_summary_v1` / `context_usage_v1` in `/health`. The cache records the actual server
+version and checks capabilities before using those fields; it does not assume a future
+version number guarantees deployment. Current 1.6.3 tenants fall back to distilled facts
+and measured session statistics. After deployment, manually review ten sessions for
+usefulness; the extractor keeps its five-lesson per-batch cap. The seven useful entries per session
+criterion is measured across batches and remains a manual rollout acceptance check.

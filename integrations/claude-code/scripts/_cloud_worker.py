@@ -274,7 +274,7 @@ def drain(send, *, now: float = None, verify=None) -> int:
         try:
             if item.get("kind") == "trace" and not allow_tool(
                 item.get("entry", {}).get("origin_function", ""),
-                item.get("entry", {}).get("parameters", {}),
+                item.get("entry", {}).get("method_params", {}),
             ):
                 _expire(path, "capture_disabled_by_policy")
                 continue
@@ -395,6 +395,9 @@ def process_improves(improve, *, now: float = None) -> int:
                     reason="completed",
                 )
                 done += 1
+                from _context_cache import request_refresh
+
+                request_refresh(item["dataset"], item["session_id"], item["host_key"])
             else:
                 reason = outcome.get("reason", "unconfirmed")
                 _retry(
@@ -580,14 +583,24 @@ def run() -> None:
                     _refresh_console_log()
                     url = target()["base_url"]
                     health = authed_liveness(url, timeout=2)
-                    if health == "ready":
-                        mark_server_ready(url)
-                    elif health in DEFINITIVE_FAILURE_STATES:
-                        write_connection_state(health, url)
+                    identity = target()
+                    for launch in (root() / "sessions").glob("*/worker.json"):
+                        record = read(launch)
+                        if record.get("target") != identity:
+                            continue
+                        set_session_key(record["session_key"])
+                        if health == "ready":
+                            mark_server_ready(url)
+                        elif health in DEFINITIVE_FAILURE_STATES:
+                            write_connection_state(health, url)
                     refresh_credits()
                     maintain_sessions()
                 drain(send, verify=verify)
                 process_improves(improve)
+                from _context_cache import refresh_pending, schedule_active_refreshes
+
+                schedule_active_refreshes()
+                refresh_pending()
             except Exception as exc:
                 log("cloud_worker_error", error=type(exc).__name__)
             time.sleep(2)
