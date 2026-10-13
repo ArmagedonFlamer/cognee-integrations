@@ -345,3 +345,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
 
 - `cloud.injection_ledger_failed`: session injection ledger unavailable.
+
+- `cloud.auto_memory_setup_failed`: native-memory settings could not be updated.

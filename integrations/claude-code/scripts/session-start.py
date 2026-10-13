@@ -2544,9 +2544,14 @@ def main():
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     try:
         from _auto_memory import configure as configure_auto_memory
-        from config import is_cloud_mode
 
-        if is_cloud_mode(load_config()):
+        config = load_config()
+        cloud = config.get("_forced_backend") == "cloud" or (
+            config.get("_forced_backend") != "local"
+            and config.get("base_url")
+            and not service_url_is_local(config["base_url"])
+        )
+        if cloud:
             notice = configure_auto_memory()
             if notice:
                 hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
