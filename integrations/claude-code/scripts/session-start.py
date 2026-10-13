@@ -2612,10 +2612,14 @@ def main():
                 get_dataset(load_config()), get_session_key(), source=payload.get("source", "")
             )
             if digest:
+                # Lead with the digest, keeping what is already there (the
+                # last-session line, and the steer when the user has not opted out).
                 hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
-                hso["additionalContext"] = digest + "\n\n" + _MEMORY_PREFERENCE_STEER
-        except (OSError, ValueError):
-            pass  # Missing/busy cache must never delay startup.
+                existing = str(hso.get("additionalContext") or "").strip()
+                hso["additionalContext"] = f"{digest}\n\n{existing}" if existing else digest
+        except Exception as exc:
+            # A missing, busy or malformed cache must never cost the startup output.
+            hook_log("context_digest_inject_failed", {"error": str(exc)[:200]})
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     print(json.dumps(output or {}))

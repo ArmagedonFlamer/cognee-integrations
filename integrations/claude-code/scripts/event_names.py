@@ -13,6 +13,7 @@ EVENT_NAMES = {
     "hook:cloud_work_retry": "cloud.cloud_work_retry",
     "hook:cloud_capture_delivered": "cloud.cloud_capture_delivered",
     "hook:cloud_worker_error": "cloud.cloud_worker_error",
+    "hook:context_digest_inject_failed": "cloud.context_digest_inject_failed",
     "claude-observer:completion": "observer.completion",
     "claude-observer:completion_failed": "observer.completion_failed",
     "claude-observer:handler_exception": "observer.handler_exception",

@@ -353,5 +353,6 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.cloud_work_retry`: cloud work retry.
 - `cloud.cloud_capture_delivered`: cloud capture delivered.
 - `cloud.cloud_worker_error`: cloud worker error.
+- `cloud.context_digest_inject_failed`: startup digest skipped because its cache could not be read.
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
