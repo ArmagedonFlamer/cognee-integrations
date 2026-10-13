@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.17]
+
+### Changed
+- Render shared recall headings once, retain file symbols individually within the output budget, and refresh digest hashes for the new entry format.
+
 ## [1.6.16]
 
 ### Changed

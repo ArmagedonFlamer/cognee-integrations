@@ -50,6 +50,7 @@ def test_offline_start_capture_and_end_are_local(suite, run_hook, temp_home):
     cache.write_text(
         json.dumps(
             {
+                "entry_format": "bare-records-v1",
                 "rendered": "Cognee project memory: use Postgres for transaction safety.",
                 "entry_hashes": ["f" * 16],
                 "guidance_hashes": [],

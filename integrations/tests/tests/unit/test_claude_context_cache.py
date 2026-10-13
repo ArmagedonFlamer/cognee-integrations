@@ -111,3 +111,12 @@ def test_summary_and_usage_require_advertised_server_capability(cache, capable):
     assert ("Atomic cursor" in data["rendered"]) is capable
     assert calls[-1]["record_context_usage"] is capable
     assert data["server_version"] == "1.6.4"
+
+
+def test_old_rendering_hashes_request_a_fresh_digest(cache):
+    data = cache.build("ds", "old", "new-host", request=lambda *a, **k: [])
+    data.pop("entry_format")
+    cache.cache_path("ds").write_text(json.dumps(data))
+    assert cache.load("ds") == {}
+    assert cache.inject("ds", "new-host") == ""
+    assert cache.cache_path("ds").with_suffix(".wanted.json").exists()

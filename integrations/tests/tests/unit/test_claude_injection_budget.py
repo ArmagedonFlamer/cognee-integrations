@@ -250,3 +250,25 @@ def test_many_evictions_measure_the_hook_envelope_only_twice():
     assert measurements[0] == len("Cognee memory")
     assert 0 < stats["entries_kept"] < 2000
     assert len(json.dumps({"additionalContext": text, "notice": "🧠\\" * 50})) + 1 <= 9000
+
+
+def test_graph_sections_render_shared_headings_once(lookup):
+    facts = "\n".join(f"- entity-{i} relates to useful concept-{i}" for i in range(60))
+    passages = "first passage\n---\nsecond passage"
+    sections = lookup._injection_sections(
+        {
+            "graph_context": [
+                {"text": f"## Relevant passages\n{passages}\n\n## Related facts\n{facts}"}
+            ]
+        }
+    )
+    text, stats = budget.fit_sections(sections, 9000)
+    assert text.count("## Related facts") == 1
+    assert text.count("## Relevant passages") == 1
+    assert text.count("=== Cognee memory: facts ===") == 1
+    assert text.count("=== Cognee memory: passages ===") == 1
+    assert stats["source_hits"]["graph_context"] == 1
+    assert all(
+        "[cognee-memory]" not in entry for section in sections for entry in section["entries"]
+    )
+    assert "entity-59 relates to useful concept-59" in text
