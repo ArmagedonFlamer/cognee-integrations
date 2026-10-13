@@ -43,7 +43,7 @@ capture off; recall and explicit remember keep working.
 Memory is kept until you delete it (the `cognee-forget` skill, or deleting the
 dataset). The plugin never expires server-side memory on its own.
 
-**Other network calls.** Local mode installs `cognee==1.6.1` from PyPI into
+**Other network calls.** Local mode installs `cognee==1.6.3` from PyPI into
 `~/.cognee-plugin/venv` once. The background idle watcher fetches this repository's
 `marketplace.json` from `raw.githubusercontent.com` at most hourly to offer updates
 (`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to

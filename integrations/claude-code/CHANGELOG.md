@@ -17,6 +17,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Bound hook injections to 9,000 characters by dropping whole entries in priority order; preserve the header and log kept/dropped counts.
 - Preserve graph entities and facts ahead of passages, retain file-context formatting and search hints, and account for notices and the complete JSON envelope. Clamp tiny configured budgets to 1,024 characters so headers remain visible.
 
+### Fixed
+- **Reading a secret file through the shell no longer stores it in memory.** Automatic
+  capture skipped `.env`, SSH keys, `~/.aws/credentials`, `.npmrc` and the other
+  secret-file globs only when the file arrived as a structured path (`Read`,
+  `Edit`, …). A shell call such as `cat ~/.aws/credentials`, `less ~/.ssh/id_rsa`,
+  `source .env.local` or `grep KEY .env` was captured with its output. A shell
+  command is now split into words (quotes removed, `$HOME` / `${HOME}` read as `~`,
+  words cut at `|`, `;`, `&`, `<`, `>`, parentheses and backticks) and is not captured
+  when any word matches the same globs, `COGNEE_CAPTURE_DENY_PATHS` included. A path
+  reached through another variable or a glob (`cat ~/.aws/cred*`) is not recognised.
+- **Redaction missed AWS and npm credentials.** The credential rule only fired when a
+  secret word ended the name, so `aws_secret_access_key = …`, `aws_access_key_id = …`,
+  `SECRET_KEY = …`, `SecretAccessKey` / `SessionToken` in AWS JSON and the
+  `.npmrc` `_authToken=` / `_auth=` lines passed through. These names are now
+  redacted, as are AWS access key ids anywhere (`AKIA…`, `ASIA…`, … plus 16
+  characters), `npm_…` tokens and `pypi-…` upload tokens.
+
 ## [1.6.6]
 
 ### Fixed
