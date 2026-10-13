@@ -63,6 +63,18 @@ def test_nothing_to_do_is_silent(pc):
     assert pc.sweep_stale_state() == {}
 
 
+def test_cloud_quarantine_expires_but_pending_work_is_untouched(pc, suite):
+    if suite.name != "claude-code":
+        pytest.skip("Claude cloud worker")
+    for directory in ("spool", "improve-wanted"):
+        expired = pc._PLUGIN_DIR / directory / "expired"
+        old = _write(expired / "old.json", {"entry": "private"}, 8 * DAY)
+        recent = _write(expired / "recent.json", {"entry": "private"}, 6 * DAY)
+        pending = _write(pc._PLUGIN_DIR / directory / "pending.json", {"entry": "retry"}, 8 * DAY)
+        pc.sweep_stale_state()
+        assert not old.exists() and recent.exists() and pending.exists()
+
+
 # ── launch records: pid death + grace, or 30 days ─────────────────────────
 
 
