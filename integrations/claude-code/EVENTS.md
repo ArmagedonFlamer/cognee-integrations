@@ -244,6 +244,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:shared_memory_skipped` | `shared_memory.skipped` |
 | `hook:shared_memory_tenant_create_failed` | `shared_memory.tenant_create_failed` |
 | `hook:shared_memory_wired` | `shared_memory.wired` |
+| `hook:bash_capture_decision` | `capture.bash_decision` |
 | `hook:skip_self_cognee_bash` | `skip.self_cognee_bash` |
 | `hook:slow_streak_escalated` | `slow.streak_escalated` |
 | `hook:state_sweep` | `state.sweep` |
@@ -357,3 +358,9 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
 
 `recall.injection_receipt_failed`: writing the body-free last-turn injection receipt failed; recall output remains available.
+
+Bash capture decisions contain only host session identity and `captured`,
+`skipped_self` or `skipped_low_signal`. Captured means retained for the write path,
+not server acknowledgement. Self skips log an allowlisted `first_token` and
+`plugin_path`, `plugin_script` or `cognee_cli` reason. Low-signal skips log the tool
+and allowlisted first token; neither event includes command text.

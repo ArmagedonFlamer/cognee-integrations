@@ -1053,6 +1053,15 @@ ambiguous legacy events cannot acquire server idempotency retroactively.
 
 ### Automatic capture controls
 
+Bash capture excludes actual plugin/CLI invocations, not commands that merely
+mention Cognee in a repository path, search pattern or Python import. Successful
+read-only inspections are low signal; grep/rg exit 1 with no stderr is also an
+inspection. Failures, tests/builds, changes, heredocs and compound pipelines are
+retained. Ambiguous sed/awk programs and mutating options are retained conservatively.
+`COGNEE_CAPTURE_DENY_TOOLS=Bash` opts out of Bash capture entirely.
+`/cognee-report` shows per-session captured, skipped-self and skipped-low-signal
+counts. Captured includes buffered writes; confirmed saves remain a separate metric.
+
 Set these in `~/.cognee/.env` or the host environment. Shell environment values
 win over the shared file. Changes apply when a new hook process starts.
 

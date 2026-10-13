@@ -891,3 +891,20 @@ def test_server_join_dedupes_runs_and_does_not_double_count_child_tokens():
         99,
     )  # the child's tokens are already in its parent
     assert pe.analyze_server("", "key", None, None)["available"] is False
+
+
+def test_bash_capture_report_counts_all_decisions(env):
+    write_jsonl(
+        env.plugin_dir / "hook.log",
+        *[
+            hook(ts(10), "bash_capture_decision", host_session_id=SESSION_UUID, outcome=outcome)
+            for outcome in ("captured", "skipped_self", "skipped_low_signal", "captured")
+        ],
+    )
+    card = env.card()
+    counts = card["bash_capture"][SESSION_UUID]
+    assert counts == {"captured": 2, "skipped_self": 1, "skipped_low_signal": 1}
+    assert sum(counts.values()) == 4
+    text = pe.render_text(card)
+    assert "2 traces captured" in text
+    assert "1 skipped-self" in text and "1 skipped-low-signal" in text

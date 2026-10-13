@@ -10,6 +10,10 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+- SDK-1107: capture Bash work in Cognee repositories, exclude actual plugin invocations and proven read-only inspections, and report body-free per-session capture decisions.
+
 ## [1.6.22]
 
 ### Changed

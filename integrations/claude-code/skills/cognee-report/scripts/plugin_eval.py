@@ -552,6 +552,8 @@ def analyze_hook_log(
                 recall_verdicts[str(detail.get("verdict") or "unknown")] += 1
             elif event == "recall_budget_exceeded":
                 budget_recalls.add(recall_key)
+        if event == "trace_skipped_low_signal":
+            out["low_signal_skipped"] += 1
         if event == "skip_self_cognee_bash":
             out["self_skipped"] += 1
         if event in _CONNECTIVITY:
@@ -592,6 +594,7 @@ def analyze_hook_log(
             "landed_rate": ratio(landed, writes),
             "buffered_share": ratio(out["buffered"], writes),
             "skipped_as_self_reference": out["self_skipped"],
+            "skipped_as_low_signal": out["low_signal_skipped"],
             "self_skip_share": ratio(out["self_skipped"], out["self_skipped"] + writes),
         },
         "improve": {
@@ -1905,6 +1908,29 @@ def build_scorecard(
             since,
             until,
         )
+    decisions = {}
+    for event_ts, raw in iter_jsonl(rotated_files(plugin_dir, "hook.log"), {}):
+        if event_ts is None or (since and event_ts < since) or (until and event_ts >= until):
+            continue
+        try:
+            row = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(row, dict) or row.get("event") != "bash_capture_decision":
+            continue
+        detail = row.get("detail") or {}
+        if not isinstance(detail, dict):
+            continue
+        host = str(detail.get("host_session_id") or "unknown")
+        if args.session and host != host_session_id(args.session):
+            continue
+        outcome = detail.get("outcome")
+        if outcome in {"captured", "skipped_self", "skipped_low_signal"}:
+            counts = decisions.setdefault(
+                host, {"captured": 0, "skipped_self": 0, "skipped_low_signal": 0}
+            )
+            counts[outcome] += 1
+    card["bash_capture"] = decisions
     card["usage"] = usage_level(recall, hook, transcripts)
     card["grade"] = compute_grade(metric_values(card))
     card["advice"] = build_advice(card)
@@ -2128,6 +2154,18 @@ def render_text(card: Dict[str, Any], markdown: bool = False) -> str:
             "{:,}".format(recall["reinjection"]["repeated_tokens_est"]),
         ),
     ]
+    for host, counts in card.get("bash_capture", {}).items():
+        bullets.append(
+            "Bash %s: %d traces captured (stored or awaiting write), %d skipped-self, "
+            "%d skipped-low-signal; %d PostToolUse calls classified"
+            % (
+                host,
+                counts["captured"],
+                counts["skipped_self"],
+                counts["skipped_low_signal"],
+                sum(counts.values()),
+            )
+        )
     transcripts = card.get("transcripts")
     if transcripts:
         in_transcript = transcripts["in_transcript"]
