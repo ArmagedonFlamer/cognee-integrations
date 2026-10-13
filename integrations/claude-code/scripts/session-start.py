@@ -2318,6 +2318,11 @@ async def _start(payload: dict | None = None) -> dict:
             }
         }
     os.environ["COGNEE_SESSION_KEY"] = session_key
+    if payload.get("source") in {"clear", "compact"}:
+        from _injection_ledger import reset as reset_injection_ledger
+
+        reset_injection_ledger(session_key)
+
 
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written

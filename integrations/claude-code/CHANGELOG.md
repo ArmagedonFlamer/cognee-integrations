@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.8]
+
+### Changed
+- Deduplicate injected cloud memory per session with an atomic hash ledger; reset on clear/compact and report new versus already present entries.
+
 ## [1.6.7]
 
 ### Changed

@@ -837,7 +837,23 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         )
         + 1
     )
-    full_context, injection_stats = fit_sections(sections, injection_limit() - envelope_chars)
+    if runtime["mode"] == "cloud" and _key_safe and total:
+        from _injection_ledger import render as render_deduped
+
+        try:
+            full_context, injection_stats, header = render_deduped(
+                _key,
+                header,
+                sections[1:],
+                injection_limit() - envelope_chars - 100,
+            )
+        except (OSError, ValueError) as exc:
+            hook_log("injection_ledger_failed", {"error": str(exc)[:200]})
+            full_context, injection_stats = fit_sections(
+                sections, injection_limit() - envelope_chars
+            )
+    else:
+        full_context, injection_stats = fit_sections(sections, injection_limit() - envelope_chars)
     hook_log(
         "context_lookup_hit" if total else "context_lookup_empty",
         {

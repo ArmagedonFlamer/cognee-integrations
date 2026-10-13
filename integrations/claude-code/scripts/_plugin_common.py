@@ -5761,6 +5761,15 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             (_IMPROVE_STATE_DIR, "improve_state"),
         ):
             _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
+        sessions = _PLUGIN_DIR / "sessions"
+        if sessions.is_dir():
+            for directory in sessions.iterdir():
+                if not directory.is_dir() or directory.is_symlink():
+                    continue
+                newest = max((p.stat().st_mtime for p in directory.iterdir()), default=0)
+                if now - newest > _SWEEP_SESSION_FILE_MAX_AGE_SECONDS:
+                    shutil.rmtree(directory)
+                    counts["sessions"] = counts.get("sessions", 0) + 1
         _sweep_pending_husks(counts)
         _sweep_launch_records(now, counts)
         for name in _SWEEP_LEGACY_FILES:
