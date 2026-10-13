@@ -1171,7 +1171,7 @@ def load_resolved(session_key: str = "", *, identity: bool = True) -> dict:
         conn = _json_http_request(
             f"/api/v1/agents/connections/me{query}",
             method="GET",
-            timeout=10.0,
+            timeout=15.0,
         )
         if isinstance(conn, dict):
             agent = conn.get("agent") if isinstance(conn.get("agent"), dict) else {}

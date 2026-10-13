@@ -1022,6 +1022,10 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 ### Per-operation timeouts
 
+The `/api/v1/agents/connections/me` identity lookup has a 15-second client timeout
+in both runtime resolution and the explicit-search fallback. Prompt recall resolves
+its session locally and keeps its separate 45-second cloud budget.
+
 Each operation has its own client timeout, tunable independently (all in seconds):
 
 | Env var | Default | Effect |

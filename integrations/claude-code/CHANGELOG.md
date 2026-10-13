@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.18]
+
+### Changed
+- Allow 15 seconds for connections/me in runtime resolution and explicit search. Preserve passage boundaries and global context order; correct documented trimming defaults. Cloud recall remains 45 seconds.
+
 ## [1.6.17]
 
 ### Changed
