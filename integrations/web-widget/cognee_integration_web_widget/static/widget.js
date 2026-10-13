@@ -56,7 +56,56 @@
     return v;
   }
   var visitorId = id(localStorage, "cognee_visitor_id", "visitor");
-  var conversationId = id(sessionStorage, "cognee_conversation_id", "conv");
+
+  // The chats of this tab. Each has its own conversation id, so cognee keeps a
+  // separate session per topic. The list and the transcripts live in
+  // sessionStorage: they follow the visitor across pages and reloads and are
+  // gone when the tab closes. Nothing is listed back from the server, so one
+  // visitor can never see another's chats.
+  var CHATS_KEY = "cognee_chats";
+  var MAX_CHATS = 20;
+  function newChat() {
+    return {
+      id: "conv-" + Math.random().toString(36).slice(2, 10),
+      title: "",
+      created: Date.now(),
+      messages: [],
+    };
+  }
+  var chats = null;
+  try {
+    chats = JSON.parse(sessionStorage.getItem(CHATS_KEY) || "null");
+  } catch (e) {
+    /* unreadable or blocked: start afresh */
+  }
+  if (!chats || !Array.isArray(chats.list) || !chats.list.length) {
+    var first = newChat();
+    try {
+      // A tab from before chats were kept carries its one conversation id;
+      // reuse it so that conversation's session simply continues.
+      var legacy = sessionStorage.getItem("cognee_conversation_id");
+      if (legacy) first.id = legacy;
+      sessionStorage.removeItem("cognee_conversation_id");
+    } catch (e) {
+      /* nothing to carry over */
+    }
+    chats = { active: first.id, list: [first] };
+  }
+  function saveChats() {
+    try {
+      sessionStorage.setItem(CHATS_KEY, JSON.stringify(chats));
+    } catch (e) {
+      /* full or blocked: the chats last as long as this page does */
+    }
+  }
+  function chatById(cid) {
+    for (var i = 0; i < chats.list.length; i++) if (chats.list[i].id === cid) return chats.list[i];
+    return null;
+  }
+  function activeChat() {
+    return chatById(chats.active) || chats.list[0];
+  }
+  saveChats();
   try {
     // Left over from when this was shared across every tab. Removing it stops
     // an old tab resurrecting the endless conversation.
@@ -92,6 +141,14 @@
     ".cognee-icon{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0;border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;text-decoration:none}" +
     ".cognee-icon:hover{background:var(--hover);color:var(--strong)}" +
     ".cognee-icon svg,.cognee-title svg,.cognee-launch svg{width:16px;height:16px}" +
+    ".cognee-menu{position:absolute;top:52px;left:12px;right:12px;z-index:2;max-height:60%;overflow-y:auto;padding:6px;" +
+    "background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}" +
+    ".cognee-menu-h{padding:6px 10px;font-size:12px;line-height:16px;color:var(--muted)}" +
+    ".cognee-chat{display:flex;align-items:baseline;justify-content:space-between;gap:12px;width:100%;padding:8px 10px;border:0;border-radius:8px;" +
+    "background:transparent;color:var(--fg);font-family:inherit;font-size:13px;line-height:18px;text-align:left;cursor:pointer}" +
+    ".cognee-chat:hover{background:var(--hover)}.cognee-chat[aria-current=true]{color:var(--strong);font-weight:600}" +
+    ".cognee-chat span:first-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    ".cognee-chat span:last-child{flex:none;font-size:12px;font-weight:400;color:var(--muted)}" +
     ".cognee-note{padding:0 16px 8px;text-align:center;font-size:12px;line-height:16px;color:var(--muted)}" +
     ".cognee-log{flex:1;min-height:0;overflow-y:auto;padding:4px 16px 16px;overflow-wrap:anywhere}" +
     ".cognee-user{display:flex;justify-content:flex-end;margin:12px 0}" +
@@ -148,6 +205,8 @@
     copy: svg('<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
     check: svg('<path d="M20 6 9 17l-5-5"/>'),
     send: svg('<path d="M12 19V5M5 12l7-7 7 7"/>'),
+    chats: svg('<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>'),
+    compose: svg('<path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4z"/>'),
   };
 
   var root = document.createElement("div");
@@ -158,10 +217,13 @@
     '  <div class="cognee-head">' +
     '    <div class="cognee-title">' + ICON.sparkle + "Assistant</div>" +
     '    <div class="cognee-acts">' +
+    '      <button class="cognee-icon" id="cognee-chats" type="button" title="Chats in this tab" aria-label="Chats in this tab" aria-expanded="false">' + ICON.chats + "</button>" +
+    '      <button class="cognee-icon" id="cognee-new" type="button" title="New chat" aria-label="New chat">' + ICON.compose + "</button>" +
     '      <a class="cognee-icon" id="cognee-dash" target="_blank" rel="noopener" title="Widget dashboard" aria-label="Widget dashboard" hidden>' + ICON.gear + "</a>" +
-    '      <button class="cognee-icon" id="cognee-forget" type="button" title="Clear and forget this conversation" aria-label="Clear and forget this conversation">' + ICON.trash + "</button>" +
+    '      <button class="cognee-icon" id="cognee-forget" type="button" title="Forget and remove this chat" aria-label="Forget and remove this chat">' + ICON.trash + "</button>" +
     '      <button class="cognee-icon" id="cognee-close" type="button" title="Close" aria-label="Close">' + ICON.close + "</button>" +
     "    </div></div>" +
+    '  <div class="cognee-menu" id="cognee-menu" hidden></div>' +
     '  <div class="cognee-note">Responses are generated using AI and may contain mistakes.</div>' +
     '  <div class="cognee-log" id="cognee-log" aria-live="polite"></div>' +
     '  <div class="cognee-foot">' +
@@ -243,7 +305,9 @@
     open(false);
   };
   panel.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") open(false);
+    if (e.key !== "Escape") return;
+    if (!menu.hidden) closeMenu();
+    else open(false);
   });
 
   // -- rendering ---------------------------------------------------------
@@ -339,6 +403,59 @@
     scrollDown();
     return row;
   }
+  var pendingChat = null;
+  function renderChat() {
+    var chat = activeChat();
+    log.textContent = "";
+    chat.messages.forEach(function (m) {
+      if (m.role === "user") {
+        addUser(m.text);
+      } else {
+        addBot(m.text);
+        addCitations(m.citations);
+      }
+    });
+    if (pendingChat === chat.id) addThinking();
+  }
+  function closeMenu() {
+    menu.hidden = true;
+    chatsBtn.setAttribute("aria-expanded", "false");
+  }
+  function renderMenu() {
+    menu.textContent = "";
+    var head = document.createElement("div");
+    head.className = "cognee-menu-h";
+    head.textContent = "Chats in this tab \u00b7 cleared when you close it";
+    menu.appendChild(head);
+    chats.list
+      .slice()
+      .sort(function (a, b) {
+        return b.created - a.created;
+      })
+      .forEach(function (chat) {
+        var item = document.createElement("button");
+        item.type = "button";
+        item.className = "cognee-chat";
+        if (chat.id === chats.active) item.setAttribute("aria-current", "true");
+        var title = document.createElement("span");
+        title.textContent = chat.title || "New chat";
+        var meta = document.createElement("span");
+        var asked = chat.messages.filter(function (m) {
+          return m.role === "user";
+        }).length;
+        meta.textContent = asked === 1 ? "1 question" : asked + " questions";
+        item.appendChild(title);
+        item.appendChild(meta);
+        item.onclick = function () {
+          chats.active = chat.id;
+          saveChats();
+          closeMenu();
+          renderChat();
+          input.focus();
+        };
+        menu.appendChild(item);
+      });
+  }
   function addCitations(cites) {
     if (!cites || !cites.length) return;
     var wrap = document.createElement("div");
@@ -388,28 +505,37 @@
     sendBtn.disabled = true;
     input.value = "";
     grow();
+    var chat = activeChat();
+    chat.messages.push({ role: "user", text: text });
+    if (!chat.title) chat.title = text.length > 60 ? text.slice(0, 57) + "\u2026" : text;
+    saveChats();
     addUser(text);
-    var thinking = addThinking();
+    pendingChat = chat.id;
+    addThinking();
+    var reply;
     try {
       var res = await fetch(API + "/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: text,
-          conversation_id: conversationId,
+          conversation_id: chat.id,
           visitor_id: visitorId,
           site_id: SITE_ID,
           opt_in: optIn,
         }),
       });
       var data = await res.json();
-      thinking.remove();
-      addBot(data.answer || "…");
-      addCitations(data.citations);
+      reply = { role: "bot", text: data.answer || "…", citations: data.citations || [] };
     } catch (e) {
-      thinking.remove();
-      addBot("Sorry — I couldn't reach memory right now.");
+      reply = { role: "bot", text: "Sorry — I couldn't reach memory right now.", citations: [] };
     } finally {
+      pendingChat = null;
+      if (chatById(chat.id)) {
+        chat.messages.push(reply);
+        saveChats();
+      }
+      if (chats.active === chat.id) renderChat();
       busy = false;
       sendBtn.disabled = false;
       input.focus();
@@ -425,13 +551,47 @@
     }
   });
 
+  var menu = root.querySelector("#cognee-menu");
+  var chatsBtn = root.querySelector("#cognee-chats");
+  chatsBtn.onclick = function () {
+    if (menu.hidden) {
+      renderMenu();
+      menu.hidden = false;
+      chatsBtn.setAttribute("aria-expanded", "true");
+    } else {
+      closeMenu();
+    }
+  };
+  panel.addEventListener("click", function (e) {
+    if (!menu.hidden && !menu.contains(e.target) && !chatsBtn.contains(e.target)) closeMenu();
+  });
+  root.querySelector("#cognee-new").onclick = function () {
+    closeMenu();
+    // One empty chat at most: reuse it rather than piling up blank ones.
+    var empty = chats.list.filter(function (c) {
+      return !c.messages.length;
+    })[0];
+    var chat = empty || newChat();
+    if (!empty) {
+      chats.list.push(chat);
+      // Oldest first out; their sessions stay in cognee, only the tab forgets them.
+      while (chats.list.length > MAX_CHATS) chats.list.shift();
+    }
+    chats.active = chat.id;
+    saveChats();
+    renderChat();
+    input.focus();
+  };
+
   root.querySelector("#cognee-forget").onclick = async function () {
+    closeMenu();
+    var chat = activeChat();
     try {
       await fetch(API + "/api/forget", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          conversation_id: conversationId,
+          conversation_id: chat.id,
           visitor_id: visitorId,
           site_id: SITE_ID,
         }),
@@ -439,7 +599,17 @@
     } catch (e) {
       /* nothing on screen to keep either way */
     }
-    log.textContent = "";
-    addBot("Done — I've forgotten this conversation.");
+    chats.list = chats.list.filter(function (c) {
+      return c.id !== chat.id;
+    });
+    if (!chats.list.length) chats.list.push(newChat());
+    chats.active = chats.list[chats.list.length - 1].id;
+    saveChats();
+    renderChat();
+    // Said once, not stored: the chat it refers to no longer exists.
+    var note = addBot("Done — I've forgotten that conversation.");
+    note.style.color = "var(--muted)";
   };
+
+  renderChat();
 })();
