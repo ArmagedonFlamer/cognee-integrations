@@ -286,6 +286,8 @@ def _inspection_words(command: str) -> list[str]:
     # read command, command substitution, a heredoc, or a pipeline.
     if any(marker in command for marker in (";", "|", "<", ">", "`", "$", "\n", "(")):
         return []
+    if "&" in command.replace("&&", ""):
+        return []
     parts = _shell_parts(command)
     while len(parts) > 1:
         first = parts.pop(0)
@@ -344,8 +346,12 @@ def low_signal_bash(command: str, output, status: str) -> bool:
         if not args:
             return False
         sub, opts = args[0], args[1:]
+        if any(a == "--output" or a.startswith("--output=") for a in opts):
+            return False
         if sub in {"branch", "tag"}:
-            return not opts or opts[0] in {"--list", "-l", "--show-current", "-a", "-r"}
+            return not opts or all(
+                a in {"--list", "-l", "--show-current", "-a", "-r", "-v", "-vv"} for a in opts
+            )
         if sub == "worktree":
             return bool(opts) and opts[0] == "list"
         if sub == "remote":
@@ -364,8 +370,21 @@ def low_signal_bash(command: str, output, status: str) -> bool:
     if first not in _READ_COMMANDS:
         return False
     # Commands which can execute programs or write files require extra care.
-    if first in {"awk", "sed"}:
-        return False
+    if first == "sed":
+        rest = args[1:] if args[:1] == ["-n"] else args
+        return (
+            bool(rest)
+            and bool(re.fullmatch(r"(?:[0-9]+(?:,[0-9]+)?)?[pqd]|s/[^/]+/[^/]+/[gip]*", rest[0]))
+            and not any(a.startswith("-") for a in rest[1:])
+        )
+    if first == "awk":
+        return (
+            bool(args)
+            and bool(re.fullmatch(r"\{\s*print\s*\}", args[0]))
+            and not any(a.startswith("-") for a in args[1:])
+        )
+    if first == "uniq":
+        return len(args) <= 1
     if first == "find" and any(
         a
         in {

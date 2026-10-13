@@ -354,3 +354,20 @@ def test_skip_logs_never_include_command_text(
     assert event in content
     assert "SENTINEL-7c1d" not in content
     assert "cmd_prefix" not in content
+
+
+@pytest.mark.parametrize(
+    "command,skip",
+    [
+        ("git branch --list -D cognee", False),
+        ("git log --output=report", False),
+        ("uniq input output", False),
+        ("cd cognee & ls", False),
+        ("sed -n '1,120p' cognee.py", True),
+        ("sed 'w output' input", False),
+        ("awk '{print}' cognee.py", True),
+        ("awk 'system(\"rm foo\")'", False),
+    ],
+)
+def test_inspection_options_do_not_hide_writes(policy, command, skip):
+    assert policy.low_signal_bash(command, {"exit_code": 0}, "success") is skip
