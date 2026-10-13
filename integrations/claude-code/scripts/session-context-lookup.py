@@ -224,6 +224,7 @@ def _injection_sections(by_source: dict) -> list[dict]:
         ("trace", "=== Prior agent trace ===", 10),
     ):
         entries = []
+        relations = []
         for entry in by_source.get(source, []):
             if source == "graph_context":
                 text = str(entry.get("text") or entry.get("content") or "")
@@ -241,27 +242,47 @@ def _injection_sections(by_source: dict) -> list[dict]:
                             heading = (
                                 "## Relevant entities" if key == "entities" else "## Related facts"
                             )
-                            entries.append(
+                            relations.append(
                                 "[cognee-memory]\n" + heading + "\n" + parts[key].strip()
                             )
                     continue
             entries.append(_format_entry(entry))
+        if relations:
+            sections.append({"title": title, "entries": relations, "priority": priority + 1})
         sections.append({"title": title, "entries": entries, "priority": priority})
     return sections
 
 
-def _outage_output(state: str) -> dict:
+def _recall_output(context: str, notice: str = "") -> dict:
+    """The exact printed envelope, including both user- and model-visible notices."""
+    header = context.split("\n", 1)[0]
+    return with_base_url_notice(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": context,
+                "systemMessage": header,
+            }
+        },
+        "UserPromptSubmit",
+        notice=notice,
+    )
+
+
+def _bounded_notice(header: str, notice: str) -> str:
+    """Keep a visible diagnostic even when a long URL/pattern exhausts the budget."""
+    if len(json.dumps(_recall_output(header, notice))) + 1 <= injection_limit():
+        return notice
+    hook_log("hook_notice_failed", {"source": "injection_budget", "error": notice})
+    return "Cognee: configuration notice omitted to fit context; inspect hook.log for details."
+
+
+def _outage_output(state: str, notice: str = "") -> dict:
     """Envelope for a prompt whose recall was skipped: see ``outage_header``."""
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
     header = outage_header(state, saves, warmup_backlog(), "; ")
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": header,
-            "systemMessage": header,
-        }
-    }
+    return _recall_output(header, _bounded_notice(header, notice))
 
 
 def _has_entry_content(entry: dict) -> bool:
@@ -287,7 +308,7 @@ def _has_entry_content(entry: dict) -> bool:
     return any(str(entry.get(field, "") or "").strip() for field in fields)
 
 
-async def _run(prompt: str, cwd: str = "") -> dict | None:
+async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     config = load_config()
     runtime = resolve_runtime_mode()
     hook_log(
@@ -347,7 +368,9 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             # Report the outage instead of going quiet: the recorded failure
             # names it when the probe itself was inconclusive.
-            return _outage_output(state if state in DEFINITIVE_FAILURE_STATES else prior_state)
+            return _outage_output(
+                state if state in DEFINITIVE_FAILURE_STATES else prior_state, notice
+            )
 
     session_id = _load_session_id()
     if not session_id:
@@ -823,21 +846,12 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         sections.append({"entries": ["(no memory matches for this prompt)"], "priority": 1})
     if dataset_hint:
         sections.append({"entries": [dataset_hint], "priority": 0})
-    envelope_chars = (
-        len(
-            json.dumps(
-                {
-                    "hookSpecificOutput": {
-                        "hookEventName": "UserPromptSubmit",
-                        "additionalContext": "",
-                        "systemMessage": header,
-                    }
-                }
-            )
-        )
-        + 1
+    notice = _bounded_notice(header, notice)
+    full_context, injection_stats = fit_sections(
+        sections,
+        injection_limit(),
+        measure=lambda text: len(json.dumps(_recall_output(text, notice))) + 1,
     )
-    full_context, injection_stats = fit_sections(sections, injection_limit() - envelope_chars)
     hook_log(
         "context_lookup_hit" if total else "context_lookup_empty",
         {
@@ -880,14 +894,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": full_context,
-            "systemMessage": header,
-        }
-    }
-    return output
+    return _recall_output(full_context, notice)
 
 
 def _recall_min_prompt_chars() -> int:
@@ -937,13 +944,17 @@ def main():
         return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
 
+    notice_output = with_base_url_notice(None, "UserPromptSubmit") or {}
+    notice = str(notice_output.get("hookSpecificOutput", {}).get("additionalContext") or "")
     output = None
     try:
         with quiet_hook_output("session-context-lookup"):
-            output = asyncio.run(_run(prompt, cwd))
+            output = asyncio.run(_run(prompt, cwd, notice=notice))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
-    output = with_base_url_notice(output, "UserPromptSubmit")
+    if output is None and notice:
+        header = "Cognee memory: recall unavailable"
+        output = _recall_output(header, _bounded_notice(header, notice))
     if output:
         print(json.dumps(output))
 

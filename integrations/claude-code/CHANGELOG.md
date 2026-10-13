@@ -14,6 +14,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Bound hook injections to 9,000 characters by dropping whole entries in priority order; preserve the header and log kept/dropped counts.
+- Preserve graph entities and facts ahead of passages, retain file-context formatting and search hints, and account for notices and the complete JSON envelope. Clamp tiny configured budgets to 1,024 characters so headers remain visible.
 
 ## [1.6.6]
 
