@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 
 EVENT_NAMES = {
+    "hook:injection_ledger_failed": "cloud.injection_ledger_failed",
     "claude-observer:completion": "observer.completion",
     "claude-observer:completion_failed": "observer.completion_failed",
     "claude-observer:handler_exception": "observer.handler_exception",

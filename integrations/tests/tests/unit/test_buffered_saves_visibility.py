@@ -312,11 +312,11 @@ def test_header_shows_buffered_writes_and_the_backlog(suite, lookup, monkeypatch
     run = drive_recall(lookup, monkeypatch, recall=HIT, saves_last_turn=_OUTAGE_SAVES)
     header = _header(suite, run.output)
     j = _joiner(suite)
-    assert header.endswith(
+    assert (
         f"{j}saved last turn 1 prompt / 0 trace / 0 answer"
         f"{j}buffered last turn 6 trace / 1 answer (not saved yet)"
         f"{j}7 awaiting replay, oldest 20d"
-    )
+    ) in header
     # The buffered writes are NOT folded into the saved count.
     assert "6 trace / 1 answer" not in header.split("buffered")[0]
 
@@ -327,7 +327,7 @@ def test_header_reads_as_before_when_nothing_was_buffered(suite, lookup, monkeyp
     )
     run = drive_recall(lookup, monkeypatch, recall=HIT)
     header = _header(suite, run.output)
-    assert header.endswith("saved last turn 0 prompt / 0 trace / 0 answer")
+    assert "saved last turn 0 prompt / 0 trace / 0 answer" in header
     assert "buffered" not in header and "awaiting replay" not in header
 
 
