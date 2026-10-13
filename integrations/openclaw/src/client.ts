@@ -235,7 +235,10 @@ export class CogneeHttpClient {
               const errorText = await retryResponse.text();
               throw new Error(`Cognee request failed (${retryResponse.status}): ${errorText}`);
             }
-            return responseParser(retryResponse);
+            // `await` keeps the retry's abort timer armed while the body is read;
+            // without it `finally` clears the timer first, and a stalled body on
+            // the long-request transport (bodyTimeout: 0) would never time out.
+            return await responseParser(retryResponse);
           } finally {
             clearTimeout(retryTimeout);
           }

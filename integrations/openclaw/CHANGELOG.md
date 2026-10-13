@@ -38,6 +38,9 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
   request deadline. Multipart
   bodies are rebuilt with undici's own `FormData`, avoiding cross-version dispatcher/body
   incompatibilities. This covers both `/remember` and `/update`.
+  The 401 re-login retry now keeps its abort deadline while it reads the response
+  body; it used to clear the timer first, so a stalled body could hang the request.
+  `undici` is pinned to exactly 7.30.0, the plugin's only runtime dependency.
 - **Documented settings no longer get the plugin quarantined**
   ([#438](https://github.com/topoteretes/cognee-integrations/issues/438)).
   `perAgentMemory`, `noiseTriggers` and `noisePatterns` are documented and read by
