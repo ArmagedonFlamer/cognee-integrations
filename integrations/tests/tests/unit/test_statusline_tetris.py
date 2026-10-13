@@ -181,7 +181,9 @@ def test_bad_input_exits_cleanly(sl, suite, temp_home, payload):
     assert sl._width(result.stdout.decode()) <= 20
 
 
-def test_cp1252_ascii(sl, suite, temp_home):
+def test_cp1252_stdout_still_renders_utf8(sl, suite, temp_home):
+    # Windows pipes default to cp1252; the renderer switches stdout to UTF-8 in
+    # both styles (as before 1.6.22), so Windows users keep the real glyphs.
     result = run_renderer(
         suite,
         temp_home,
@@ -191,8 +193,28 @@ def test_cp1252_ascii(sl, suite, temp_home):
         COLUMNS="120",
     )
     assert result.returncode == 0 and result.stderr == b""
-    output = result.stdout.decode("ascii")
-    assert "[124 recalled]" in output and "#" in output
+    output = result.stdout.decode("utf-8")
+    assert "[124 recalled]" in output and "▰" in output
+
+
+def test_ascii_fallback_when_stdout_cannot_be_switched(sl, monkeypatch):
+    monkeypatch.setattr(sl, "_unicode_output", lambda: False)
+    line = sl._tetris_line(SESSION)
+    assert line.isascii() and "[124 recalled]" in line
+
+
+def test_credit_and_update_notices_survive_without_a_reported_width(sl, monkeypatch):
+    # Claude Code does not normally export COLUMNS to the status line command.
+    monkeypatch.delenv("COLUMNS", raising=False)
+    monkeypatch.setattr(sl, "_credits_segment", lambda: " · credits: $0.40 · top up: x.test")
+    monkeypatch.setattr(sl, "_update_segment", lambda: " · ⬆ update available")
+    line = sl._tetris_line(SESSION)
+    assert "credits: $0.40" in line and "update available" in line
+    assert "34/46 turns" in line
+    # A real narrow terminal may lose decorations and counts, never the notices.
+    monkeypatch.setenv("COLUMNS", "60")
+    narrow = sl._tetris_line(SESSION)
+    assert "credits: $0.40" in narrow and "update available" in narrow
 
 
 @pytest.mark.parametrize("counts", ["true", "full", "false"])

@@ -736,12 +736,13 @@ The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xter
 183. Failures remain red, update notices amber, and credits retain their semantic
 colours. Unknown connection health appears as `?`.
 
-`COLUMNS` controls the single-line width (80 by default, capped at 120). At 60
-columns decorations disappear first; dataset, mode, health and recalled count
-are retained when they fit. Longer optional segments are then omitted, and very
-narrow lines are clipped. Wider terminals add no extra fields. Non-UTF-8 stdout
-uses ASCII (`#`, `-`, `[x]`) instead of block glyphs. A renderer error falls back
-to classic output.
+When `COLUMNS` is set, the line is fitted to that width; Claude Code does not
+normally export it, and then the full line is shown as in classic mode. When
+fitting, decorations disappear first (at 60 columns or fewer), then counts.
+Credit warnings and update notices are never dropped: the narrowest form keeps
+health plus the notices, and only very narrow lines are clipped. Output is UTF-8
+in both styles; ASCII (`#`, `-`, `[x]`) is used only if stdout cannot be switched
+to UTF-8. A renderer error falls back to classic output.
 
 | Env var | Default | Effect |
 |---|---|---|
