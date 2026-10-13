@@ -2144,7 +2144,8 @@ def delivery_summary(per_session, plugin_dir, since, until):
         "segments": segments,
         "label": "delivery quality",
         "new_tokens_est": sum(r["new_tokens_est"] for r in sessions),
-        "note": "Delivery is not demonstrated task improvement. Novelty is a text-matching estimate; "
+        "note": "Delivery is not demonstrated task improvement. "
+        "Novelty is a text-matching estimate; "
         "mixed recalls use zero-hit, transcript-match, repeated, then new-context precedence. "
         "Zero-hit includes recalls with no injected memory. Missing evidence is unmeasured.",
     }
@@ -2190,7 +2191,8 @@ def render_text(card: Dict[str, Any], markdown: bool = False, *, full=False, asc
         happened.rstrip(),
         "",
         h2 + "Where it helped",
-        "Delivery evidence only; a recalled or injected item is not proof that it changed an answer.",
+        "Delivery evidence only; a recalled or injected item is not proof "
+        "that it changed an answer.",
     ]
     for row in delivery["sessions"]:
         lines.append(
