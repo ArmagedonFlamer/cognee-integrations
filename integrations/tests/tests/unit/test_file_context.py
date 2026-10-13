@@ -188,15 +188,35 @@ def test_read_in_indexed_repo_injects_code_context(fc, repo, wire, capsys, monke
     }
 
 
-def test_small_injection_limit_preserves_file_header(fc, repo, wire, capsys, monkeypatch):
+def test_no_file_context_when_all_content_exceeds_budget(fc, repo, wire, capsys, monkeypatch):
     monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", "256")
     monkeypatch.setattr(fc, "format_code_facts", lambda *args: "Symbols\n" + "🧠" * 2000)
     _run(fc, monkeypatch, _payload(repo / "pkg" / "mod.py", cwd=repo))
-    raw = capsys.readouterr().out
-    output = json.loads(raw)
-    assert len(raw) <= fc.injection_limit() == 1024
-    assert output["hookSpecificOutput"]["additionalContext"].startswith("## Cognee: about mod.py")
-    assert "🧠" not in output["hookSpecificOutput"]["additionalContext"]
+    assert capsys.readouterr().out == ""
+
+
+def test_small_budget_keeps_first_symbols_and_reports_injected_counts(fc, monkeypatch):
+    monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", "1024")
+    monkeypatch.setenv("COGNEE_FILE_CONTEXT_MAX_SYMBOLS", "100")
+    facts = [
+        {
+            "kind": "symbol",
+            "name": f"pkg/mod.symbol_{i:03}",
+            "line": i,
+            "properties": {"symbol_kind": "function"},
+        }
+        for i in range(1, 101)
+    ]
+    monkeypatch.setattr(fc, "recall_via_http", lambda *a, **k: [{"raw": {"facts": facts}}])
+    context, stats = fc.build_context(
+        "/missing/mod.py", {"rel": "pkg/mod.py", "dataset": "code"}, {}, fc.time.monotonic() + 10
+    )
+    assert "symbol_001:1" in context and "symbol_100:100" not in context
+    assert context.count("Symbols in") == 1
+    assert "\n\n  functions:" not in context
+    assert 0 < stats["code"] < stats["retrieved_code"] == 100
+    assert stats["entries_kept"] == stats["code"]
+    assert len(json.dumps(fc._output(context))) + 1 <= 1024
 
 
 def test_same_file_is_served_once_per_ttl(fc, repo, wire, capsys, monkeypatch):

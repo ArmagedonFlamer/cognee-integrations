@@ -36,7 +36,9 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
         for section, entries in zip(sections, kept if values is None else values):
             if entries:
                 title = section.get("title", "")
-                blocks.append((title + "\n" if title else "") + "\n\n".join(entries))
+                blocks.append(
+                    (title + "\n" if title else "") + section.get("separator", "\n\n").join(entries)
+                )
         return "\n\n".join(blocks)
 
     def encoded(value):
@@ -56,6 +58,7 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
     overhead = base_size - encoded(required_text)
     costs = [[encoded(entry) for entry in entries] for entries in kept]
     headings = [encoded(s["title"]) + 2 if s.get("title") else 0 for s in sections]
+    separators = [encoded(s.get("separator", "\n\n")) for s in sections]
     base_separator = 4 if any(required) else 0
 
     # Exclude indivisible entries that could not fit alone, before they can
@@ -75,7 +78,7 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
         overhead
         + 4 * max(0, active - 1)
         + sum(
-            headings[i] + sum(costs[i]) + 4 * (len(entries) - 1)
+            headings[i] + sum(costs[i]) + separators[i] * (len(entries) - 1)
             for i, entries in enumerate(kept)
             if entries
         )
@@ -92,7 +95,7 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
                 kept[i].pop()
                 estimated -= costs[i].pop()
                 if kept[i]:
-                    estimated -= 4
+                    estimated -= separators[i]
                 else:
                     estimated -= headings[i] + (4 if active > 1 else 0)
                     active -= 1
