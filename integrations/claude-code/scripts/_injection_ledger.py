@@ -71,7 +71,7 @@ def seed(session_id: str, hashes: list[str], guidance_hashes: list[str] = None) 
 
 
 def render(
-    session_id: str, header: str, sections: list[dict], budget: int
+    session_id: str, header: str, sections: list[dict], budget: int, measure=None
 ) -> tuple[str, dict, str]:
     """Filter before fitting; record only entries actually retained in the output."""
     directory = session_dir(session_id)
@@ -100,7 +100,9 @@ def render(
                     new_guidance.add(digest)
             filtered.append({**section, "entries": entries})
         decorated = f"{header}; {candidates} new, {duplicate_count} already in context"
-        text, stats = fit_sections([{"entries": [decorated], "required": True}] + filtered, budget)
+        text, stats = fit_sections(
+            [{"entries": [decorated], "required": True}] + filtered, budget, measure=measure
+        )
         actual_header = (
             f"{header}; {stats['entries_kept']} new, {duplicate_count} already in context"
         )
