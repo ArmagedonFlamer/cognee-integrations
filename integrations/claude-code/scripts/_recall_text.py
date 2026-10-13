@@ -24,8 +24,9 @@ Two anchors, both ours to know:
 Anything that does not fit is left untouched and reported as unparsed: a
 template change can only cost tokens, never memory.
 
-Stdlib only, no plugin imports: this file is copied verbatim between the hook
-suites like ``_recall_http.py``.
+Stdlib only, no plugin imports. The parsing logic is shared between hook suites;
+default limits are per suite. Claude Code delegates the final context ceiling to
+``_injection_budget.py``.
 """
 
 from __future__ import annotations
