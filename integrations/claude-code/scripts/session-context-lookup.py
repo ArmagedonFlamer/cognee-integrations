@@ -934,11 +934,11 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
         "context_lookup_hit" if total else "context_lookup_empty",
         {
             "counts": counts,
-            "retrieved_counts": retrieved_counts,
+            "retrieved_hits": retrieved_total,
             "per_scope": per_scope,
             "saves_last_turn": saves_last_turn,
             "elapsed_ms": elapsed_ms(recall_start),
-            **{k: v for k, v in injection_stats.items() if k != "entries"},
+            **{k: v for k, v in injection_stats.items() if k not in {"entries", "source_hits"}},
         },
     )
     message = (
