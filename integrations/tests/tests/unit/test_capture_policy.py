@@ -228,3 +228,30 @@ def test_malformed_json_list_is_reported_with_its_variable_name(policy, monkeypa
     with pytest.raises(policy.CapturePatternError, match="COGNEE_CAPTURE_TOOLS"):
         policy.allow_tool("Bash", {"command": "git status"})
     assert "COGNEE_CAPTURE_TOOLS" in policy.capture_pattern_error()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cat ~/.aws/credentials",
+        "less $HOME/.ssh/id_rsa",
+        'head "${HOME}/.npmrc"',
+        "source .env.local",
+        "grep KEY .env",
+        "wc -l < .env",
+    ],
+)
+def test_shell_reads_of_secret_files_are_not_captured(policy, command):
+    assert not policy.allow_tool("Bash", {"command": command})
+    assert policy.allow_tool("Bash", {"command": "cat README.md"})
+
+
+def test_aws_and_npm_credential_files_are_scrubbed(policy):
+    aws = (
+        "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+    )
+    npmrc = "//registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789\n"
+    scrubbed = policy.redact(aws + npmrc)
+    for secret in ("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI", "npm_abcdef"):
+        assert secret not in scrubbed

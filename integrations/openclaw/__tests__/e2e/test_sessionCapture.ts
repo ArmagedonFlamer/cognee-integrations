@@ -1,8 +1,12 @@
 import plugin from "../../src/plugin";
-import { CogneeHttpClient } from "../../src/client";
+import { CogneeHttpClient, CogneeRequestError } from "../../src/client";
 import { spawnExitWatcher } from "../../src/server";
 
-jest.mock("../../src/client");
+jest.mock("../../src/client", () => {
+  // Keep the real error class (the plugin reads its status); mock the client.
+  const actual = jest.requireActual("../../src/client");
+  return { ...actual, CogneeHttpClient: jest.fn() };
+});
 jest.mock("../../src/server", () => ({
   bootServerIfNeeded: jest.fn(async () => {}),
   waitForServerHealth: jest.fn(async () => {}),
@@ -10,6 +14,7 @@ jest.mock("../../src/server", () => ({
   resolveOrMintApiKey: jest.fn(async () => "test-api-key"),
   spawnExitWatcher: jest.fn(async () => {}),
   exitWatcherPidfilePath: jest.fn((name: string) => `/tmp/exit-watchers/${name}.pid`),
+  writeExitWatcherBridge: jest.fn(async () => {}),
 }));
 
 const mockRememberEntry = jest.fn(async (_params: unknown): Promise<{ entryId?: string }> => ({ entryId: "e1" }));
@@ -376,5 +381,122 @@ describe("session_end final chain", () => {
 
     expect(mockImprove).toHaveBeenCalledTimes(1);
     expect(mockUnregisterAgent).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("capture policy", () => {
+  const ctx = { agentId: "will", sessionId: "s1" };
+  const traces = () => mockRememberEntry.mock.calls.map((c) => (c[0] as { entry: Record<string, unknown> }).entry).filter((e) => e.type === "trace");
+
+  it("skips tools the policy denies, including Tool(prefix:*) on a shell command's first word", async () => {
+    const { emit } = createApi({ captureDenyTools: ["exec(git:*)", "web_*"] });
+    await emit("after_tool_call", { toolName: "exec", params: { command: "git status" }, result: "clean" }, ctx);
+    await emit("after_tool_call", { toolName: "web_fetch", params: { url: "https://x" }, result: "page" }, ctx);
+    await emit("after_tool_call", { toolName: "exec", params: { command: "ls" }, result: "a b" }, ctx);
+    await flush();
+    expect(traces().map((t) => t.method_params)).toEqual([{ command: "ls" }]);
+  });
+
+  it("never captures calls touching secret files", async () => {
+    const { emit } = createApi();
+    await emit("after_tool_call", { toolName: "read", params: { path: "/repo/.env.local" }, result: "API_KEY=abc" }, ctx);
+    await emit("after_tool_call", { toolName: "read", params: { path: "/repo/README.md" }, result: "hi" }, ctx);
+    await flush();
+    expect(traces()).toHaveLength(1);
+    expect(traces()[0].method_params).toEqual({ path: "/repo/README.md" });
+  });
+
+  it("redacts secrets from traces and from both sides of a QA", async () => {
+    const key = "sk-" + "a".repeat(40);
+    const { emit } = createApi();
+    await emit("after_tool_call", { toolName: "exec", params: { command: `curl -H "Authorization: Bearer ${key}" x` }, result: `token=${key}` }, ctx);
+    await emit("before_prompt_build", { prompt: `use this key ${key} for the deploy` }, ctx);
+    await emit("llm_output", { assistantTexts: [`ok, stored ${key}`] }, ctx);
+    await flush();
+    const stored = JSON.stringify(mockRememberEntry.mock.calls.map((c) => c[0]));
+    expect(stored).not.toContain(key);
+    expect(stored).toContain("[redacted");
+  });
+
+  it("fails closed on a pattern it cannot parse: no traces, and says why", async () => {
+    const { api, emit } = createApi({ captureTools: ["exec(rg)"] });
+    await emit("after_tool_call", { toolName: "exec", params: { command: "ls" }, result: "a" }, ctx);
+    await flush();
+    expect(traces()).toHaveLength(0);
+    expect(api.logger.warn).toHaveBeenCalledWith(expect.stringContaining("NOT being captured"));
+  });
+
+  it("keeps redaction off when captureRedact is false", async () => {
+    const key = "sk-" + "b".repeat(40);
+    const { emit } = createApi({ captureRedact: false });
+    await emit("before_prompt_build", { prompt: `key ${key}` }, ctx);
+    await emit("llm_output", { assistantTexts: ["noted"] }, ctx);
+    await flush();
+    expect(JSON.stringify(mockRememberEntry.mock.calls)).toContain(key);
+  });
+});
+
+describe("write buffer", () => {
+  const ctx = { agentId: "will", sessionId: "s1" };
+  const refused = () => Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+
+  it("buffers a QA the server never received and replays it at session end, before improve", async () => {
+    mockRememberEntry.mockRejectedValueOnce(refused());
+    try {
+      const { emit } = createApi();
+      await emit("gateway_start", { port: 1 }, {});
+      await flush();
+      await emit("before_prompt_build", { prompt: "what is the weather" }, ctx);
+      await emit("llm_output", { assistantTexts: ["sunny today"] }, ctx);
+      await flush(30);
+      expect(mockRememberEntry).toHaveBeenCalledTimes(1);
+
+      await emit("session_end", { sessionId: "s1", messageCount: 1 }, ctx);
+      await flush(60);
+
+      expect(mockRememberEntry).toHaveBeenCalledTimes(2);
+      expect(mockRememberEntry.mock.calls[1]![0]).toMatchObject({ sessionId: "open_claw_s1", entry: { type: "qa", answer: "sunny today" } });
+      expect(mockImprove).toHaveBeenCalledTimes(1);
+      expect(mockRememberEntry.mock.invocationCallOrder[1]!).toBeLessThan(mockImprove.mock.invocationCallOrder[0]!);
+    } finally {
+      resetMockImplementations();
+    }
+  });
+
+  it("does not buffer a write that may have been stored (timeout)", async () => {
+    mockRememberEntry.mockRejectedValueOnce(Object.assign(new Error("aborted"), { name: "AbortError" }));
+    try {
+      const { api, emit } = createApi();
+      await emit("before_prompt_build", { prompt: "what is the weather" }, ctx);
+      await emit("llm_output", { assistantTexts: ["sunny today"] }, ctx);
+      await flush(30);
+      expect(api.logger.warn).toHaveBeenCalledWith(expect.stringContaining("qa store failed"));
+      await emit("after_tool_call", { toolName: "exec", params: { command: "ls" }, result: "a" }, ctx);
+      await flush(30);
+      // The later successful write found nothing to replay.
+      expect(mockRememberEntry).toHaveBeenCalledTimes(2);
+    } finally {
+      resetMockImplementations();
+    }
+  });
+});
+
+describe("session-end improve on an exhausted LLM budget", () => {
+  it("does not retry a 402", async () => {
+    mockImprove.mockRejectedValue(new CogneeRequestError(402, '{"error":"budget exhausted"}'));
+    try {
+      const { api, emit } = createApi();
+      await emit("gateway_start", { port: 1 }, {});
+      await flush();
+      await emit("before_prompt_build", { prompt: "hello there" }, { agentId: "will", sessionId: "s1" });
+      await flush();
+      await emit("session_end", { sessionId: "s1", messageCount: 1 }, { agentId: "will", sessionId: "s1" });
+      await flush(40);
+      expect(mockImprove).toHaveBeenCalledTimes(1);
+      expect(api.logger.warn).toHaveBeenCalledWith(expect.stringContaining("LLM budget is exhausted"));
+      expect(mockUnregisterAgent).toHaveBeenCalledTimes(1);
+    } finally {
+      resetMockImplementations();
+    }
   });
 });

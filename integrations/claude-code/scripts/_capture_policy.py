@@ -6,6 +6,7 @@ import fnmatch
 import json
 import os
 import re
+import shlex
 from pathlib import PurePosixPath
 
 _FALSE = {"0", "false", "no", "off"}
@@ -26,9 +27,15 @@ _DENY_PATHS = (
     "secrets.*",
     "credentials.*",
 )
-_SECRET_KEY = re.compile(
-    r"(?i)^(?:authorization|x-api-key|(?:.*[_-])?(?:secret|token|password|passwd|api[_-]?key))$"
+# The last word of a secret-bearing name. ``secret`` may carry a ``_key`` /
+# ``_access_key`` suffix (``SECRET_KEY``, ``aws_secret_access_key``), and the
+# AWS / npm names a plain suffix test misses are spelled out: ``access_key_id``,
+# camelCase ``SessionToken`` / ``SecretAccessKey`` / ``_authToken``.
+_SECRET_WORD = (
+    r"secret(?:[_-]?(?:access[_-]?)?key)?|token|password|passwd|api[_-]?key"
+    r"|access[_-]?key(?:[_-]?id)?|session[_-]?token|auth[_-]?token"
 )
+_SECRET_KEY = re.compile(rf"(?i)^(?:authorization|x-api-key|_auth|(?:.*[_-])?(?:{_SECRET_WORD}))$")
 _RULES = (
     (
         "private-key",
@@ -38,12 +45,17 @@ _RULES = (
     ("authorization", r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+"),
     (
         "credential",
-        r"(?i)[\"']?\b(?:[\w-]*[_-])?(?:secret|token|password|passwd|api[_-]?key|x-api-key)"
+        rf"(?i)[\"']?\b(?:(?:[\w-]*[_-])?(?:{_SECRET_WORD}|x-api-key)|_auth)"
         r"[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
     ),
     (
         "vendor-key",
-        r"\b(?:sk-(?:proj-|ant-)?|gh[pousr]_|github_pat_|xox[baprs]-|whsec_)[A-Za-z0-9_-]{16,}",
+        r"\b(?:sk-(?:proj-|ant-)?|gh[pousr]_|github_pat_|xox[baprs]-|whsec_)[A-Za-z0-9_-]{16,}"
+        r"|\bnpm_[A-Za-z0-9]{36}\b|\bpypi-[A-Za-z0-9_-]{50,}",
+    ),
+    (
+        "aws-key-id",
+        r"\b(?:A3T[A-Z0-9]|AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA|ABIA|ACCA)[A-Z0-9]{16}\b",
     ),
     ("bcrypt", r"\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}"),
 )
@@ -85,6 +97,40 @@ def _sensitive_path(value) -> bool:
         or fnmatch.fnmatchcase("/" + normalized.lstrip("/"), pattern.lower())
         for pattern in (*_DENY_PATHS, *_list_env("COGNEE_CAPTURE_DENY_PATHS"))
     )
+
+
+# Shell control characters that end a word for the secret-file check:
+# ``cat .env|grep``, ``cat<.env``, ``$(cat .env)``, ``a;cat .env``.
+_SHELL_SPLIT = re.compile(r"[;|&()<>`]")
+_HOME_VAR = re.compile(r"^\$(?:HOME|\{HOME\})(?=/|\Z)")
+
+
+def _shell_words(command: str) -> list[str]:
+    """Split a shell command into words, POSIX-quoted; whitespace if it will not parse."""
+    try:
+        words = shlex.split(command)
+    except ValueError:  # unbalanced quote, trailing backslash
+        words = command.split()
+    pieces = []
+    for word in words:
+        for piece in _SHELL_SPLIT.split(word):
+            if piece:
+                pieces.append(_HOME_VAR.sub("~", piece))
+    return pieces
+
+
+def _command_reads_secret(params) -> bool:
+    """Whether a shell command names a deny-listed path as one of its words.
+
+    A word-level check, not a shell interpreter: ``cat ~/.aws/credentials``,
+    ``less "$HOME/.ssh/id_rsa"`` and ``source .env.local`` are caught, but a
+    path built at run time (``cat $AWS_DIR/credentials``, ``cat ~/.aws/cred*``)
+    is not, and neither is a file read by a program without naming it.
+    """
+    command = params.get("command") if isinstance(params, dict) else None
+    if not isinstance(command, str):
+        return False
+    return any(_sensitive_path(word) for word in _shell_words(command))
 
 
 def _has_sensitive_path(value) -> bool:
@@ -157,7 +203,7 @@ def allow_tool(name: str, params) -> bool:
         return False
     if any(_matches(tool, prefix, name, params) for tool, prefix in denied):
         return False
-    return not _has_sensitive_path(params)
+    return not (_has_sensitive_path(params) or _command_reads_secret(params))
 
 
 def capture_pattern_error() -> str:
