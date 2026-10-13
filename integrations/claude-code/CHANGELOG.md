@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.10]
+
+### Changed
+- Ship performance reporting, project handoffs, plugin behavior explanations, and version-gated Enola architecture skills.
+
 ## [1.6.9]
 
 ### Changed
