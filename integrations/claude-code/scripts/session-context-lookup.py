@@ -61,6 +61,7 @@ from _plugin_common import (
     same_connection_target,
     saves_segment,
     server_ready_hint,
+    service_url_is_local,
     set_session_key,
     slow_streak_threshold,
     warmup_backlog,
@@ -837,7 +838,12 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         )
         + 1
     )
-    if runtime["mode"] == "cloud" and _key_safe and total:
+    config = load_config()
+    cloud = config.get("_forced_backend") == "cloud" or (
+        config.get("_forced_backend") != "local"
+        and not service_url_is_local(runtime.get("base_url", ""))
+    )
+    if cloud and _key_safe and total:
         from _injection_ledger import render as render_deduped
 
         try:

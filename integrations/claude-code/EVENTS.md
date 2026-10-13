@@ -343,3 +343,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:stopfile_unlink_failed` | `idle_watcher.stopfile_unlink_failed` |
 | `idle-watcher:throttle_check_failed` | `idle_watcher.throttle_check_failed` |
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
+
+- `cloud.injection_ledger_failed`: session injection ledger unavailable.
