@@ -17,6 +17,7 @@ from _file_lock import file_lock
 from _injection_ledger import atomic_json, session_dir
 
 MAX_AGE = 7 * 86400
+EXPLICIT_IMPROVES = {"final", "precompact", "manual", "switch"}
 
 
 def enabled(runtime: dict = None) -> bool:
@@ -78,6 +79,9 @@ def ensure_worker() -> None:
     if pid and pid_alive(pid):
         return
     # The worker owns a lifetime file lock, so simultaneous spawns are harmless.
+    from _logfiles import rotate_if_oversized
+
+    rotate_if_oversized(state / "cloud-worker.log")
     with (state / "cloud-worker.log").open("a", encoding="utf-8") as stream:
         subprocess.Popen(
             [sys.executable, script],
@@ -87,6 +91,19 @@ def ensure_worker() -> None:
             start_new_session=True,
             close_fds=True,
         )
+
+
+def _refresh_console_log() -> None:
+    """Rotate and reopen the detached worker's inherited stdout/stderr handles."""
+    from _logfiles import rotate_if_oversized
+
+    path = root() / "cloud-worker.log"
+    sys.stdout.flush()
+    sys.stderr.flush()
+    rotate_if_oversized(path)
+    with path.open("a", encoding="utf-8") as stream:
+        os.dup2(stream.fileno(), 1)
+        os.dup2(stream.fileno(), 2)
 
 
 def register_session(bootstrap: dict) -> None:
@@ -163,7 +180,7 @@ def enqueue(dataset: str, session_id: str, entry: dict, kind: str) -> Path:
     return path
 
 
-def request_improve(dataset: str, session_id: str, reason: str = "stop") -> None:
+def request_improve(dataset: str, session_id: str, reason: str = "stop") -> Path:
     from _plugin_common import get_session_key
 
     key = get_session_key()
@@ -178,6 +195,7 @@ def request_improve(dataset: str, session_id: str, reason: str = "stop") -> None
             raise OSError("improve request busy")
         old = read(path)
         now = time.time()
+        explicit = reason in EXPLICIT_IMPROVES
         atomic_json(
             path,
             {
@@ -186,18 +204,30 @@ def request_improve(dataset: str, session_id: str, reason: str = "stop") -> None
                 "host_key": key,
                 "target": identity,
                 "reason": (
-                    old.get("reason")
-                    if old.get("reason") in {"final", "precompact", "manual", "switch"}
+                    reason
+                    if explicit
+                    else old.get("reason")
+                    if old.get("reason") in EXPLICIT_IMPROVES
                     else reason
                 ),
                 "generation": uuid.uuid4().hex,
-                "created_at": old.get("created_at", now),
-                "attempts": old.get("attempts", 0),
-                "next_attempt": old.get("next_attempt", 0),
+                "created_at": now if explicit else old.get("created_at", now),
+                "attempts": 0 if explicit else old.get("attempts", 0),
+                "next_attempt": 0 if explicit else old.get("next_attempt", 0),
+                "last_error": old.get("last_error", ""),
                 "requested_at": now,
             },
         )
     ensure_worker()
+    return path
+
+
+def improve_wait_detail(path: Path, *, now: float = None) -> str:
+    item = read(path)
+    now = time.time() if now is None else now
+    error = str(item.get("last_error") or "pending").replace("\n", " ")[:200]
+    remaining = max(0, int(item.get("next_attempt", 0) - now))
+    return f"Last result: {error}; next retry in {remaining}s."
 
 
 def _expire(path: Path, kind: str) -> None:
@@ -207,9 +237,14 @@ def _expire(path: Path, kind: str) -> None:
     log("cloud_work_expired", kind=kind, file=path.name, retention_days=7)
 
 
-def _retry(path: Path, item: dict, now: float, error: str) -> None:
-    item["attempts"] = int(item.get("attempts", 0)) + 1
-    item["next_attempt"] = now + min(3600, 5 * 2 ** min(item["attempts"] - 1, 10))
+def _retry(path: Path, item: dict, now: float, error: str, *, retry_after=None) -> None:
+    item["attempts"] = int(item.get("attempts", 0)) + (retry_after is None)
+    delay = (
+        retry_after
+        if retry_after is not None
+        else min(3600, 5 * 2 ** min(item["attempts"] - 1, 10))
+    )
+    item["next_attempt"] = now + delay
     item["last_error"] = error[:200]
     atomic_json(path, item)
     log("cloud_work_retry", file=path.name, attempts=item["attempts"], error=error[:200])
@@ -361,7 +396,14 @@ def process_improves(improve, *, now: float = None) -> int:
                 )
                 done += 1
             else:
-                _retry(path, item, now, outcome.get("reason", "unconfirmed"))
+                reason = outcome.get("reason", "unconfirmed")
+                _retry(
+                    path,
+                    item,
+                    now,
+                    reason,
+                    retry_after=5 if reason in {"busy", "running"} else None,
+                )
                 log(
                     "improve_fired",
                     session=item["session_id"],
@@ -491,6 +533,8 @@ def run() -> None:
         from _plugin_common import sweep_stale_state
 
         sweep_stale_state()
+        _refresh_console_log()
+        last_sweep = time.time()
         last_health = 0.0
 
         def send(item):
@@ -530,6 +574,10 @@ def run() -> None:
                 _bootstrap_sessions()
                 if time.time() - last_health >= 20:
                     last_health = time.time()
+                    if last_health - last_sweep >= 3600:
+                        sweep_stale_state()
+                        last_sweep = last_health
+                    _refresh_console_log()
                     url = target()["base_url"]
                     health = authed_liveness(url, timeout=2)
                     if health == "ready":
