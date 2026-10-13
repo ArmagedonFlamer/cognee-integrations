@@ -323,7 +323,7 @@ def test_header_shows_buffered_writes_and_the_backlog(suite, lookup, monkeypatch
         f"{j}saved last turn 1 prompt / 0 trace / 0 answer"
         f"{j}buffered last turn 6 trace / 1 answer (not saved yet)"
         f"{j}7 awaiting replay, oldest 20d"
-    )
+    ) in header
     # The buffered writes are NOT folded into the saved count.
     assert "6 trace / 1 answer" not in header.split("buffered")[0]
 
