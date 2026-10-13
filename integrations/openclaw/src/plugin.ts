@@ -1554,23 +1554,22 @@ const memoryCogneePlugin = {
     // Writes the server never received (down, or still booting) wait here and
     // are replayed once it answers again; see write-buffer.ts.
     const writeBuffer = writeBufferFor();
-    // Skip the file read on the hot path until something was (or may have
-    // been, by an earlier gateway run) buffered.
-    let bufferMaybeNonEmpty = true;
 
     function sendBuffered(item: BufferedEntry): Promise<void> {
       return client.rememberEntry({ datasetName: item.datasetName, sessionId: item.sessionId, entry: item.entry }).then(() => undefined);
     }
 
     function drainWriteBuffer(budgetMs: number, onlySessionId?: string): Promise<number> {
-      if (!bufferMaybeNonEmpty) return Promise.resolve(0);
+      // Skip the file read on the hot path while the shared buffer is known to
+      // be empty. Never at session end: it runs once per session, and a wrong
+      // "empty" there lets improve bridge the session without its turns.
+      if (!onlySessionId && !writeBuffer.maybeNonEmpty) return Promise.resolve(0);
       return writeBuffer.drain(sendBuffered, {
         budgetMs,
         sessionId: onlySessionId,
         onDrop: (item, error) => api.logger.warn?.(`cognee-openclaw: dropped buffered ${item.kind} for ${item.sessionId}: ${String(error)}`),
-      }).then(async (stored) => {
+      }).then((stored) => {
         if (stored > 0) api.logger.info?.(`cognee-openclaw: replayed ${stored} buffered capture write(s)`);
-        if ((await writeBuffer.size()) === 0) bufferMaybeNonEmpty = false;
         return stored;
       }).catch((e: unknown) => {
         api.logger.warn?.(`cognee-openclaw: buffered write replay failed: ${String(e)}`);
@@ -1592,7 +1591,6 @@ const memoryCogneePlugin = {
         void drainWriteBuffer(DRAIN_BUDGET_MS);
       }).catch(async (e: unknown) => {
         if (isBufferableWriteError(e)) {
-          bufferMaybeNonEmpty = true;
           await writeBuffer.enqueue({ datasetName, sessionId: cogneeSid, kind, entry })
             .then(() => api.logger.info?.(`cognee-openclaw: ${kind} buffered until the Cognee server is reachable (${String(e)})`))
             .catch((err: unknown) => api.logger.warn?.(`cognee-openclaw: ${kind} store failed and could not be buffered: ${String(err)}`));

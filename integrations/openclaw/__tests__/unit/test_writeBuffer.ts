@@ -112,6 +112,28 @@ describe("WriteBuffer", () => {
     expect(await buffer.size()).toBe(1);
   });
 
+  it("knows when it is empty, for every caller sharing it", async () => {
+    expect(buffer.maybeNonEmpty).toBe(true); // an earlier run may have left entries
+    await buffer.drain(jest.fn(async () => {}), { budgetMs: 5_000 });
+    expect(buffer.maybeNonEmpty).toBe(false);
+    void buffer.enqueue(entry("s1", 1));
+    expect(buffer.maybeNonEmpty).toBe(true); // set before the write lands
+    await buffer.drain(jest.fn(async () => {}), { budgetMs: 5_000, sessionId: "other" });
+    expect(buffer.maybeNonEmpty).toBe(true); // s1's entry is still queued
+  });
+
+  it("keeps the hint set when an entry is queued while a drain empties the file", async () => {
+    await buffer.enqueue(entry("s1", 1));
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const draining = buffer.drain(async () => { await gate; }, { budgetMs: 5_000 });
+    const queued = buffer.enqueue(entry("s1", 2));
+    release();
+    await Promise.all([draining, queued]);
+    expect(buffer.maybeNonEmpty).toBe(true);
+    expect(await buffer.size()).toBe(1);
+  });
+
   it("caps the queue at the newest entries and drops expired ones", async () => {
     for (let i = 0; i < MAX_BUFFERED_ENTRIES + 3; i++) await buffer.enqueue(entry("s1", i));
     expect(await buffer.size()).toBe(MAX_BUFFERED_ENTRIES);

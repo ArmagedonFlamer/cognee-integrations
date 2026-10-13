@@ -76,6 +76,11 @@ export class WriteBuffer {
   // one gateway, all sharing the instance returned by writeBufferFor().
   private queue: Promise<unknown> = Promise.resolve();
   private draining: Promise<number> | undefined;
+  // False only once a drain left the file empty and nothing was enqueued
+  // since. Lives here, not in each plugin instance, because the file is
+  // shared: an instance that never buffered must still see another's entries.
+  // True at start, as an earlier gateway run may have left entries behind.
+  private hint = true;
 
   constructor(private readonly path: string = WRITE_BUFFER_PATH) { }
 
@@ -119,7 +124,13 @@ export class WriteBuffer {
     });
   }
 
+  /** False when the file is known to be empty, so a drain can skip the read. */
+  get maybeNonEmpty(): boolean {
+    return this.hint;
+  }
+
   enqueue(item: Omit<BufferedEntry, "queuedAt">): Promise<void> {
+    this.hint = true;
     return this.serial(async () => {
       const entries = await this.load();
       entries.push({ ...item, queuedAt: Date.now() });
@@ -159,6 +170,10 @@ export class WriteBuffer {
         }
         await this.remove(item);
       }
+      // Serialized with enqueue, so an entry queued meanwhile keeps the hint set.
+      await this.serial(async () => {
+        if ((await this.load()).length === 0) this.hint = false;
+      });
       return stored;
     })();
     this.draining = run;

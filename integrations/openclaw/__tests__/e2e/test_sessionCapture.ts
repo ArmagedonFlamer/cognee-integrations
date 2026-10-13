@@ -382,6 +382,41 @@ describe("session_end final chain", () => {
     expect(mockImprove).toHaveBeenCalledTimes(1);
     expect(mockUnregisterAgent).toHaveBeenCalledTimes(1);
   });
+
+  it("replays turns another plugin instance buffered before improving", async () => {
+    // OpenClaw registers several instances in one gateway, sharing one write
+    // buffer, and session_end can land on an instance that never saw the
+    // session's prompts. That instance's view of the buffer must not be stale.
+    const a = createApi();
+    const b = createApi();
+    await a.emit("gateway_start", { port: 1 }, {});
+    await b.emit("gateway_start", { port: 1 }, {});
+    await flush(30);
+
+    // B stores a turn; its follow-up drain finds the buffer empty.
+    await b.emit("before_prompt_build", { prompt: "first question" }, { agentId: "will", sessionId: "s2" });
+    await b.emit("llm_output", { assistantTexts: ["first answer"] }, { agentId: "will", sessionId: "s2" });
+    await flush(30);
+
+    // The server goes away; A's turn for s1 is buffered.
+    const refused = Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNREFUSED" } });
+    mockRememberEntry.mockRejectedValueOnce(refused);
+    await a.emit("before_prompt_build", { prompt: "what is the weather" }, { agentId: "will", sessionId: "s1" });
+    await a.emit("llm_output", { assistantTexts: ["sunny today"] }, { agentId: "will", sessionId: "s1" });
+    await flush(30);
+    expect(a.api.logger.info).toHaveBeenCalledWith(expect.stringMatching(/qa buffered until the Cognee server is reachable/));
+
+    // The server is back; s1 ends on B.
+    mockRememberEntry.mockClear();
+    await b.emit("session_end", { sessionId: "s1", messageCount: 1 }, { agentId: "will", sessionId: "s1" });
+    await flush(30);
+
+    expect(mockImprove).toHaveBeenCalledTimes(1);
+    const replayed = mockRememberEntry.mock.calls.map((c) => c[0] as { sessionId: string; entry: { question?: string } });
+    expect(replayed).toContainEqual(expect.objectContaining({ sessionId: "open_claw_s1", entry: expect.objectContaining({ question: "what is the weather" }) }));
+    const replayOrder = mockRememberEntry.mock.invocationCallOrder[replayed.findIndex((r) => r.sessionId === "open_claw_s1")]!;
+    expect(replayOrder).toBeLessThan(mockImprove.mock.invocationCallOrder[0]!);
+  });
 });
 
 describe("capture policy", () => {
