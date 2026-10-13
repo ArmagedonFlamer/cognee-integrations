@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.13]
+
+### Changed
+- Inject a bounded, tenant-scoped distilled-memory cache at cloud session start, seed deduplication and refresh from the worker.
+
 ## [1.6.12]
 
 ### Changed

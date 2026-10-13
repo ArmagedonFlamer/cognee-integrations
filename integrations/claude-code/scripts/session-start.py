@@ -2169,13 +2169,8 @@ def _ensure_statusline_configured() -> None:
 
 
 _MEMORY_PREFERENCE_STEER = (
-    "Memory policy for this session: Cognee is the preferred, authoritative long-term "
-    "memory. On every user request, Cognee memory relevant to the prompt is "
-    "automatically recalled and injected into your context before you answer — consult "
-    "that recalled Cognee context FIRST. When you need to look up or store durable "
-    "information, use the Cognee tools/skills (cognee-search, cognee-remember) in "
-    "preference to Claude Code's built-in file memory (MEMORY.md), and do not duplicate "
-    "durable knowledge into MEMORY.md. Cognee is the source of truth for memory."
+    "Cognee supplies distilled project memory; use cognee-search for more context "
+    "and cognee-remember to save durable knowledge."
 )
 
 
@@ -2609,6 +2604,18 @@ def main():
             ).strip()
             output["systemMessage"] = hso["systemMessage"]
     output = _apply_memory_preference(output)
+    if cloud_enabled() and payload.get("source") != "resume":
+        from _context_cache import inject as inject_digest
+
+        try:
+            digest = inject_digest(
+                get_dataset(load_config()), get_session_key(), source=payload.get("source", "")
+            )
+            if digest:
+                hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+                hso["additionalContext"] = digest + "\n\n" + _MEMORY_PREFERENCE_STEER
+        except (OSError, ValueError):
+            pass  # Missing/busy cache must never delay startup.
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     print(json.dumps(output or {}))

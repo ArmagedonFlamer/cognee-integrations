@@ -58,13 +58,15 @@ def reset(session_id: str) -> None:
         atomic_json(directory / "injected.json", {"entry_hashes": [], "guidance_hashes": []})
 
 
-def seed(session_id: str, hashes: list[str]) -> None:
+def seed(session_id: str, hashes: list[str], guidance_hashes: list[str] = None) -> None:
     directory = session_dir(session_id)
     with file_lock(directory / "injected.lock", timeout=0.2) as acquired:
         if not acquired:
             raise OSError("injection ledger is busy")
         data = _read(directory / "injected.json")
         data["entry_hashes"] = sorted(set(data.get("entry_hashes", [])) | set(hashes))
+        if guidance_hashes:
+            data["guidance_hashes"] = sorted(set(guidance_hashes))
         atomic_json(directory / "injected.json", data)
 
 

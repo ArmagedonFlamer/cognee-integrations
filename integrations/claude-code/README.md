@@ -1106,3 +1106,14 @@ companion endpoint currently requires the primary owner and copies an ACL snapsh
 later sharing changes must be reconciled explicitly. Connection credentials are
 hashed in the local decision record, and a changed principal cannot reuse it.
 Defaults remain off. Start a new host session when changing project routing policy.
+
+Cloud sessions read a distilled project digest from `context-cache/<dataset-id>.json` at
+startup without a network request. The worker refreshes it after confirmed improve and
+at most every 30 minutes while active. Caches older than 24 hours or from another tenant
+or credential are ignored. Resuming a conversation skips the digest. The digest is capped
+at 6,000 characters and seeds the injection ledger. Its sources are the `agent` guidance
+profile and graph node sets `session_learnings` and `project_docs`; raw turns are excluded.
+
+Discovery on the configured 1.6.3 tenant found both guidance and distilled graph context,
+but no `session_summaries` records. Structured last-session prose therefore depends on
+the WS7 server release; measured prior-session statistics are available independently.

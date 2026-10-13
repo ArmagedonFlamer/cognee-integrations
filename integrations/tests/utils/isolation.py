@@ -50,6 +50,7 @@ ISOLATED_MODULES = (
     "_auto_memory",
     "_session_stats",
     "_cloud_worker",
+    "_context_cache",
     "_remember_http",
     "_code_graph",
     "_observer",

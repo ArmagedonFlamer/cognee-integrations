@@ -360,6 +360,9 @@ def process_improves(improve, *, now: float = None) -> int:
                     reason="completed",
                 )
                 done += 1
+                from _context_cache import request_refresh
+
+                request_refresh(item["dataset"], item["session_id"], item["host_key"])
             else:
                 _retry(path, item, now, outcome.get("reason", "unconfirmed"))
                 log(
@@ -540,6 +543,10 @@ def run() -> None:
                     maintain_sessions()
                 drain(send, verify=verify)
                 process_improves(improve)
+                from _context_cache import refresh_pending, schedule_active_refreshes
+
+                schedule_active_refreshes()
+                refresh_pending()
             except Exception as exc:
                 log("cloud_worker_error", error=type(exc).__name__)
             time.sleep(2)
