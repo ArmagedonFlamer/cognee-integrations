@@ -1026,7 +1026,7 @@ Each operation has its own client timeout, tunable independently (all in seconds
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_RECALL_BUDGET` | `20` | Whole-recall deadline for the per-prompt lookup; a scope that overruns contributes no hits |
+| `COGNEE_RECALL_BUDGET` | `45` cloud / `20` local | Whole-recall deadline in seconds for the per-prompt lookup; a scope that overruns contributes no hits |
 | `COGNEE_RECALL_PASSAGE_CHARS` | `2000` | Per-passage cap on the retrieved context the prompt hook injects, cut at a paragraph break and marked with how much was cut; `0` disables. Bridged session chunks run 2k–20k chars each |
 | `COGNEE_RECALL_CONTEXT_CHARS` | `12000` | Soft budget for the whole injected memory block; passages are trimmed from the end (lowest ranked first) until it fits, entities and facts never; `0` disables |
 | `COGNEE_RECALL_TIMEOUT` | `120` | Client timeout for an explicit search (`cognee-search`); the per-prompt lookup uses `COGNEE_RECALL_BUDGET` instead |

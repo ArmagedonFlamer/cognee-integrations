@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.15]
+
+### Changed
+- Raise the cloud per-prompt recall budget to 45 seconds; retain the local 20-second default and explicit environment overrides.
+
 ## [1.6.14]
 
 ### Changed
