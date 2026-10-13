@@ -867,6 +867,7 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     if dataset_hint:
         sections.append({"entries": [dataset_hint], "priority": 0, "counted": False})
     notice = _bounded_notice(header, notice)
+
     def measure(text):
         return len(json.dumps(_recall_output(text, notice))) + 1
 
@@ -951,7 +952,6 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
             _per.write_text(_payload, encoding="utf-8")
     except Exception as exc:
         hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
-
 
     hook_log(
         "context_lookup_hit" if total else "context_lookup_empty",

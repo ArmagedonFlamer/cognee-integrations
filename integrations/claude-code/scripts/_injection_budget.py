@@ -39,32 +39,77 @@ def fit_sections(sections: list[dict], budget: int, measure=None) -> tuple[str, 
                 blocks.append((title + "\n" if title else "") + "\n\n".join(entries))
         return "\n\n".join(blocks)
 
-    size = measure or (lambda value: max(len(value), len(json.dumps(value)) - 2))
-    # An indivisible entry that cannot fit even alone must not evict every
-    # smaller result before it is itself removed (e.g. one enormous code fence).
+    def encoded(value):
+        return len(json.dumps(value)) - 2
+
+    size = measure or encoded
+    # Hook envelopes serialize context once; any repeated visibility header is
+    # required and stays constant. Measure that fixed overhead once, then use
+    # additive JSON-escaped costs for entries, headings and separators.
     required = [
         values if section.get("required") else [] for section, values in zip(sections, kept)
     ]
+    required_text = render(required)
+    base_size = size(required_text)
+    if base_size > budget:
+        raise ValueError("required injection header exceeds budget")
+    overhead = base_size - encoded(required_text)
+    costs = [[encoded(entry) for entry in entries] for entries in kept]
+    headings = [encoded(s["title"]) + 2 if s.get("title") else 0 for s in sections]
+    base_separator = 4 if any(required) else 0
+
+    # Exclude indivisible entries that could not fit alone, before they can
+    # evict smaller results. Fenced code remains whole even at a tiny budget.
     for i, section in enumerate(sections):
-        if section.get("required"):
-            continue
-        eligible = []
-        for entry in kept[i]:
-            candidate = list(required)
-            candidate[i] = [entry]
-            if size(render(candidate)) <= budget:
-                eligible.append(entry)
-        kept[i] = eligible
+        if not section.get("required"):
+            eligible = [
+                (entry, cost)
+                for entry, cost in zip(kept[i], costs[i])
+                if base_size + base_separator + headings[i] + cost <= budget
+            ]
+            kept[i] = [entry for entry, _ in eligible]
+            costs[i] = [cost for _, cost in eligible]
+
+    active = sum(bool(entries) for entries in kept)
+    estimated = (
+        overhead
+        + 4 * max(0, active - 1)
+        + sum(
+            headings[i] + sum(costs[i]) + 4 * (len(entries) - 1)
+            for i, entries in enumerate(kept)
+            if entries
+        )
+    )
+    eviction_order = sorted(
+        (i for i, section in enumerate(sections) if not section.get("required")),
+        key=lambda i: (sections[i].get("priority", 0), -i),
+    )
+
+    def evict_until(limit):
+        nonlocal estimated, active
+        for i in eviction_order:
+            while kept[i] and estimated > limit:
+                kept[i].pop()
+                estimated -= costs[i].pop()
+                if kept[i]:
+                    estimated -= 4
+                else:
+                    estimated -= headings[i] + (4 if active > 1 else 0)
+                    active -= 1
+            if estimated <= limit:
+                break
+
+    evict_until(budget)
     text = render()
-    while size(text) > budget:
-        choices = [
-            i for i, section in enumerate(sections) if kept[i] and not section.get("required")
-        ]
-        if not choices:
+    actual = size(text)
+    # Defensive fallback for a caller with a non-additive custom envelope.
+    # Normal hook JSON takes exactly two full-envelope measurements total.
+    while actual > budget:
+        if not any(kept[i] for i in eviction_order):
             raise ValueError("required injection header exceeds budget")
-        index = min(choices, key=lambda i: (sections[i].get("priority", 0), -i))
-        kept[index].pop()
+        evict_until(estimated - (actual - budget))
         text = render()
+        actual = size(text)
     entries = [
         entry
         for section, values in zip(sections, kept)
