@@ -152,6 +152,23 @@ def _load_session() -> tuple[str, str, str]:
     return session_id, dataset, user_id
 
 
+def _low_signal_trace(tool: str, output, status: str) -> bool:
+    if tool in {"Read", "Grep", "Glob"}:
+        return True
+    if tool != "Bash" or status != "success":
+        return False
+    if isinstance(output, dict):
+        if output.get("exit_code", 0) or output.get("exitCode", 0) or output.get("interrupted"):
+            return False
+        metadata = {"stdout", "stderr", "exit_code", "exitCode", "interrupted", "is_error"}
+        return (
+            set(output) <= metadata
+            and not str(output.get("stdout") or "").strip()
+            and not str(output.get("stderr") or "").strip()
+        )
+    return output is None or (isinstance(output, str) and not output.strip())
+
+
 async def _store_tool_call(payload: dict) -> None:
     """Write a PostToolUse event as a TraceEntry."""
     tool_name = payload.get("tool_name", "unknown")
@@ -184,6 +201,13 @@ async def _store_tool_call(payload: dict) -> None:
             return
 
     status, error_message = _infer_status(payload)
+    if cloud_enabled() and _low_signal_trace(tool_name, tool_output, status):
+        from _plugin_common import get_session_key
+        from _session_stats import update
+
+        update(get_session_key(), traces_skipped=1)
+        hook_log("trace_skipped_low_signal", {"tool": tool_name})
+        return
 
     # Normalize method_params: small structured dict is ideal; fall back
     # to a truncated-string dict if we got something non-JSON-safe.

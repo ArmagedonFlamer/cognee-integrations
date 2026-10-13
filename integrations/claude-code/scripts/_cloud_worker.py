@@ -239,7 +239,7 @@ def drain(send, *, now: float = None, verify=None) -> int:
         try:
             if item.get("kind") == "trace" and not allow_tool(
                 item.get("entry", {}).get("origin_function", ""),
-                item.get("entry", {}).get("parameters", {}),
+                item.get("entry", {}).get("method_params", {}),
             ):
                 _expire(path, "capture_disabled_by_policy")
                 continue
@@ -535,10 +535,16 @@ def run() -> None:
                     last_health = time.time()
                     url = target()["base_url"]
                     health = authed_liveness(url, timeout=2)
-                    if health == "ready":
-                        mark_server_ready(url)
-                    elif health in DEFINITIVE_FAILURE_STATES:
-                        write_connection_state(health, url)
+                    identity = target()
+                    for launch in (root() / "sessions").glob("*/worker.json"):
+                        record = read(launch)
+                        if record.get("target") != identity:
+                            continue
+                        set_session_key(record["session_key"])
+                        if health == "ready":
+                            mark_server_ready(url)
+                        elif health in DEFINITIVE_FAILURE_STATES:
+                            write_connection_state(health, url)
                     refresh_credits()
                     maintain_sessions()
                 drain(send, verify=verify)

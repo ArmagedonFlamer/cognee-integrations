@@ -1117,3 +1117,15 @@ profile and graph node sets `session_learnings` and `project_docs`; raw turns ar
 Discovery on the configured 1.6.3 tenant found both guidance and distilled graph context,
 but no `session_summaries` records. Structured last-session prose therefore depends on
 the WS7 server release; measured prior-session statistics are available independently.
+
+Cloud trace capture skips Read, Grep and Glob plus successful Bash commands with empty
+output. These skips remain visible as `traces_skipped` in session statistics. Bash errors and
+nonempty output remain eligible for capture under the configured capture policy.
+
+Structured summaries and guidance usage tracking require a server release advertising
+`session_summary_v1` / `context_usage_v1` in `/health`. The cache records the actual server
+version and checks capabilities before using those fields; it does not assume a future
+version number guarantees deployment. Current 1.6.3 tenants fall back to distilled facts
+and measured session statistics. After deployment, manually review ten sessions for
+usefulness; the extractor keeps its five-lesson per-batch cap. The seven useful entries per session
+criterion is measured across batches and remains a manual rollout acceptance check.

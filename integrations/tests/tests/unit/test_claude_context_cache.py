@@ -80,3 +80,34 @@ def test_failed_refresh_preserves_last_good_cache(cache, monkeypatch):
     cache.refresh_pending()
     assert cache.load("ds") == data
     assert cache.cache_path("ds").with_suffix(".wanted.json").exists()
+
+
+@pytest.mark.parametrize("capable", [False, True])
+def test_summary_and_usage_require_advertised_server_capability(cache, capable):
+    calls = []
+
+    def request(path, body, **kwargs):
+        if path == "/health":
+            return {
+                "version": "1.6.4",
+                "capabilities": ["session_summary_v1", "context_usage_v1"] if capable else [],
+            }
+        calls.append(body)
+        if body["scope"] == ["session_context"]:
+            return [
+                {
+                    "source": "session_context",
+                    "content": "",
+                    "session_summary": {
+                        "goal": "Safe outbox",
+                        "outcome": "Atomic cursor implemented",
+                        "open_items": ["Crash test"],
+                    },
+                }
+            ]
+        return []
+
+    data = cache.build("ds", "old", "new-host", request=request)
+    assert ("Atomic cursor" in data["rendered"]) is capable
+    assert calls[-1]["record_context_usage"] is capable
+    assert data["server_version"] == "1.6.4"

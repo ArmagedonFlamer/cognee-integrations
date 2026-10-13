@@ -115,6 +115,24 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
         if "dataset_id" in scoped
         else {"datasets": [dataset]}
     )
+    version = read_connection_state().get("version", "")
+    capabilities = []
+    try:
+        health = request("/health", None, method="GET", timeout=4)
+        if isinstance(health, dict):
+            version = str(health.get("version") or version)
+            capabilities = health.get("capabilities") or []
+            atomic_json(
+                root() / "server-capabilities.json",
+                {
+                    "version": version,
+                    "capabilities": capabilities,
+                    "target": target(),
+                    "checked_at": time.time(),
+                },
+            )
+    except Exception:
+        pass
     base = {"query": QUERY, **fields, "top_k": 5, "only_context": True}
     rows = request(
         "/api/v1/recall",
@@ -135,12 +153,33 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
                 "scope": ["session_context"],
                 "session_id": session_id,
                 "context_profile": "agent",
+                "record_context_usage": "context_usage_v1" in capabilities,
             },
             timeout=8,
         )
         if isinstance(guidance, list):
             rows.extend(guidance)
     sections = _sections(rows, session_id)
+    if "session_summary_v1" in capabilities:
+        for row in rows:
+            if isinstance(row, dict) and isinstance(row.get("session_summary"), dict):
+                summary_data = row["session_summary"]
+                paragraph = " ".join(
+                    label + ": " + ("; ".join(value) if isinstance(value, list) else str(value))
+                    for key, label in (
+                        ("goal", "Goal"),
+                        ("outcome", "Outcome"),
+                        ("decisions", "Decisions"),
+                        ("open_items", "Open items"),
+                    )
+                    for value in [summary_data.get(key)]
+                    if value
+                )
+                if paragraph and not RAW_HISTORY.search(paragraph):
+                    sections.insert(
+                        0, {"title": "=== Last session ===", "entries": [paragraph], "priority": 45}
+                    )
+                break
     current = read_stats(host_key)
     last = summary(
         current if current.get("ended_at") else previous(host_key, dataset, target()["base_url"])
@@ -150,13 +189,6 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
         header += "\n" + last
     rendered, stats = fit_sections([{"entries": [header], "required": True}] + sections, 6000)
     kept = set(stats["entries"])
-    version = read_connection_state().get("version", "")
-    try:
-        health = request("/health", None, method="GET", timeout=4)
-        if isinstance(health, dict):
-            version = str(health.get("version") or version)
-    except Exception:
-        pass
     data = {
         "rendered": rendered,
         "entry_hashes": [entry_hash(entry) for entry in stats["entries"]],

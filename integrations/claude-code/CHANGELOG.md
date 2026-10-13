@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.14]
+
+### Changed
+- Skip and count low-signal cloud traces; consume structured session summaries only when the server advertises support.
+
 ## [1.6.13]
 
 ### Changed
