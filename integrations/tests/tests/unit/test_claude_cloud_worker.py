@@ -132,3 +132,39 @@ def test_idle_does_not_downgrade_final_request(worker):
     worker.request_improve("ds", "sid", "idle")
     marker = next((worker.root() / "improve-wanted").glob("*.json"))
     assert worker.read(marker)["reason"] == "final"
+
+
+@pytest.mark.parametrize("reason", ["final", "precompact", "manual", "switch"])
+def test_explicit_improve_resets_an_old_backoff(worker, reason):
+    path = worker.request_improve("ds", "sid", "idle")
+    item = worker.read(path)
+    item.update(attempts=10, next_attempt=worker.time.time() + 3600)
+    worker.atomic_json(path, item)
+    assert worker.request_improve("ds", "sid", reason) == path
+    refreshed = worker.read(path)
+    assert refreshed["attempts"] == refreshed["next_attempt"] == 0
+    assert refreshed["reason"] == reason
+    assert worker.process_improves(lambda _: {"stages": [{"status": "completed"}]}) == 1
+
+
+def test_busy_retries_stay_short_and_expose_status(worker):
+    path = worker.request_improve("ds", "sid", "manual")
+    now = worker.time.time()
+    for _ in range(12):
+        assert worker.process_improves(lambda _: {}, now=now) == 0
+        item = worker.read(path)
+        assert item["next_attempt"] == now + 5 and item["attempts"] == 0
+        assert worker.improve_wait_detail(path, now=now) == "Last result: busy; next retry in 5s."
+        now += 5
+
+
+def test_worker_rotates_and_reopens_both_inherited_log_handles(worker, monkeypatch):
+    path = worker.root() / "cloud-worker.log"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("old log beyond the cap")
+    monkeypatch.setenv("COGNEE_PLUGIN_LOG_MAX_BYTES", "10")
+    handles = []
+    monkeypatch.setattr(worker.os, "dup2", lambda source, target: handles.append(target))
+    worker._refresh_console_log()
+    assert handles == [1, 2]
+    assert path.read_text() == "" and path.with_name(path.name + ".1").exists()

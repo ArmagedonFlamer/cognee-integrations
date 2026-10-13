@@ -399,11 +399,11 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     # tests/test_connection_target_match.py).
     prior_same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
     prior_state = str(prior.get("state") or ("ready" if prior.get("ready_at") else ""))
+    # Ignore legacy not_responding markers: a slow recall is not an outage.
     known_bad = prior_same_target and prior_state in (
         "auth_failed",
         "unreachable",
         "server_error",
-        "not_responding",
     )
     if known_bad and cloud_enabled(runtime):
         hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
@@ -742,18 +742,10 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
             except Exception:
                 pass
         elif scope_timeouts and not scopes_answered_err:
-            # Every attempted scope timed out and none got an HTTP answer: no
-            # verdict on its own, but N consecutive such prompts are a pattern.
-            # Escalate to "not_responding" — deliberately distinct from
-            # "unreachable" (positively absent: refused/DNS): the server exists
-            # but is not answering. A lone timeout never writes anything.
+            # Timeouts describe latency, not an outage. Keep streak diagnostics
+            # without writing a failure marker that would block later recalls.
             streak = record_slow_probe(service_url)
             if streak >= slow_streak_threshold():
-                write_connection_state(
-                    "not_responding",
-                    service_url,
-                    detail="%d consecutive timeout-only prompts" % streak,
-                )
                 hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
     except Exception as exc:
         hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})
