@@ -110,12 +110,12 @@ def test_the_status_line_shows_what_a_real_recall_did(recalled_session, live_sui
     bar = session.run("cognee_statusline_render.py", {"session_id": session.session_id})
     assert bar.ok, f"status line render failed (rc={bar.returncode}): {bar.stderr[:500]}"
 
-    assert "recalled" in bar.stdout, (
+    assert "used" in bar.stdout, (
         f"the bar omitted what the recall did after a successful recall: {bar.stdout!r}"
     )
-    # The rendered result must carry the count — "nothing relevant yet" would
+    # The rendered result must carry the count — "nothing relevant" would
     # misreport a real hit.
-    assert "nothing relevant yet" not in bar.stdout, (
+    assert "nothing relevant" not in bar.stdout, (
         f"the bar reported nothing recalled despite {recalled} hits: {bar.stdout!r}"
     )
     assert "memor" in bar.stdout, f"the bar has no memory count after a recall: {bar.stdout!r}"

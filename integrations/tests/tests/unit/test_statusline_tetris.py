@@ -74,9 +74,10 @@ def test_palette_and_meaning(sl, monkeypatch, theme, color):
     assert "cognee+" not in line
     assert f"\033[38;5;{color}m\033[1mmanual" in line
     assert f"\033[38;5;{color}m\033[1mcloud" in line
-    assert "manual  ·  cloud  ·  124 reminiscence" in plain(sl, line)
-    assert "124 reminiscence" in line and "8 ideas" in line and "34/46 imprints" in line
-    assert plain(sl, line).count("▰▰▰▰▱") == 1
+    assert "manual  ·  cloud  ·  ~2.4k tokens saved" in plain(sl, line)
+    assert "reminiscence" not in line
+    # The per-prompt count and the turn ratio are not shown.
+    assert "ideas" not in line and "imprints" not in line and "▰" not in line
     assert not any(c in plain(sl, line) for c in "[]▁▂▃▄▅▆▇█▔▀")
 
 
@@ -88,45 +89,23 @@ def test_brand_is_constant_across_recall_outcomes(sl, monkeypatch, hits):
     assert re.search(r"(^|\s)[●○] cognee ■", plain(sl, line))
     assert "\033[48;5;141m\033[30m cognee " in line
     assert "cognee+" not in line
-    assert f"{hits} {'idea' if hits == 1 else 'ideas'}" in line
+    assert "idea" not in line
 
 
 def test_width(sl, monkeypatch):
     at80 = sl._tetris_line(SESSION)
     assert sl._width(at80) <= 80
-    assert "▰" in at80
+    assert "~2.4k tokens saved" in at80
     monkeypatch.setenv("COLUMNS", "120")
     wide = sl._tetris_line(SESSION)
     assert "~2.4k tokens saved" in wide
-    assert "~2.4kt saved" in at80
-    assert "34/46 imprints" in wide and "34/46 imprints" in at80
     assert sl._width(wide) <= 120
     monkeypatch.setenv("COLUMNS", "60")
     line = sl._tetris_line(SESSION)
-    assert sl._width(line) <= 60 and "▰" not in line
-    assert all(text in line for text in ("cognee", "manual", "cloud", "124 reminiscence"))
+    assert sl._width(line) <= 60
+    assert all(text in line for text in ("cognee", "manual", "cloud"))
     monkeypatch.setenv("COLUMNS", "20")
     assert sl._width(sl._tetris_line(SESSION)) <= 20
-
-
-def test_stateless_shimmer(sl, monkeypatch):
-    write_json(sl._RECALL_DIR / f"{SESSION}.json", marker(ts=NOW))
-    initial = sl._tetris_line(SESSION, now=NOW)
-    assert initial == sl._tetris_line(SESSION, now=NOW)
-    assert "\033[38;5;183m124 reminiscence" in initial
-    assert "\033[38;5;141m124 reminiscence" in sl._tetris_line(SESSION, now=NOW + 2)
-    monkeypatch.setenv("COLORTERM", "truecolor")
-    assert "\033[38;2;208;180;255m124 reminiscence" in sl._tetris_line(SESSION, now=NOW)
-    assert sl._tetris_line(SESSION, now=NOW + 10) == sl._tetris_line(SESSION, now=NOW + 60)
-    assert "▰▰▰▰▱" in sl._tetris_line(SESSION, now=NOW + 10)
-    assert sl._animation_phase(marker(hits={"session": 0}, ts=NOW), NOW) is None
-
-
-@pytest.mark.parametrize(
-    "turns,hits,expected", [(0, 0, "▱▱▱▱▱"), (1, 1, "▰▰▰▰▰"), (46, 34, "▰▰▰▰▱"), (3, 0, "▱▱▱▱▱")]
-)
-def test_ratio(sl, turns, hits, expected):
-    assert sl._ratio_bar(turns, hits) == expected
 
 
 @pytest.mark.parametrize("mode", ["full", "false"])
@@ -134,9 +113,10 @@ def test_counts_modes(sl, monkeypatch, mode):
     monkeypatch.setenv("COGNEE_STATUSLINE_COUNTS", mode)
     monkeypatch.setenv("COLUMNS", "120")
     line = sl._tetris_line(SESSION)
-    assert "124 reminiscence" in line
-    assert ("recall 8s/0t/0g/0a" in line) == (mode == "full")
-    assert "▰" not in line
+    # The counts switch is the classic line's: the badge line shows neither
+    # the per-scope strip nor the turn ratio in any mode.
+    assert "~2.4k tokens saved" in line
+    assert "recall 8s/0t/0g/0a" not in line and "imprints" not in line and "▰" not in line
 
 
 def test_failure_and_semantic_colors(sl, monkeypatch):
@@ -200,13 +180,13 @@ def test_cp1252_stdout_still_renders_utf8(sl, suite, temp_home):
     )
     assert result.returncode == 0 and result.stderr == b""
     output = result.stdout.decode("utf-8")
-    assert "124 reminiscence" in output and "▰" in output
+    assert "tokens saved" in output
 
 
 def test_ascii_fallback_when_stdout_cannot_be_switched(sl, monkeypatch):
     monkeypatch.setattr(sl, "_unicode_output", lambda: False)
     line = sl._tetris_line(SESSION)
-    assert line.isascii() and "124 reminiscence" in line
+    assert line.isascii() and "tokens saved" in line
 
 
 def test_credit_and_update_notices_survive_without_a_reported_width(sl, monkeypatch):
@@ -216,7 +196,6 @@ def test_credit_and_update_notices_survive_without_a_reported_width(sl, monkeypa
     monkeypatch.setattr(sl, "_update_segment", lambda: " · ⬆ update available")
     line = sl._tetris_line(SESSION)
     assert "credits: $0.40" in line and "update available" in line
-    assert "34/46 imprints" in line
     # A real narrow terminal may lose decorations and counts, never the notices.
     monkeypatch.setenv("COLUMNS", "60")
     narrow = sl._tetris_line(SESSION)
@@ -244,12 +223,11 @@ def test_classic_byte_identical_to_1_6_21(sl, suite, temp_home, counts, url):
 @pytest.mark.parametrize("corrupt", ["{partial", "[]", '{"entries_injected":"bad"}'])
 def test_corrupt_stats_keep_bar(sl, corrupt):
     (sl._SESSIONS_DIR / SESSION / "stats.json").write_text(corrupt)
-    assert "0 reminiscence" in sl._tetris_line(SESSION)
+    assert "tokens saved n/a" in sl._tetris_line(SESSION)
 
 
-def test_timestamp_iso_and_no_writes(sl):
+def test_render_makes_no_writes(sl):
     before = {str(p): p.read_bytes() for p in sl._RECALL_DIR.parent.rglob("*") if p.is_file()}
-    assert sl._timestamp("2027-01-15T08:00:00Z") == NOW
     sl._tetris_line(SESSION)
     after = {str(p): p.read_bytes() for p in sl._RECALL_DIR.parent.rglob("*") if p.is_file()}
     assert before == after
@@ -260,7 +238,7 @@ def test_failure_at_60_keeps_identity_and_count(sl, monkeypatch):
     monkeypatch.setattr(sl, "_status_prefix", lambda _: sl._fail_glyph("server_error"))
     line = sl._tetris_line(SESSION)
     assert sl._width(line) <= 60
-    assert all(value in line for value in ("server_error", "manual", "cloud", "124 reminiscence"))
+    assert all(value in line for value in ("server_error", "manual", "cloud"))
 
 
 def test_home_without_markers(sl, suite, tmp_path):
@@ -270,7 +248,7 @@ def test_home_without_markers(sl, suite, tmp_path):
     )
     result = run_renderer(suite, fresh, sl.__file__, "{}")
     assert result.returncode == 0 and result.stderr == b""
-    assert "0 reminiscence" in result.stdout.decode()
+    assert "tokens saved n/a" in result.stdout.decode()
     assert len(result.stdout.splitlines()) == 1
 
 

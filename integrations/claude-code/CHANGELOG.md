@@ -16,9 +16,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Live activity in the status line.** The bar now says what memory is doing while
   it happens (`recalling…`, `saving…`, `learning from this session…`, `setting up memory ·
   starting memory server…`, `preserving context…`, `saving session…`) and, once
-  done, what it did (`recalled 3 memories`, `saved 5 memories`, `memory
-  updated`, `memory ready`). A finished result stays until the next
-  operation begins and turns faint after a minute. The hooks write one activity
+  done, what it did (`3 memories used`, `✓ saved`, `✓ learned`, `memory ready`):
+  a number only for recall, a ticked verb for everything that keeps work. A
+  finished result stays until the next operation begins, turns faint after a
+  minute and leaves after five. The hooks write one activity
   marker per session (`~/.cognee-plugin/claude-code/phase/<session>.json`) at the
   start and end of every operation; the renderer reads it, so the bar stays
   network-free. `COGNEE_STATUSLINE_ACTIVITY=false` hides the segment;
@@ -61,8 +62,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   appends it to `~/.cognee/.env` without a shell history.
 - **A first-run tour on the status row.** The first session on a machine shows
   three short hints under the row, each about what is right above it (the
-  dataset picker; the dot, the mode and the activity; how Cognee recalls and
-  Claude can search or remember, and the commands), with `next` and `skip`. Seen once, it is not shown again:
+  dataset picker; the dot, the mode and the activity; that Claude uses the
+  memories Cognee recalls on every prompt, and the commands), with `next` and `skip`. Seen once, it is not shown again:
   the plugin's store records the tour version. `/cognee-tour` replays it; the
   `tour` row in `/config` turns it off.
 - **Two tools Claude calls directly.** The hooks module registers
@@ -113,10 +114,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `cognee` badge whose leading glyph is the connection: a green `●` once confirmed,
   a dim `○` while unknown, and on a failure the red `✕ (<reason>)` leads the line
   (the row above the prompt opens with the brain and `cognee` in the brand
-  lavender). The counters are renamed:
-  **reminiscence** (entries injected this session), **ideas** (blocks delivered on
-  the latest prompt) and **imprints** (prompts that received memory / all prompts).
-  The activity segment (`recalling…`, `recalled 3 memories`, …) follows them.
+  lavender). No counters: the activity segment (`3 memories used`) says what
+  the latest prompt got and the tokens-saved estimate what memory spared; a
+  session total, a per-prompt hit count and a turn ratio are not shown. The
+  classic line keeps its own counters.
 - **Estimated tokens saved.** The line shows an estimate computed as injected context
   tokens (four characters per token) × 6.9; it is a heuristic, not measured billing,
   and shows `n/a` when unmeasured. Recall also records how much context session
@@ -133,6 +134,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   tokens per session. A `claude plugin eval` routing suite lives under `evals/`.
 
 ### Fixed
+- **The "Cognee Memory Connected" message said `Mode: cloud` for local sessions.**
+  Its mode word was "is a URL set", checked after the bootstrap had filled the
+  localhost default into the configured URL, so every local session, a
+  `COGNEE_BACKEND=local` terminal included, was announced as cloud while the
+  status line (correctly) said local. The message now decides the way the status
+  line does: the backend switch first, then whether the target host is loopback.
 - **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
   on the session alone and kept for an hour, so a chat that was resumed and left again
   within the hour was skipped as already synced. The marker is now keyed on the session

@@ -1,5 +1,5 @@
 """Tests for `_activity_segment` (cognee_statusline_render.py) — the live
-`· recalling…` / `· recalled 3 memories` segment at the end of the bar.
+`· recalling…` / `· 3 memories used` segment at the end of the bar.
 
 Contract:
   * the segment reads this session's ``phase/<session_id>.json`` marker, written
@@ -7,8 +7,8 @@ Contract:
   * an active phase renders in the accent colour, present tense (`recalling…`);
     a stale active phase (a hook that died) is ignored;
   * otherwise the most recent finished result renders in past tense with its
-    number (`recalled 3 memories`, `saved 1 memory`); zero recalled is phrased
-    (`nothing relevant yet`), never counted;
+    number (`3 memories used`, `✓ saved`); zero recalled is phrased
+    (`nothing relevant`), never counted;
   * a result a minute old renders faint, so "recent" and "left over" differ;
   * only this session's marker is ever read, and a session id from stdin never
     builds a path unchecked;
@@ -55,6 +55,14 @@ def _marker(sl, session=_SESSION, active=None, results=None):
         sl._PHASE_DIR / f"{session}.json",
         {"session_key": session, "active": active, "results": results or {}},
     )
+
+
+def test_a_result_older_than_five_minutes_leaves_the_line(sl):
+    _marker(sl, results={"recalled": _result(count=3, age=sl._RESULT_HIDE_AFTER_SECONDS + 1)})
+    assert sl._activity_segment(_SESSION) == ""
+    # Just under the threshold it is still there, faint.
+    _marker(sl, results={"recalled": _result(count=3, age=sl._RESULT_HIDE_AFTER_SECONDS - 5)})
+    assert "3 memories used" in sl._activity_segment(_SESSION)
 
 
 def _accent(sl, text: str) -> str:
@@ -128,7 +136,7 @@ def test_stale_active_phase_falls_back_to_the_last_result(sl):
         active=_active("recalling", age=sl._PHASE_STALE_SECONDS + 1),
         results={"saved": _result(2, age=5)},
     )
-    assert sl._activity_segment(_SESSION) == " · saved 2 memories"
+    assert sl._activity_segment(_SESSION) == " · ✓ saved"
 
 
 def test_unknown_phase_renders_nothing(sl):
@@ -141,17 +149,17 @@ def test_unknown_phase_renders_nothing(sl):
 
 def test_recalled_count_renders_past_tense(sl):
     _marker(sl, results={"recalled": _result(3)})
-    assert sl._activity_segment(_SESSION) == " · recalled 3 memories"
+    assert sl._activity_segment(_SESSION) == " · 3 memories used"
 
 
 def test_single_memory_is_singular(sl):
     _marker(sl, results={"saved": _result(1)})
-    assert sl._activity_segment(_SESSION) == " · saved 1 memory"
+    assert sl._activity_segment(_SESSION) == " · ✓ saved"
 
 
 def test_zero_recalled_is_phrased_not_counted(sl):
     _marker(sl, results={"recalled": _result(0)})
-    assert sl._activity_segment(_SESSION) == " · nothing relevant yet"
+    assert sl._activity_segment(_SESSION) == " · nothing relevant"
 
 
 def test_failed_recall_says_so(sl):
@@ -163,10 +171,10 @@ def test_failed_recall_says_so(sl):
     "kind, text",
     [
         ("ready", "memory ready"),
-        ("consolidated", "memory updated"),
-        ("indexed", "repository indexed"),
-        ("anchored", "context preserved"),
-        ("synced", "session saved"),
+        ("consolidated", "✓ learned"),
+        ("indexed", "✓ repository indexed"),
+        ("anchored", "✓ context kept"),
+        ("synced", "✓ session saved"),
     ],
 )
 def test_other_results_have_plain_labels(sl, kind, text):
@@ -181,17 +189,17 @@ def test_failed_ready_says_unavailable(sl):
 
 def test_most_recent_result_wins(sl):
     _marker(sl, results={"recalled": _result(3, age=20), "saved": _result(5, age=2)})
-    assert sl._activity_segment(_SESSION) == " · saved 5 memories"
+    assert sl._activity_segment(_SESSION) == " · ✓ saved"
 
 
 def test_old_result_renders_faint(sl):
     _marker(sl, results={"recalled": _result(3, age=sl._RESULT_DIM_AFTER_SECONDS + 1)})
-    assert sl._activity_segment(_SESSION) == f" {_DIM}· recalled 3 memories{_RESET}"
+    assert sl._activity_segment(_SESSION) == f" {_DIM}· 3 memories used{_RESET}"
 
 
 def test_unparseable_count_reads_as_none(sl):
     _marker(sl, results={"recalled": {"at": time.time(), "count": "lots"}})
-    assert sl._activity_segment(_SESSION) == " · nothing relevant yet"
+    assert sl._activity_segment(_SESSION) == " · nothing relevant"
 
 
 def test_colour_resets_at_the_end(sl):
@@ -246,5 +254,5 @@ def test_json_snapshot_carries_a_finished_result(sl):
     _marker(sl, results={"recalled": _result(3)})
     snap = sl._snapshot(_SESSION, enabled=True)
     assert snap["activity"]["kind"] == "result"
-    assert snap["activity"]["text"] == "recalled 3 memories"
+    assert snap["activity"]["text"] == "3 memories used"
     assert snap["activity"]["ok"] is True

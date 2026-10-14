@@ -17,7 +17,6 @@ import re
 import sys
 import time
 import unicodedata
-from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -640,6 +639,8 @@ _PHASE_STALE_SECONDS = 90.0
 # A finished result stays on the bar until the next phase begins, faint once it
 # is this old so "recalled 3 memories" reads as recent versus left over.
 _RESULT_DIM_AFTER_SECONDS = 60.0
+# A result older than this is no longer news: the segment leaves the line.
+_RESULT_HIDE_AFTER_SECONDS = 300.0
 _ACTIVE_STYLE = "\033[33m"  # yellow: something is happening right now (local mode is cyan)
 _DIM = "\033[2m"
 
@@ -697,7 +698,9 @@ def _active_label(active: dict) -> str:
 
 
 def _result_label(kind: str, entry: dict) -> str:
-    """Past tense, with the number only once there is one."""
+    """What an operation did, at rest: a number only for recall (what helped
+    this turn), a ticked verb for everything that keeps work (a count of
+    captured entries is bookkeeping nobody can act on)."""
     ok = entry.get("ok", True) is not False
     count = entry.get("count")
     try:
@@ -708,22 +711,22 @@ def _result_label(kind: str, entry: dict) -> str:
         if not ok:
             return "recall failed"
         if not count:
-            return "nothing relevant yet"
-        return f"recalled {_plural(count, 'memory')}"
+            return "nothing relevant"
+        return f"{_plural(count, 'memory')} used"
     if kind == "saved":
         if not ok and not count:
             return "save failed"
-        return f"saved {_plural(count or 0, 'memory')}"
+        return "✓ saved"
     if kind == "ready":
         return "memory ready" if ok else "memory unavailable"
     if kind == "consolidated":
-        return "memory updated" if ok else "memory update failed"
+        return "✓ learned" if ok else "learning failed"
     if kind == "indexed":
-        return "repository indexed" if ok else "indexing failed"
+        return "✓ repository indexed" if ok else "indexing failed"
     if kind == "anchored":
-        return "context preserved"
+        return "✓ context kept"
     if kind == "synced":
-        return "session saved"
+        return "✓ session saved"
     return ""
 
 
@@ -777,12 +780,13 @@ def _activity(session_id: str) -> dict:
     }
 
 
-def _activity_segment(session_id: str) -> str:
-    """`` · recalling…`` while memory works, `` · recalled 3 memories`` after.
+def _activity_segment(session_id: str, style: str = "") -> str:
+    """`` · recalling…`` while memory works, `` · 3 memories used`` after.
 
     Reads the per-session activity marker the hooks write (no network). Active
     phases render in the accent colour; a finished result renders plain, then
-    faint once it is a minute old. ``COGNEE_STATUSLINE_ACTIVITY=false`` hides it.
+    faint once it is a minute old, and leaves after five.
+    ``COGNEE_STATUSLINE_ACTIVITY=false`` hides it.
     """
     if os.environ.get("COGNEE_STATUSLINE_ACTIVITY", "").strip().lower() in (
         "0",
@@ -796,9 +800,14 @@ def _activity_segment(session_id: str) -> str:
         return ""
     if shown["kind"] == "active":
         return f" · {_ACTIVE_STYLE}{shown['text']}{_RESET}"
-    if shown.get("age", 0.0) >= _RESULT_DIM_AFTER_SECONDS:
-        return f" {_DIM}· {shown['text']}{_RESET}"
-    return f" · {shown['text']}"
+    age = shown.get("age", 0.0)
+    if age >= _RESULT_HIDE_AFTER_SECONDS:
+        return ""
+    # ``style`` colours a finished result (the badge line passes its purple);
+    # the classic line passes nothing and keeps its plain text.
+    if age >= _RESULT_DIM_AFTER_SECONDS:
+        return f" {_DIM}· {style}{shown['text']}{_RESET}"
+    return f" · {style}{shown['text']}{_RESET}" if style else f" · {shown['text']}"
 
 
 def _icon() -> str:
@@ -1051,7 +1060,6 @@ def _status_prefix(session_id: str = "") -> str:
 
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_ANIMATION_SECONDS = 10
 
 
 def _classic_line(session_id: str) -> str:
@@ -1141,34 +1149,6 @@ def _clip(value: str, width: int) -> str:
     return "".join(output) + _RESET
 
 
-def _timestamp(value) -> float:
-    try:
-        if isinstance(value, (int, float)):
-            return float(value)
-        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if stamp.tzinfo is None:
-            stamp = stamp.replace(tzinfo=timezone.utc)
-        return stamp.timestamp()
-    except (ValueError, TypeError, OverflowError):
-        return 0.0
-
-
-def _hit_count(hits) -> int:
-    return sum(max(0, _int(hits, key)) for key in hits) if isinstance(hits, dict) else 0
-
-
-def _animation_phase(marker: dict, now: float) -> int | None:
-    age = now - _timestamp(marker.get("ts"))
-    return (
-        int(age // 2) if _hit_count(marker.get("hits")) and 0 <= age < _ANIMATION_SECONDS else None
-    )
-
-
-def _ratio_bar(turns: int, with_hits: int, cells: int = 5) -> str:
-    filled = round(max(0, min(with_hits, turns)) / turns * cells) if turns > 0 else 0
-    return "▰" * filled + "▱" * (cells - filled)
-
-
 def _tokens_saved(stats: dict, *, compact: bool = False) -> str:
     if _int(stats, "recalls") <= 0 or "chars_injected" not in stats:
         return "saved n/a" if compact else "tokens saved n/a"
@@ -1186,12 +1166,10 @@ def _tokens_saved(stats: dict, *, compact: bool = False) -> str:
 
 
 def _tetris_line(session_id: str, *, now: float | None = None) -> str:
+    del now  # kept for callers; the line no longer animates
     purple = _purple()
-    now = time.time() if now is None else now
     unicode = _unicode_output()
     columns = _columns()
-    marker = _recall_marker(session_id)
-    phase = _animation_phase(marker, now)
     # The connection glyph is the badge's leading square, so it costs no width:
     # a green ● once the server is confirmed up and authenticated, a dim ○ while
     # nothing is known yet (warming up, no marker). A failure keeps the square
@@ -1212,59 +1190,24 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
         if _path_safe(session_id) and session_id not in {".", ".."}
         else {}
     )
-    count = max(0, _int(stats, "entries_injected"))
-    shimmer = purple
-    if phase is not None and phase % 2 == 0:
-        shimmer = (
-            "\033[38;2;208;180;255m"
-            if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}
-            else "\033[38;5;183m"
-        )
-    chip = f"{shimmer}{count} reminiscence{_RESET}"
-    core = health + brand + " · " + chip
-    counts_mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
-    counts, decoration = "", ""
-    if counts_mode not in {"0", "false", "no", "off"} and isinstance(marker.get("hits"), dict):
-        if counts_mode == "full":
-            counts = _recall_diagnostic_segment(marker, marker["hits"])
-        else:
-            counts = f" · {_plural(_hit_count(marker['hits']), 'idea')}"
-            totals = marker.get("session_totals")
-            if isinstance(totals, dict):
-                turns = max(0, _int(totals, "turns"))
-                with_hits = max(0, min(turns, _int(totals, "turns_with_hits")))
-                counts += f" · {with_hits}/{turns} imprints"
-                decoration = _ratio_bar(turns, with_hits)
-            if decoration:
-                decoration = f"  {purple}{decoration}{_RESET}"
+    core = health + brand
+    # No counters: the activity segment says what the last recall did, and the
+    # estimate below says what memory has saved. (The classic line keeps its own.)
     credits, update = _credits_segment(), _update_segment()
-    imprint_counts = re.sub(r" · \d+ ideas?", "", counts)
-    # What memory is doing right now, after the estimate and before the notices.
-    activity = _activity_segment(session_id)
-    savings = " · " + _tokens_saved(stats) + activity
-    short_savings = " · " + _tokens_saved(stats, compact=True) + activity
+    # The estimate and, after it, what memory is doing right now, both in the
+    # brand purple at rest (an active phase keeps its accent colour).
+    emphasis = f"{purple}\033[1m"
+    activity = _activity_segment(session_id, style=emphasis)
+    savings = f" · {emphasis}{_tokens_saved(stats)}{_RESET}" + activity
+    short_savings = f" · {emphasis}{_tokens_saved(stats, compact=True)}{_RESET}" + activity
     # No reported width (the normal Claude Code case) shows the full line.
     wide = columns is None or columns > 60
-    # Keep the badge at every width. Shorten units and omit the latest-prompt
-    # count before dropping the single bar and cumulative imprint ratio.
-    candidates = []
-    if wide:
-        candidates += [
-            core + counts + decoration + savings + credits + update,
-            core + counts + decoration + short_savings + credits + update,
-            core + imprint_counts + decoration + short_savings + credits + update,
-            core.replace(" · ", "·")
-            + imprint_counts
-            + decoration
-            + short_savings
-            + credits
-            + update,
-        ]
-    candidates += [
-        core + counts + savings + credits + update,
-        core + counts + short_savings + credits + update,
+    # Keep the badge at every width: shorten the token units, then compact the
+    # spacing, before dropping the estimate.
+    candidates = [
         core + savings + credits + update,
         core + short_savings + credits + update,
+        core.replace(" · ", "·") + short_savings + credits + update,
     ]
     # A credit warning or update notice is never dropped to save width: they are
     # the segments a user has to act on.
@@ -1317,7 +1260,11 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         state, reason = "", ""
     activity = _activity(session_id)
     counts = _counts(session_id)
-    credits = _plain(_credits_segment()).strip(" ·")
+    raw_credits = _credits_segment()
+    credits = _plain(raw_credits).strip(" ·")
+    # The text line paints the balance green, or red once exhausted or refused;
+    # the row above the prompt reads the verdict here rather than the colour.
+    credits_exhausted = "\033[31m" in raw_credits
     update = _plain(_update_segment()).strip(" ·")
     dataset = _active_dataset(session_id)
     mode = _active_mode()
@@ -1332,6 +1279,7 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         "dataset": dataset,
         "mode": mode,
         "credits": credits,
+        "credits_exhausted": credits_exhausted,
         "activity": activity,
         "counts": counts,
         "update": update,
@@ -1340,28 +1288,13 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
 
 
 def _counts(session_id: str) -> dict:
-    """Dev's counters as data, for the row the hooks module draws: entries
-    injected this session (reminiscence), blocks on the latest prompt (ideas),
-    prompts that received memory out of all prompts (imprints) with the bar,
-    and the estimated tokens saved. Same sources as ``_tetris_line``."""
+    """The estimated tokens saved as data, for the row the hooks module draws.
+    Same source as ``_tetris_line``."""
     safe = _path_safe(session_id) and session_id not in {".", ".."}
     stats = _read_json(_SESSIONS_DIR / session_id / "stats.json") if safe else {}
-    marker = _recall_marker(session_id) if safe else {}
-    hits = marker.get("hits") if isinstance(marker.get("hits"), dict) else None
-    totals = marker.get("session_totals") if isinstance(marker.get("session_totals"), dict) else {}
-    turns = max(0, _int(totals, "turns"))
-    with_hits = max(0, min(turns, _int(totals, "turns_with_hits")))
-    counts_mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
     return {
-        "reminiscence": max(0, _int(stats, "entries_injected")),
-        "ideas": _hit_count(hits) if hits is not None else None,
-        "imprints": (
-            {"with_hits": with_hits, "turns": turns} if hits is not None and turns else None
-        ),
-        "bar": _ratio_bar(turns, with_hits) if hits is not None and turns else "",
         "tokens_saved": _tokens_saved(stats),
         "tokens_saved_short": _tokens_saved(stats, compact=True),
-        "show_counts": counts_mode not in {"0", "false", "no", "off"},
     }
 
 

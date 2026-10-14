@@ -46,13 +46,8 @@ import type { Register, RenderElement } from 'claude-code'
 type Activity = { kind: 'active' | 'result'; phase: string; text: string; age: number; ok: boolean; count?: number }
 
 type Counts = {
-  reminiscence: number
-  ideas: number | null
-  imprints: { with_hits: number; turns: number } | null
-  bar: string
   tokens_saved: string
   tokens_saved_short: string
-  show_counts: boolean
 }
 
 type Snapshot = {
@@ -62,6 +57,7 @@ type Snapshot = {
   dataset: string
   mode: string
   credits: string
+  credits_exhausted?: boolean
   update: string
   text: string
   counts?: Counts
@@ -93,6 +89,8 @@ const WARMUP_RETRY_TICKS = 5
 // Mirrors the renderer: an active phase older than this is a hook that died.
 const STALE_MS = 90_000
 const DIM_AFTER_MS = 60_000
+// A result older than this is no longer news: it leaves the row.
+const HIDE_AFTER_MS = 300_000
 const RENDERER_TIMEOUT_MS = 5000
 // Phases whose settings hook runs async, so the terminal spinner shows no
 // statusMessage for them; the mod adds its own suffix there. The sync hooks
@@ -144,7 +142,12 @@ let poll: { cancel: () => void } | null = null
 let pollUntil = 0
 let pollTicks = 0
 let warmupUntil = 0
-let icon = '🧠 '
+// The mark: cognee's waveform icon, drawn only where it can be drawn as
+// itself, the official SVG on the desktop row, read from the plugin's assets
+// at session start. Text gets no stand-in: no glyph in a terminal, nothing
+// after the spinner or in toasts (a character never looks like the mark).
+let markOn = true
+let waveSvg = ''
 let purple = PURPLE_DARK
 let bandOn = true
 let spinnerOn = true
@@ -166,8 +169,8 @@ let namingDataset = false
 const TOUR_VERSION = 1
 const TOUR_STEPS = [
   '↑ the dataset name is a picker: pick another dataset, or "+ new dataset…" to create one',
-  '↑ ● means memory is connected, a red ✕ is a problem (see fix) · local or cloud is where memory lives · reminiscence counts what was recalled this session · the end of the row says what memory is doing',
-  'Cognee recalls memory on every prompt, and Claude can search or remember on its own · /cognee-dataset <name> switches by name · /cognee-tour replays this',
+  '↑ ● means memory is connected · local/cloud shows you where your memory lives · the end of the row says what memory is doing',
+  'Claude uses memories recalled by Cognee on every prompt · /cognee-dataset <name> switches by name · /cognee-tour replays this tutorial',
 ]
 let tourOn = true
 let tourStep = -1
@@ -264,7 +267,7 @@ let datasetsListing = false
 
 // ── pure helpers ────────────────────────────────────────────────────────────
 function plural(n: number, word: string): string {
-  if (n === 1 || word === 'reminiscence') return `${n} ${word}`
+  if (n === 1) return `${n} ${word}`
   return `${n} ${word.endsWith('y') ? word.slice(0, -1) + 'ies' : word + 's'}`
 }
 
@@ -280,27 +283,29 @@ function activeLabel(phase: string, detail: string): string {
   return label
 }
 
+// At rest: a number only for recall (what helped this turn), a ticked verb
+// for everything that keeps work. Mirrors the renderer's _result_label.
 function resultLabel(kind: string, entry: PhaseResult): string {
   const ok = entry.ok !== false
   const count = toNumber(entry.count)
   switch (kind) {
     case 'recalled':
       if (!ok) return 'recall failed'
-      if (!count) return 'nothing relevant yet'
-      return `recalled ${plural(count, 'memory')}`
+      if (!count) return 'nothing relevant'
+      return `${plural(count, 'memory')} used`
     case 'saved':
       if (!ok && !count) return 'save failed'
-      return `saved ${plural(count ?? 0, 'memory')}`
+      return '✓ saved'
     case 'ready':
       return ok ? 'memory ready' : 'memory unavailable'
     case 'consolidated':
-      return ok ? 'memory updated' : 'memory update failed'
+      return ok ? '✓ learned' : 'learning failed'
     case 'indexed':
-      return ok ? 'repository indexed' : 'indexing failed'
+      return ok ? '✓ repository indexed' : 'indexing failed'
     case 'anchored':
-      return 'context preserved'
+      return '✓ context kept'
     case 'synced':
-      return 'session saved'
+      return '✓ session saved'
     default:
       return ''
   }
@@ -618,7 +623,7 @@ async function openFix($: any, reason: string): Promise<void> {
   fixNote = null
   doctorOutput = ''
   const opened = await $.ui.open({ id: FIX_PANE, title: 'Fix memory', focus: true, closeOnEscape: true, holdToasts: true, rows: 18 })
-  if (!opened.isPlaced) $.ui.toast(`${icon}fix: ${opened.reason}`)
+  if (!opened.isPlaced) $.ui.toast(`fix: ${opened.reason}`)
 }
 
 async function runDoctor($: any): Promise<void> {
@@ -688,7 +693,7 @@ async function endTour($: any, finished: boolean): Promise<void> {
   } catch {
     // shown again next session, which is the worst case
   }
-  if (finished) $.ui.toast(`${icon}that is the tour · /cognee-tour replays it`)
+  if (finished) $.ui.toast(`that is the tour · /cognee-tour replays it`)
 }
 
 // ── the dataset picker ──────────────────────────────────────────────────────
@@ -743,7 +748,7 @@ async function switchDataset($: any, target: string): Promise<string> {
       line = `switched to ${asText(parsed.dataset) || name}${synced}`
     } else line = `switch failed${ran.stderr.trim() ? `: ${ran.stderr.trim().split('\n').pop()}` : ''}`
     const failed = !parsed.switched && parsed.switched !== false
-    $.ui.toast(failed ? `${icon}✕ ${line}` : `${icon}${line}`)
+    $.ui.toast(failed ? `✕ ${line}` : `${line}`)
   } finally {
     switching = false
     clearActive($)
@@ -754,7 +759,7 @@ async function switchDataset($: any, target: string): Promise<string> {
 }
 
 export const register: Register = (on, options) => {
-  icon = options.icon === 'none' ? '' : '🧠 '
+  markOn = options.icon !== 'none'
   bandOn = options.band !== false
   spinnerOn = options.spinner !== false
   toolsOn = options.tools !== false
@@ -773,6 +778,14 @@ export const register: Register = (on, options) => {
     }
     pollTicks = 0
     purple = (await $.env.get('COGNEE_STATUSLINE_THEME'))?.toLowerCase() === 'light' ? PURPLE_LIGHT : PURPLE_DARK
+    if (markOn && !waveSvg) {
+      try {
+        const source = await $.fs.read(`${$.plugin.root}/assets/icon-lavender.svg`)
+        if (typeof source === 'string' && source.trimStart().startsWith('<svg')) waveSvg = source
+      } catch {
+        // the text mark then stands in on the desktop too
+      }
+    }
     await bindSession($)
     await readPhase($)
     await refreshSnapshot($)
@@ -1020,7 +1033,8 @@ export const register: Register = (on, options) => {
     const theirs = await next(e)
     if (!bandOn || e.props.hasSurvey) return theirs
     if (e.surface !== 'desktop' && e.surface !== 'terminal') return theirs
-    const { Box, Text, Select, Input, Button } = $.ui.resolve(e)
+    const els = $.ui.resolve(e) as any
+    const { Box, Text, Select, Input, Button } = els
     const snap = snapshot
     const parts: RenderElement[] = []
     if (!datasetsListed && !datasetsListing) void loadDatasets($)
@@ -1093,10 +1107,17 @@ export const register: Register = (on, options) => {
     } else {
       parts.push(Text({ dimColor: true, children: ['○ '] }))
     }
-    // The wordmark: the brain, then "cognee" bold in the brand lavender (the
-    // text line's ■ cognee ■ chip is a terminal device; a desktop draws it as
-    // a black-on-lavender block). The dataset and the mode are bold too.
-    parts.push(Text({ bold: true, color: purple, children: [`${icon}cognee `] }))
+    // The mark, then the wordmark: the official waveform as an inline SVG
+    // where the surface draws one (the desktop), the block-alphabet wave in
+    // the brand colour elsewhere; "cognee" bold in the brand lavender after
+    // it (the text line's ■ cognee ■ chip is a terminal device).
+    // The terminal's table lists an Svg too, but draws it as an empty box;
+    // a terminal gets the wordmark alone.
+    if (markOn && waveSvg && els.Svg && e.surface === 'desktop') {
+      parts.push(els.Svg({ source: waveSvg, alt: 'cognee', width: 18, height: 18 }))
+      parts.push(Text({ children: [' '] }))
+    }
+    parts.push(Text({ bold: true, color: purple, children: ['cognee '] }))
     if (canPick) {
       parts.push(namingDataset ? namer() : picker())
     } else {
@@ -1106,19 +1127,20 @@ export const register: Register = (on, options) => {
     parts.push(Text({ bold: true, color: purple, children: [snap?.mode ?? '…'] }))
     const counts = snap?.counts
     if (counts) {
-      parts.push(Text({ color: purple, children: [` · ${plural(counts.reminiscence, 'reminiscence')}`] }))
-      if (counts.show_counts && counts.ideas !== null) parts.push(Text({ children: [` · ${plural(counts.ideas, 'idea')}`] }))
-      if (counts.show_counts && counts.imprints) {
-        parts.push(Text({ children: [` · ${counts.imprints.with_hits}/${counts.imprints.turns} imprints`] }))
-        if (counts.bar) parts.push(Text({ color: purple, children: [`  ${counts.bar}`] }))
-      }
-      parts.push(Text({ dimColor: counts.tokens_saved.endsWith('n/a'), children: [` · ${counts.tokens_saved}`] }))
+      parts.push(Text({ color: purple, bold: true, children: [` · ${counts.tokens_saved}`] }))
     }
-    if (snap?.credits) parts.push(Text({ children: [` · ${snap.credits}`] }))
+    if (snap?.credits) {
+      // As on the text line: the balance green, red once exhausted or a
+      // request was refused; the last-operation cost after it at normal weight.
+      const [balance, ...rest] = snap.credits.split(' · ')
+      parts.push(Text({ color: snap.credits_exhausted ? 'red' : 'green', children: [` · ${balance}`] }))
+      if (rest.length > 0) parts.push(Text({ children: [` · ${rest.join(' · ')}`] }))
+    }
     if (active) {
       parts.push(Text({ color: 'yellow', children: [` · ${active.text}`] }))
-    } else if (result) {
-      parts.push(Text({ dimColor: result.age * 1000 >= DIM_AFTER_MS, children: [` · ${result.text}`] }))
+    } else if (result && result.age * 1000 < HIDE_AFTER_MS) {
+      // At rest the result reads in the brand colour and bold, like the estimate.
+      parts.push(Text({ color: purple, bold: true, dimColor: result.age * 1000 >= DIM_AFTER_MS, children: [` · ${result.text}`] }))
     }
     if (snap?.update) parts.push(Text({ color: 'yellow', children: [` · ${snap.update}`] }))
 
@@ -1160,6 +1182,6 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (!spinnerOn || !active) return next(e)
     if (e.surface !== 'desktop' && !ASYNC_PHASES.includes(active.phase) && !OWN_PHASES.includes(active.phase)) return next(e)
-    return next({ ...e, props: { ...e.props, suffix: ` · ${icon}${active.text}` } })
+    return next({ ...e, props: { ...e.props, suffix: ` · ${active.text}` } })
   })
 }

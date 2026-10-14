@@ -833,11 +833,11 @@ event. Irrelevant background recall does not require an announcement.
 > describes the row's content, which is the same either way.
 
 The status row highlights `cognee` between the connection glyph and a purple
-square, with bold dataset and location, the counters, one Claude-style imprint bar
-and what memory is doing. As a text line at 80 columns it can read:
+square, with bold dataset and location, the estimated tokens saved and what
+memory is doing. As a text line it can read:
 
 ```text
-● cognee ■ manual·cloud·124 reminiscence · 34/46 imprints  ▰▰▰▰▱ · ~2.4kt saved
+● cognee ■ manual · cloud · ~2.4k tokens saved · 3 memories used
 ```
 
 The glyph in front of `cognee` is the connection: a green `●` once the server is
@@ -845,11 +845,9 @@ confirmed up and authenticated, a dim `○` while nothing is known yet (warming 
 and on a failure the badge keeps its square and the line leads with the red
 `✕ (<reason>)`; see the health rules below.
 
-- **Reminiscence**: cumulative memory entries injected into this session. This is not
-  a unique-memory count; an entry reinjected after compaction counts again.
-- **Ideas**: memory blocks delivered for the latest prompt, not proof of use.
-- **Imprints**: prompts that received memory out of all prompts. The single bar
-  shows this fraction.
+- **No counters.** What the latest prompt recalled is the activity segment's
+  (`3 memories used`); a session total, a per-prompt hit count and a turn
+  ratio are deliberately not shown. The classic line keeps its own counters.
 - **Tokens saved**: estimated as **average tokens per recall × number of recalls × 6.9**.
   Recall tokens mean memory context injected into Claude, estimated at one token
   per four characters. The calculation is equivalent to cumulative injected
@@ -860,20 +858,17 @@ and on a failure the badge keeps its square and the line leads with the red
   `saved n/a` means recall/context measurements are unavailable. Existing sessions
   use their recorded cumulative recall context; no network requests are added.
 
-A new successful recall shimmers the reminiscence count for ten seconds using the
-recall timestamp and current clock. The renderer only reads local counters;
-measurement happens in the existing recall hook without additional requests.
+The renderer only reads local counters; measurement happens in the existing
+recall hook without additional requests.
 
 The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
-The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xterm
-183. Failures remain red, update notices amber, and credits retain their semantic
+Failures remain red, update notices amber, and credits retain their semantic
 colours. Unknown connection health appears as a dim `○` in the badge.
 
 When `COLUMNS` is set, the line is fitted to that width; Claude Code does not
 normally export it, and then the full line is shown as in classic mode. When
-fitting, the highlighted brand stays visible: decorations disappear first (at 60
-columns or fewer), token units shorten, and the latest-prompt ideas count is
-omitted before the bar and imprint ratio. Credit warnings and update notices are
+fitting, the highlighted brand stays visible: token units shorten, then the
+spacing compacts, before the estimate is dropped. Credit warnings and update notices are
 never dropped: the narrowest form keeps health plus the notices, and only very
 narrow lines are clipped. Output is UTF-8 in both styles; ASCII (`#`, `-`, `[x]`)
 is used only if stdout cannot be switched to UTF-8. A renderer error falls back
@@ -883,7 +878,7 @@ to classic output.
 |---|---|---|
 | `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
 | `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Ideas and imprint ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (reminiscence and token savings remain) |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Classic line only: its memory-hit counters; `full` shows per-scope recall/saved diagnostics; `false` hides them |
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
 `cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /
@@ -930,12 +925,12 @@ Both cases show the same reason — the fix is the same either way, and `llm-sta
 what it did:
 
 ```
-● cognee ■ agent_sessions · local · 12 reminiscence · ~1.1k tokens saved · recalling…
-● cognee ■ agent_sessions · local · 15 reminiscence · ~1.4k tokens saved · recalled 3 memories
-● cognee ■ agent_sessions · local · 15 reminiscence · ~1.4k tokens saved · saving…
-● cognee ■ agent_sessions · local · 15 reminiscence · ~1.4k tokens saved · saved 5 memories
-● cognee ■ agent_sessions · local · 15 reminiscence · ~1.4k tokens saved · learning from this session…
-○ cognee ■ agent_sessions · local · 0 reminiscence · tokens saved n/a · setting up memory · starting memory server…
+● cognee ■ agent_sessions · local · ~1.1k tokens saved · recalling…
+● cognee ■ agent_sessions · local · ~1.4k tokens saved · 3 memories used
+● cognee ■ agent_sessions · local · ~1.4k tokens saved · saving…
+● cognee ■ agent_sessions · local · ~1.4k tokens saved · ✓ saved
+● cognee ■ agent_sessions · local · ~1.4k tokens saved · learning from this session…
+○ cognee ■ agent_sessions · local · tokens saved n/a · setting up memory · starting memory server…
 ```
 
 (`COGNEE_STATUSLINE_STYLE=classic` keeps the activity segment too, at the end of
@@ -945,13 +940,15 @@ While an operation runs the segment is present tense and coloured (`connecting�
 `recalling…`, `saving…`, `learning from this session…` for the automatic improve pass,
 `indexing repository…`, `preserving context…` before compaction, `saving session…`
 at exit). When it finishes, the result replaces it in plain words with its number
-(`recalled 3 memories`, `saved 5 memories` for this turn's tool calls and answer,
-`memory updated`, `memory ready`, `repository indexed`, `context preserved`,
-`session saved`); a recall that found nothing says `nothing relevant yet` rather
-than counting to zero. A result stays until the next operation begins and turns
-faint after a minute, so a fresh `recalled 3 memories` and one left over from ten
-minutes ago read differently. "Memories" is the only noun the segment uses; what is
-saved are the captured prompt, tool calls and answer of the turn.
+(`3 memories used`, `✓ saved` for this turn's tool calls and answer,
+`✓ learned`, `memory ready`, `✓ repository indexed`, `✓ context kept`,
+`✓ session saved`); a recall that found nothing says `nothing relevant` rather
+than counting to zero. The number is recall's alone, since that is what helped
+this turn; the save side shows a tick, because what it stored (the captured
+prompt, tool calls and answer of the turn) is bookkeeping nobody can act on. A
+result stays until the next operation begins, turns faint after a minute and
+leaves the line after five, so a fresh `3 memories used` and one left over from
+ten minutes ago never read the same.
 
 The hooks write one activity marker per session,
 `~/.cognee-plugin/claude-code/phase/<session>.json`, at the start and end of every
@@ -964,7 +961,7 @@ to `recall/<session>.json` for `cognee-plugin metrics`.
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_STATUSLINE_ACTIVITY` | `true` | `false` hides the activity segment |
-| `COGNEE_STATUSLINE_ICON` | unset | `brain` puts a 🧠 in front of the name (`🧠 cognee: …`). Off by default in the terminal: the emoji is double-width and some terminal fonts misrender it. |
+| `COGNEE_STATUSLINE_ICON` | unset | `brain` puts a 🧠 in front of the name (`🧠 cognee: …`). Off by default: the emoji is double-width and some terminal fonts misrender it. |
 
 **Per-terminal status.** Every signal in the line answers *for this terminal*, not for the machine. That matters because terminals legitimately disagree: one shell exported `LLM_API_KEY` and another didn't, or two hold different `COGNEE_API_KEY`s against the same server. Both sessions show the truth at the same time:
 
@@ -1028,14 +1025,19 @@ the status row **above the prompt**, in the Code tab of the Claude Desktop app a
 in a terminal alike:
 
 ```
-🧠 cognee [agent_sessions ▾] · local · 124 reminiscence · 3 ideas · 34/46 imprints  ▰▰▰▰▱ · ~2.4k tokens saved · recalled 3 memories
-⠹ 🧠 cognee [agent_sessions ▾] · local · 124 reminiscence · ~2.4k tokens saved · recalling…
+● cognee [agent_sessions ▾] · local · ~2.4k tokens saved · 3 memories used
+⠹ cognee [agent_sessions ▾] · local · ~2.4k tokens saved · recalling…
 ```
 
-The row leads with the wordmark in the brand lavender (the text line's
-`● cognee ■` chip is a terminal device). The module runs the plugin's own
+On the desktop the row leads with cognee's waveform mark, the official icon
+itself (an inline SVG from `assets/icon-lavender.svg`, read once at session
+start), then the wordmark in the brand lavender. A terminal gets the wordmark
+alone: no character looks like the mark, so none stands in for it, there or
+after the spinner or in toasts. The `icon` row in `/config` (`wave` or `none`)
+switches the desktop mark off; the text line's `● cognee ■` chip is a terminal
+device of its own. The module runs the plugin's own
 renderer in `--json` mode and lays the result
-out: the dataset, mode, counters, tokens-saved estimate, credits,
+out: the dataset, mode, tokens-saved estimate, credits,
 connection reason and update nudge are the renderer's, so the row and a
 [line below the prompt](#a-line-below-the-prompt) cannot drift. While an
 operation runs a braille spinner leads the row; a failure leads it with the red
@@ -1058,7 +1060,7 @@ arrows move, Enter picks, Escape returns to the prompt.
 
 The module also adds, on both surfaces:
 
-- **After the spinner, while Claude works:** `Thinking · 🧠 recalling…`, `· 🧠 saving…`.
+- **After the spinner, while Claude works:** `Thinking · recalling…`, `· saving…`.
   On the desktop for every phase; in a terminal only for the phases whose hooks run
   in the background (saving, learning from the session, indexing, session sync), because the
   recall and compaction hooks already show their own status message there.
@@ -1092,17 +1094,18 @@ applies it. The dialog never edits anything else.
 the row, each about what is right above it, with `next` and `skip` buttons:
 
 ```
-🧠 cognee [agent_sessions ▾] · local · 0 reminiscence · tokens saved n/a
+cognee [agent_sessions ▾] · local · tokens saved n/a
 ↑ the dataset name is a picker: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
 ```
 
-then what the dot, the mode and the end of the row mean, then how Cognee recalls
-and Claude can search or remember, and the two commands. `done` or `skip` ends it and it is not shown again:
+then that the dot means memory is connected, local/cloud where it lives and the
+end of the row what memory is doing, then that Claude uses the memories Cognee
+recalls on every prompt, and the two commands. `done` or `skip` ends it and it is not shown again:
 the plugin's own store (Claude Code keeps it per plugin, across sessions) records
 that this version of the tour was seen. `/cognee-tour` replays it any time. In a
 terminal, focus the band with `ctrl+x tab` to press the buttons, or click them.
 
-Four rows in `/config` switch each piece: `icon` (`brain` or `none`), `band` (off,
+Four rows in `/config` switch each piece: `icon` (`wave` or `none`), `band` (off,
 no row is drawn and no session is marked, so a line you added below the prompt
 shows again), `spinner`, `tour` (a fifth, `tools`, is described below).
 
@@ -1156,8 +1159,8 @@ does not load mods and for the judgement the skill text carries.
 | `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from the active dataset.` then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
 | `remember` | `content` (the text) or `file` (a path, stored under its real name so code rides the code path), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
 
-While a tool runs the spinner says `· 🧠 searching memory…` or `· 🧠 remembering…`
-on both surfaces, as it says `· 🧠 switching dataset…` during a switch. The
+While a tool runs the spinner says `· searching memory…` or `· remembering…`
+on both surfaces, as it says `· switching dataset…` during a switch. The
 `tools` row in `/config` turns the registration off; the skills are unaffected.
 
 Everything here hooks only Claude Code's native events, as the band does: no

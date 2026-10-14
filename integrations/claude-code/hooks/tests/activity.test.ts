@@ -18,13 +18,8 @@ const SNAPSHOT = {
   update: '',
   text: 'cognee: agent_sessions · local',
   counts: {
-    reminiscence: 124,
-    ideas: 3,
-    imprints: { with_hits: 34, turns: 46 },
-    bar: '▰▰▰▰▱',
     tokens_saved: '~2.4k tokens saved',
     tokens_saved_short: '~2.4kt saved',
-    show_counts: true,
   },
 }
 
@@ -66,6 +61,7 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], state: { marker: st
   })
   on('session.id', () => ({ value: SESSION }))
   on('fs.read', ($, e) => {
+    if (e.path.endsWith('/assets/icon-lavender.svg')) return { value: '<svg viewBox="0 0 1 1"></svg>' }
     if (e.path !== MARKER_PATH) throw new Error(`unexpected read of ${e.path}`)
     return { value: state.marker }
   })
@@ -88,14 +84,13 @@ test('the desktop band shows the row the terminal status line shows', async ($, 
   await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
-  // The badge, the dataset, the mode, dev's counters and the activity.
-  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
+  // The mark (the official SVG on the desktop), the wordmark, the dataset,
+  // the mode, the estimate and the activity.
+  expect(await ui.find({ type: 'Svg' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /124 reminiscence/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /34\/46 imprints/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /▰▰▰▰▱/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /~2.4k tokens saved/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /recalled 3 memories/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /3 memories used/ })).toBeDefined()
   // Healthy leads with the green dot, as on the text line.
   expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
   await ui.unmount()
@@ -109,8 +104,12 @@ test('in a terminal the band draws the same row, so the status line below can st
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /recalled 3 memories/ })).toBeDefined()
+  // A terminal gets the wordmark alone: no mark, and nothing standing in for it.
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+  expect(await ui.find({ type: 'Image' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /[∿▂▆█🧠]/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /3 memories used/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -137,7 +136,7 @@ test('a prompt shows recalling while the recall hook runs, then what it recalled
   expect(seenWhileRecalling).toContain('recalling…')
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /recalled 2 memories/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /2 memories used/ })).toBeDefined()
   await ui.unmount()
 
   // The answer's text is the agent's own (its credit line comes from the recall
@@ -159,7 +158,7 @@ test('nothing recalled: the band says so plainly', async ($, on) => {
   await $.prompt.submit({ text: 'hello there' })
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /nothing relevant yet/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /nothing relevant/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -180,7 +179,7 @@ test('after the turn the band shows saving until the marker says what was saved'
   await clock.advance(1100)
   ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Text', text: /saving…/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /saved 3 memories/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✓ saved/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -189,12 +188,30 @@ test('a stale active phase is ignored rather than shown forever', async ($, on) 
   const clock = wire(on, state)
   const now = clock.now()
   const stale = (now - 5 * 60_000) / 1000
-  state.marker = marker(now, { active: { phase: 'recalling', detail: '', started_at: stale, updated_at: stale }, results: { saved: { count: 4, at: stale, ok: true } } })
+  const recent = (now - 2 * 60_000) / 1000
+  state.marker = marker(now, { active: { phase: 'recalling', detail: '', started_at: stale, updated_at: stale }, results: { saved: { count: 4, at: recent, ok: true } } })
   await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Text', text: /recalling/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /saved 4 memories/ })).toBeDefined()
+  // Two minutes old: still shown, faint.
+  const saved = await ui.find({ type: 'Text', text: /✓ saved/ })
+  expect(saved).toBeDefined()
+  expect(saved!.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+test('a result older than five minutes leaves the row', async ($, on) => {
+  const state = { marker: '' }
+  const clock = wire(on, state)
+  const now = clock.now()
+  const old = (now - 6 * 60_000) / 1000
+  state.marker = marker(now, { active: null, results: { recalled: { count: 3, at: old, ok: true } } })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /memories used/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
   await ui.unmount()
 })
 

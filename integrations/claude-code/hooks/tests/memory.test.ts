@@ -17,13 +17,8 @@ const SNAPSHOT = {
   update: '',
   text: 'cognee: agent_sessions · local',
   counts: {
-    reminiscence: 0,
-    ideas: null,
-    imprints: null,
-    bar: '',
     tokens_saved: 'tokens saved n/a',
     tokens_saved_short: 'saved n/a',
-    show_counts: true,
   },
 }
 
@@ -435,12 +430,13 @@ test('the first session on a machine gets the tour under the row, once', async (
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
   expect(await ui.find({ type: 'Text', text: /the dataset name is a picker/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
 
   await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
   expect(await ui.find({ type: 'Text', text: /means memory is connected/ })).toBeDefined()
   await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
-  expect(await ui.find({ type: 'Text', text: /\/cognee-tour replays this/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /Claude uses memories recalled by Cognee on every prompt/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\/cognee-tour replays this tutorial/ })).toBeDefined()
   expect((await ui.find({ type: 'Button', key: 'tourNext' }))!.props.label).toBe('done')
   await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
   expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeUndefined()
@@ -473,7 +469,7 @@ test('a machine that has seen this tour gets no hints', async ($, on) => {
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
   expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
   await ui.unmount()
 })
 
@@ -609,6 +605,35 @@ test('the row keeps checking after start until the connection marker lands', asy
   expect(renders).toBeGreaterThanOrEqual(3)
 })
 
+test('credits read green on the row, red once exhausted, the last cost plain', async ($, on) => {
+  const calls: Call[] = []
+  let exhausted = false
+  wire(on, calls, {
+    'cognee_statusline_render.py': () =>
+      ok(JSON.stringify({ ...SNAPSHOT, mode: 'cloud', credits: exhausted ? 'credits: -$0.40 · last improve ~$0.03' : 'credits: $4,990.93 · last improve ~$0.03', credits_exhausted: exhausted })),
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  const balance = await ui.find({ type: 'Text', text: /credits: \$4,990.93/ })
+  expect(balance!.props.color).toBe('green')
+  const last = await ui.find({ type: 'Text', text: /last improve ~\$0.03/ })
+  expect(last!.props.color).toBeUndefined()
+  // The estimate keeps the brand colour and weight even when unmeasured.
+  const estimate = await ui.find({ type: 'Text', text: /tokens saved n\/a/ })
+  expect(estimate!.props.color).toBe('#bc9bff')
+  expect(estimate!.props.bold).toBe(true)
+  expect(estimate!.props.dimColor).toBeUndefined()
+  await ui.unmount()
+
+  exhausted = true
+  await $.prompt.submit({ text: 'another prompt refreshes the snapshot' })
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  expect((await ui.find({ type: 'Text', text: /credits: -\$0.40/ }))!.props.color).toBe('red')
+  await ui.unmount()
+})
+
 test('a session that reports no surface at start (the Desktop app) lists when the band is first drawn', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)
@@ -632,7 +657,7 @@ test('in a terminal the band is the whole status row, the dataset name a picker'
 
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
   // The first draw starts the listing (which lands before the mount settles).
-  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
   await ui.unmount()
   expect(argvOf(calls, 'switch-dataset.py')).toContain('--list')
 
@@ -683,6 +708,6 @@ test('the band falls back to the name as text until the datasets are listed', as
 
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
   await ui.unmount()
 })

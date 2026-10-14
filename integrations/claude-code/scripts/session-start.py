@@ -42,6 +42,7 @@ from _plugin_common import (
     PRESENCE_ABSENT,
     PRESENCE_READY,
     _https_context,
+    _is_loopback_host,
     _reexec_into_venv,
     apply_cognee_env,
     clear_server_pidfile,
@@ -2063,6 +2064,24 @@ def _with_observer_note(output: dict, observer: dict) -> dict:
     return result
 
 
+def _mode_word(config: dict) -> str:
+    """The mode the user is told about, decided the way the status line decides
+    it: a forced backend first, then whether the target host is loopback.
+
+    By the time the message is built, ``config["base_url"]`` holds the target
+    the bootstrap filled in, which for a local session is the localhost default,
+    so "is a URL set" cannot tell local from cloud (it said cloud for every
+    local session, forced-local included).
+    """
+    forced = str(config.get("_forced_backend") or "")
+    if forced == "local":
+        return "local"
+    url = str(config.get("base_url") or "").strip()
+    if not url:
+        return "cloud" if forced == "cloud" else "local"
+    return "local" if _is_loopback_host(urllib.parse.urlparse(url).hostname or "") else "cloud"
+
+
 def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: bool) -> dict:
     if ready:
         message = (
@@ -2501,7 +2520,7 @@ async def _start(payload: dict | None = None) -> dict:
         service_url=str(config.get("base_url", "") or ""),
     )
 
-    mode = "cloud" if config.get("base_url") else "local"
+    mode = _mode_word(config)
     print(
         f"cognee-plugin: session ready (mode={mode}, "
         f"session={session_id}, dataset={dataset}, user={user_id[:8]}...)",

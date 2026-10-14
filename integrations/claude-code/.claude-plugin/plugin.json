@@ -24,11 +24,11 @@
   "userConfig": {
     "icon": {
       "type": "string",
-      "title": "Activity icon",
-      "description": "Icon in front of the Cognee activity on the desktop band and under answers: a brain, or none.",
-      "default": "brain",
+      "title": "Cognee mark",
+      "description": "The cognee waveform icon on the status row in the Desktop app (the official SVG). A terminal shows the wordmark alone either way; nothing stands in for the mark in text.",
+      "default": "wave",
       "options": [
-        "brain",
+        "wave",
         "none"
       ]
     },
