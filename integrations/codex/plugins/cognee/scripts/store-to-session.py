@@ -18,6 +18,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 import urllib.error
 
 # Add scripts dir to path for helper imports
@@ -57,10 +58,10 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
     """Fire-and-forget session improve; failures are logged but never raised.
 
     The server bridges the session itself from its session cache (improve);
-    see run_session_improve_detailed. Shares the cooldown / backoff gate with the
-    idle watcher; the session-end sync ignores it and covers whatever a skip
-    here leaves behind. Without server auth there is nothing to submit to —
-    the session-end sync picks the session up once a key is available.
+    see run_session_improve_detailed. Honours the cooldown / backoff gate; the
+    session-end sync ignores it and covers whatever a skip here leaves behind.
+    Without server auth there is nothing to submit to — the session-end sync
+    picks the session up once a key is available.
     """
     throttled = improve_throttle_reason(session_id)
     if throttled:
@@ -292,6 +293,33 @@ async def _store_tool_call(payload: dict) -> None:
         hook_log("trace_store_noresult", {"tool": tool_name})
 
 
+def _check_memory_credit(payload: dict) -> None:
+    """Check the answer's Cognee credits against the session's tags (SDK-1071).
+
+    The recall hook tags each injected item ``m1``, ``m2``… and keeps a
+    memory's tag for the whole session. A cited tag the session handed out is
+    a valid credit (``earlier`` when it was not injected on this turn); one it
+    never handed out is invented. Both go to the log, which measures how
+    reliably agents credit memory, and the first valid credit switches off the
+    longer first-credit wording for the rest of the session. Local only:
+    nothing is sent anywhere.
+    """
+    import _plugin_common
+    from _recall_text import MemoryTags, check_credits, credit_enabled, record_credit
+
+    if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
+        return
+    msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
+    if not msg or msg == "null":
+        return
+    key = get_session_key()
+    result = check_credits(msg, MemoryTags.load(_plugin_common._PLUGIN_DIR, key))
+    if not result["cited"] and not result["available"]:
+        return  # nothing injected, nothing cited: not a turn that could credit
+    record_credit(_plugin_common._PLUGIN_DIR, key, result, ts=str(int(time.time())))
+    hook_log("memory_credit", result)
+
+
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
     from _capture_policy import capture_enabled, redact
@@ -450,6 +478,10 @@ def main():
     try:
         with quiet_hook_output("store-to-session"):
             if is_stop:
+                try:
+                    _check_memory_credit(payload)
+                except Exception as exc:
+                    hook_log("memory_credit_failed", {"error": str(exc)[:200]})
                 asyncio.run(_store_assistant_stop(payload))
                 # End-of-turn code-graph freshness: independent of whether an
                 # assistant message was stored (edits happen either way).

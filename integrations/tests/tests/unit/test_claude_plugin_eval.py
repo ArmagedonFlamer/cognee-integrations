@@ -1000,3 +1000,22 @@ def test_default_and_full_cli_flags(env):
     code, full, _ = _run(args + ["--full"])
     assert code == 0 and "Recommendations (evidence-backed)" in full
     assert "What Cognee did for you" not in full
+
+
+def test_default_report_survives_a_non_utf8_stdout(tmp_path):
+    # Windows pipes default to cp1252 on Python 3.9; the quality bars must not crash it.
+    import os
+    import subprocess
+
+    script = pathlib.Path(_scripts_dir()) / "plugin_eval.py"
+    plugin_dir = tmp_path / ".cognee-plugin" / "claude-code"
+    plugin_dir.mkdir(parents=True)
+    env = {**os.environ, "HOME": str(tmp_path), "PYTHONIOENCODING": "cp1252"}
+    result = subprocess.run(
+        [sys.executable, str(script), "report", "--since", "7d", "--no-transcripts"],
+        env=env,
+        capture_output=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert b"Traceback" not in result.stderr

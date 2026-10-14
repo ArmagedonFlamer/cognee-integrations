@@ -116,7 +116,38 @@ def test_own_session_evidence_stays_excluded(evidence, suite, hook_module, monke
     receipt = json.loads(
         (evidence.session_dir("evidence-self") / "injection-receipt.json").read_text()
     )
-    assert receipt["items"][0]["reason"] == "own_session"
+    assert "own_session" in [i["reason"] for i in receipt["items"]]
+
+
+def test_all_unavailable_evidence_keeps_legacy_text(evidence, suite, hook_module, monkeypatch):
+    # Missing or internal graph nodes come back unavailable; with nothing
+    # renderable the plain recall text must still reach Claude.
+    from utils.recall import drive_recall
+
+    lookup = hook_module(suite, "session-context-lookup.py")
+    monkeypatch.setattr(lookup, "get_session_key", lambda: "evidence-unavailable")
+    unavailable = {**item(), "status": "unavailable", "text": None}
+    run = drive_recall(lookup, monkeypatch, recall={"graph": [result([unavailable])]})
+    context = run.output["hookSpecificOutput"]["additionalContext"]
+    assert "Legacy bundle" in context and "recall 1 memory" in context
+    assert run.kwargs["graph"]["evidence_mode"] == "context"
+    assert all(kw.get("evidence_mode") is None for s, kw in run.kwargs.items() if s != "graph")
+
+
+def test_evidence_is_requested_only_when_asked(evidence, suite, isolated_modules, monkeypatch):
+    # File context, pre-compact and recap reuse recall_via_http on tight
+    # deadlines; they must not pay for evidence lookups they never read.
+    common = isolated_modules(suite, "_plugin_common")
+    payloads = []
+    monkeypatch.setattr(
+        common, "_json_http_request", lambda path, payload, **kw: payloads.append(payload) or []
+    )
+    common.recall_via_http("q", session_id="", top_k=5, scope=["graph"], dataset="d")
+    common.recall_via_http(
+        "q", session_id="", top_k=5, scope=["graph"], dataset="d", evidence_mode="context"
+    )
+    assert "evidence_mode" not in payloads[0]
+    assert payloads[1]["evidence_mode"] == "context"
 
 
 def test_batch_details_one_request_and_max_five(evidence, suite, hook_module, monkeypatch):

@@ -230,3 +230,57 @@ def test_a_successful_recall_with_a_fresh_marker_writes_nothing(lookup, monkeypa
     run = drive_recall(lookup, monkeypatch, recall={}, ready_hint=True)
 
     assert run.writes == [], run.writes
+
+
+def test_claude_slow_streak_shortens_recall_until_the_window_ends(lookup, monkeypatch, suite):
+    """A hung server costs a few seconds per prompt, not the full budget, and is re-tested."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude short recall budget")
+    import time
+
+    marks = []
+    monkeypatch.setattr(lookup, "mark_recall_slow", lambda url: marks.append(url))
+    timeout = _raise(lambda: TimeoutError("timed out"))
+
+    # Third timeout-only prompt in a row: arm the short budget.
+    monkeypatch.setattr(lookup, "recall_slow_until", lambda url: 0.0)
+    full = drive_recall(lookup, monkeypatch, recall=timeout, slow_streak=3, slow_threshold=3)
+    assert marks == [URL] and min(full.timeouts.values()) > 5
+
+    # Inside the window: a few seconds, and a timeout neither extends nor re-arms it.
+    marks.clear()
+    monkeypatch.setattr(lookup, "recall_slow_until", lambda url: time.time() + 600)
+    short = drive_recall(lookup, monkeypatch, recall=timeout, slow_streak=4, slow_threshold=3)
+    assert max(short.timeouts.values()) <= 5.0 and short.fired("recall_budget_reduced")
+    assert marks == []
+
+    # Window over: one full-budget attempt; another timeout re-arms immediately.
+    monkeypatch.setattr(lookup, "recall_slow_until", lambda url: time.time() - 1)
+    retest = drive_recall(lookup, monkeypatch, recall=timeout, slow_streak=1, slow_threshold=3)
+    assert min(retest.timeouts.values()) > 5 and marks == [URL]
+
+
+def test_claude_slow_marker_survives_streak_updates_and_clears_on_answer(suite, isolated_modules):
+    if suite.name != "claude-code":
+        pytest.skip("Claude short recall budget")
+    common = isolated_modules(suite, "_plugin_common")
+    until = common.mark_recall_slow(URL)
+    common.record_slow_probe(URL)
+    assert common.recall_slow_until(URL) == until
+    common.clear_slow_streak(URL)
+    assert common.recall_slow_until(URL) == 0.0
+
+
+def test_claude_failed_retests_back_off_to_an_hour(suite, isolated_modules, monkeypatch):
+    if suite.name != "claude-code":
+        pytest.skip("Claude short recall budget")
+    common = isolated_modules(suite, "_plugin_common")
+    monkeypatch.delenv("COGNEE_SLOW_STREAK_WINDOW", raising=False)
+    windows = []
+    for _ in range(5):
+        start = common.datetime.now(common.timezone.utc).timestamp()
+        windows.append(round(common.mark_recall_slow(URL) - start, -1))
+    assert windows == [600, 1200, 2400, 3600, 3600]
+    common.clear_slow_streak(URL)  # any answer resets the back-off
+    start = common.datetime.now(common.timezone.utc).timestamp()
+    assert round(common.mark_recall_slow(URL) - start, -1) == 600
