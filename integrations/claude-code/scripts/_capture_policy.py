@@ -265,7 +265,21 @@ def redact(value):
 _PLUGIN_SCRIPTS = set(
     "cognee-search.sh cognee-remember.sh cognee-doctor.sh "
     "cognee-index-repo.sh cognee-forget.sh cognee-statusline.sh switch-dataset.py "
-    "list-datasets.py plugin_eval.py cognee-recap.py hook_runner.py cognee-evidence.py".split()
+    "list-datasets.py plugin_eval.py cognee-recap.py hook_runner.py cognee-evidence.py "
+    "cognee-cli.sh sync-session-to-graph.py credits-refresh.py".split()
+)
+# Plugin roots of every host: generic script names such as ``doctor.py`` count
+# only when they run from one of these.
+_PLUGIN_PATH_MARKERS = (
+    "$CLAUDE_PLUGIN_ROOT/",
+    "${CLAUDE_PLUGIN_ROOT}/",
+    "/.claude/plugins/cache/cognee/",
+    "/.cognee-plugin/",
+    "$CODEX_PLUGIN_ROOT/",
+    "${CODEX_PLUGIN_ROOT}/",
+    "/.codex/plugins/cognee/",
+    "COGNEE_ANTIGRAVITY_PLUGIN_ROOT",
+    "/.gemini/config/plugins/cognee",
 )
 _READ_COMMANDS = set(
     "ls cat head tail grep rg sed awk echo find wc sort uniq cut tr jq "
@@ -332,12 +346,7 @@ def is_plugin_invocation(command: str) -> str:
             return "plugin_script"
         if base == "cognee-cli":
             return "cognee_cli"
-        if (
-            "$CLAUDE_PLUGIN_ROOT/" in executable
-            or "${CLAUDE_PLUGIN_ROOT}/" in executable
-            or "/.claude/plugins/cache/cognee/" in executable
-            or "/.cognee-plugin/" in executable
-        ):
+        if any(marker in executable for marker in _PLUGIN_PATH_MARKERS):
             return "plugin_path"
     return ""
 

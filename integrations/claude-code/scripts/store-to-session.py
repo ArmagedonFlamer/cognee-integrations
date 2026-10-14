@@ -210,10 +210,9 @@ async def _store_tool_call(payload: dict) -> None:
     status, error_message = _infer_status(payload)
     reason = is_plugin_invocation(command) if tool_name == "Bash" else ""
     low_signal = tool_name == "Bash" and low_signal_bash(command, tool_output, status)
+    # Cloud mode also drops Read/Grep/Glob and Bash calls that succeeded with no output.
     low_signal = low_signal or (
-        cloud_enabled()
-        and tool_name != "Bash"
-        and _low_signal_trace(tool_name, tool_output, status)
+        cloud_enabled() and _low_signal_trace(tool_name, tool_output, status)
     )
     from _session_stats import update
 
