@@ -181,10 +181,10 @@ def _graph(*texts):
 
 
 def _codex_header(state: Path) -> str:
-    """The `Cognee memory: …` line of the last injected context (from the audit log)."""
+    """The `Cognee memory: …` line of the last header shown (from the audit log)."""
     last = (state / "recall-audit.log").read_text(encoding="utf-8").strip().splitlines()[-1]
-    context = json.loads(last)["context"]
-    return next(line for line in context.splitlines() if line.startswith("Cognee memory:"))
+    header = json.loads(last)["header"]
+    return next(line for line in header.splitlines() if line.startswith("Cognee memory:"))
 
 
 @pytest.fixture

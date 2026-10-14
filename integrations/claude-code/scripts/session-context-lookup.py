@@ -30,6 +30,7 @@ import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+import _plugin_common
 from _cloud_worker import enabled as cloud_enabled
 from _evidence import evidence_items, render_item, write_receipt
 from _injection_budget import fit_sections, injection_limit
@@ -75,9 +76,15 @@ from _plugin_common import (
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
     PASSAGE_SEPARATOR,
+    MemoryTags,
+    begin_turn,
     code_facts,
+    credit_enabled,
+    credit_instruction,
     format_code_facts,
+    has_credited,
     is_session_transcript,
+    passage_origin,
     split_passages,
     split_sections,
     trim_recall_text,
@@ -251,9 +258,55 @@ def _line_entries(text: str) -> list[str]:
     return entries
 
 
-def _injection_sections(by_source: dict) -> list[dict]:
-    """Expose bare records; shared labels belong to one section heading."""
+def _entry_origin(source: str, entry: dict) -> str:
+    """Where a non-graph recall item came from, in a few words for its tag."""
+    if source == "code":
+        return "code graph"
+    if source == "session_context":
+        return "agent guidance"
+    if source == "graph_context":
+        return "Cognee memory"
+    if source == "trace":
+        return f"agent trace, {entry.get('origin_function', '?')}"
+    day = str(entry.get("time", "") or "")[:10]
+    return f"earlier session turn, {day}" if day else "earlier session turn"
+
+
+def _injection_sections(
+    by_source: dict, tags: MemoryTags | None = None, labels: dict | None = None
+) -> list[dict]:
+    """Expose bare records; shared labels belong to one section heading.
+
+    With ``tags``, every item carries its credit tag (SDK-1071): an evidence
+    item, passage, session turn or trace on its own first line, a block of
+    entities, facts or other lines on its heading. Tags are only assigned
+    here; ``labels`` collects each ``[mN · origin]`` so the caller can count
+    the ones that survive the budget and dedupe as shown.
+    """
     grouped = {}
+
+    def label(kind, origin, text, ident=""):
+        if tags is None:
+            return ""
+        tag = tags.assign(kind, origin, text, ident)
+        text = f"[{tag} · {origin}]"
+        if labels is not None:
+            labels[text] = tag
+        return text
+
+    def tagged(text, kind, origin, ident=""):
+        mark = label(kind, origin, text, ident)
+        return f"{mark}\n{text}" if mark else text
+
+    def add_block(source, kind, title, priority, entries, result_id, mark):
+        """One tag for a block of entries: on the heading, or on the block's first
+        entry when an earlier result already gave the section its heading."""
+        if mark and entries:
+            if (source, kind) in grouped:
+                entries = [f"{mark}\n{entries[0]}"] + entries[1:]
+            else:
+                title = f"{title} {mark}"
+        add(source, kind, title, priority, entries, result_id)
 
     def add(source, kind, title, priority, entries, result_id, separator="\n\n"):
         section = grouped.setdefault(
@@ -287,6 +340,10 @@ def _injection_sections(by_source: dict) -> list[dict]:
             # a result whose items are all unavailable keeps its plain text.
             if source == "graph_context" and available:
                 for text, item in available:
+                    derived = (item.get("source") or {}).get("derived")
+                    origin = "derived graph evidence" if derived else "source evidence"
+                    # Keyed by its citation: the same evidence keeps its tag.
+                    text = tagged(text, "evidence", origin, str(item.get("citation") or ""))
                     add(source, "evidence", title, priority, [text], result_id)
                     grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
                 continue
@@ -301,23 +358,32 @@ def _injection_sections(by_source: dict) -> list[dict]:
                         ("passages", "## Relevant passages", 40),
                     ):
                         if parts.get(kind):
-                            label = f"=== Cognee memory: {kind} ===\n[cognee-memory]"
+                            label_ = f"=== Cognee memory: {kind} ===\n[cognee-memory]"
                             if heading:
-                                label += "\n" + heading
+                                label_ += "\n" + heading
                             if kind != "passages":
                                 entries = _line_entries(parts[kind])
-                                add(source, kind, label, rank, entries, result_id)
+                                origin = {
+                                    "preamble": "Cognee memory",
+                                    "entities": "knowledge graph entities",
+                                    "facts": "knowledge graph facts",
+                                }[kind]
+                                mark = label(kind, origin, parts[kind])
+                                add_block(source, kind, label_, rank, entries, result_id, mark)
                                 continue
-                            passages = split_passages(parts[kind])
+                            passages = [
+                                tagged(p, "passage", passage_origin(p))
+                                for p in split_passages(parts[kind])
+                            ]
                             # Raw turns bridged from other sessions are the bulk and
                             # the least distilled: across every dataset they go before
                             # session learnings and remembered documents.
                             add(
                                 source,
                                 kind,
-                                label,
+                                label_,
                                 rank,
-                                [p for p in passages if not is_session_transcript(p)],
+                                [p for p in passages if not is_session_transcript(_untag(p))],
                                 result_id,
                                 PASSAGE_SEPARATOR,
                             )
@@ -327,18 +393,39 @@ def _injection_sections(by_source: dict) -> list[dict]:
                                 "=== Cognee memory: transcripts ===\n[cognee-memory]\n"
                                 "## Passages from other sessions",
                                 rank - 1,
-                                [p for p in passages if is_session_transcript(p)],
+                                [p for p in passages if is_session_transcript(_untag(p))],
                                 result_id,
                                 PASSAGE_SEPARATOR,
                             )
                     continue
             formatted = _format_entry(entry)
+            origin = _entry_origin(source, entry)
             if source in {"graph_context", "code", "session_context"}:
                 prefix, _, body = formatted.partition("\n")
-                add(source, "body", title + "\n" + prefix, priority, _line_entries(body), result_id)
+                mark = label(source, origin, formatted)
+                block = _line_entries(body)
+                add_block(source, "body", title + "\n" + prefix, priority, block, result_id, mark)
             else:
-                add(source, "body", title, priority, [formatted], result_id)
+                # An earlier turn or trace is known by its server id, so it keeps
+                # its tag when recalled again.
+                ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
+                add(
+                    source,
+                    "body",
+                    title,
+                    priority,
+                    [tagged(formatted, source, origin, ident)],
+                    result_id,
+                )
     return list(grouped.values())
+
+
+def _untag(text: str) -> str:
+    """``text`` without the credit tag line ``_injection_sections`` put on it."""
+    first, sep, rest = text.partition("\n")
+    if sep and first.startswith("[m") and " · " in first and first.endswith("]"):
+        return rest
+    return text
 
 
 def _recall_output(context: str, notice: str = "") -> dict:
@@ -415,6 +502,14 @@ def _has_entry_content(entry: dict) -> bool:
 
 
 async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
+    if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
+        # First, so a recall that returns early leaves this turn with no tags
+        # and the Stop hook cannot check the answer against the previous
+        # turn's (SDK-1071).
+        try:
+            begin_turn(_plugin_common._PLUGIN_DIR, get_session_key())
+        except Exception as exc:
+            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
     config = load_config()
     runtime = resolve_runtime_mode()
     hook_log(
@@ -929,7 +1024,14 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
 
     if scope_timeouts:
         header += "; memory recall timed out"
-    memory_sections = _injection_sections(by_source)
+    # Tag each recalled item so the answer can credit it (SDK-1071).
+    tags = (
+        MemoryTags.load(_plugin_common._PLUGIN_DIR, get_session_key())
+        if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
+        else None
+    )
+    labels: dict = {}
+    memory_sections = _injection_sections(by_source, tags, labels)
     # Reserve the largest possible drop notice before fitting. Replacing it
     # with the actual smaller count (or removing it) can only shrink output.
     entry_count = sum(len(section["entries"]) for section in memory_sections)
@@ -937,7 +1039,28 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     header += reserved_drop
     hint = _report_hint(prompt)
     hint_sections = [{"entries": [hint], "required": True, "counted": False}] if hint else []
-    sections = [{"entries": [header], "required": True}] + hint_sections + memory_sections
+    # The credit instruction goes right under the header, not after the memory:
+    # Claude Code replaces hook context over 10,000 characters with a file and a
+    # 2 KB preview, so anything at the end could be cut off. Reserved with the
+    # largest count and corrected after fitting, which can only shrink it; never
+    # deduplicated, since the count changes the meaning. It outranks every memory
+    # entry but is not required: at the smallest budget it gives way rather than
+    # fail the whole recall (SDK-1071).
+    first_credit = bool(labels) and not has_credited(_plugin_common._PLUGIN_DIR, _key)
+    reserved_instruction = (
+        credit_instruction(first_credit, len(set(labels.values()))) if labels else ""
+    )
+    instruction_sections = (
+        [{"entries": [reserved_instruction], "priority": 100, "counted": False, "dedupe": False}]
+        if reserved_instruction
+        else []
+    )
+    sections = (
+        [{"entries": [header], "required": True}]
+        + instruction_sections
+        + hint_sections
+        + memory_sections
+    )
     if not total and not scope_timeouts:
         sections.append(
             {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
@@ -999,6 +1122,17 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
             reserved_drop, f"; {dropped} dropped to fit" if dropped else "", 1
         )
     full_context = actual_header + full_context[len(full_context.split("\n", 1)[0]) :]
+    if tags is not None:
+        # Only what survived the budget and the dedupe was injected on this turn.
+        for mark, tag in labels.items():
+            if mark in full_context:
+                tags.show(tag)
+    if reserved_instruction and reserved_instruction in full_context:
+        if tags.found:
+            instruction = credit_instruction(first_credit, len(tags.found))
+            full_context = full_context.replace(reserved_instruction, instruction, 1)
+        else:
+            full_context = full_context.replace("\n\n" + reserved_instruction, "", 1)
     injection_stats["context_chars"] = len(full_context)
     if total:
         _totals["turns_with_hits"] += 1
@@ -1101,6 +1235,9 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                     "hits": counts,
                     "retrieved_hits": retrieved_counts,
                     "per_scope": per_scope,
+                    # The header the user sees: an empty recall no longer
+                    # puts it in the injected context (SDK-1071).
+                    "header": header,
                     "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
                     **{k: v for k, v in injection_stats.items() if k != "entries"},
                 }
@@ -1108,6 +1245,13 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
         )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
+
+    # The Stop hook checks the answer's citations against these (SDK-1071).
+    if tags is not None:
+        try:
+            tags.save(_plugin_common._PLUGIN_DIR, get_session_key())
+        except Exception as exc:
+            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
 
     return _recall_output(full_context, notice)
 

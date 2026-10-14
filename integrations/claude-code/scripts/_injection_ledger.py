@@ -98,7 +98,8 @@ def render(
             is_guidance = is_guidance_section(section)
             for entry in section.get("entries", []):
                 digest = entry_hash(entry)
-                if digest in (guidance if is_guidance else seen):
+                # ``dedupe: False`` sections (the credit instruction) go out every time.
+                if section.get("dedupe", True) and digest in (guidance if is_guidance else seen):
                     if is_guidance:
                         present_guidance.add(digest)
                     duplicate_count += int(section.get("counted", True))

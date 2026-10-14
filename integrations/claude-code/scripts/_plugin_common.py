@@ -47,6 +47,9 @@ _COUNTER_FILE = _PLUGIN_DIR / "counter.json"
 _ACTIVITY_FILE = _PLUGIN_DIR / "activity.ts"
 _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
+#: Whether credit tags and the resume notice are on when
+#: ``COGNEE_PLUGIN_CITE_MEMORY`` is unset (SDK-1071).
+CITE_MEMORY_DEFAULT = True
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 # One state file per session (see record_improve_success / record_improve_failure):
@@ -1583,6 +1586,54 @@ def bump_save_counter(session_id: str, kind: str, *, buffered: bool = False) -> 
         _SAVE_COUNTER.write_text(json.dumps(data), encoding="utf-8")
     except Exception as exc:
         hook_log("save_counter_write_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]})
+    _bump_stored_seq(get_session_key() or session_id)
+
+
+def _stored_seq_path(session_key: str):
+    """``stored.log`` in the session's state folder (see ``read_stored_seq``)."""
+    from _recall_text import session_state_dir
+
+    folder = session_state_dir(_PLUGIN_DIR, session_key)
+    return folder / "stored.log" if folder else None
+
+
+def _bump_stored_seq(session_key: str) -> None:
+    """Advance the session's running stored-item count by one.
+
+    Appends one byte instead of rewriting a count: an append this small is
+    atomic, so parallel store hooks need no lock, nothing is read back, and
+    the count can only grow. One file per session, so no session can wipe
+    another's.
+    """
+    path = _stored_seq_path(session_key)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, b".")
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        hook_log("stored_seq_write_failed", {"error": str(exc)[:200]})
+
+
+def read_stored_seq(session_key: str) -> int:
+    """How many items this session has stored so far, buffered ones included.
+
+    Unlike the save counter it is never reset, so a later value means the
+    session stored something new. The session-end sync keys its dedupe marker
+    on it: the two workers of one exit share a value, a later exit after new
+    turns does not.
+    """
+    path = _stored_seq_path(session_key)
+    if path is None:
+        return 0
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def read_and_reset_save_counter(session_id: str) -> dict:
