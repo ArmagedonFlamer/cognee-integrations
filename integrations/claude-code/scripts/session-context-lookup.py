@@ -69,12 +69,12 @@ from _plugin_common import (
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
     MemoryTags,
+    begin_turn,
     code_facts,
     credit_enabled,
     credit_instruction,
     format_code_facts,
     has_credited,
-    save_turn_tags,
     trim_recall_text,
 )
 from config import get_dataset, get_session_id, load_config
@@ -219,7 +219,9 @@ def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
     """``_format_entry`` with the item's credit tag (SDK-1071), when tagging is on.
 
     Graph memory is tagged per passage plus one tag each for its entities and
-    facts; every other item gets one tag naming where it came from.
+    facts; every other item gets one tag naming where it came from. An earlier
+    turn or trace is known by its server id, so it keeps its tag when recalled
+    again.
     """
     if tags is None:
         return _format_entry(entry)
@@ -229,6 +231,7 @@ def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
         entry["text"] = tags.tag_graph(str(entry.get("text", "") or entry.get("content", "")))
         return _format_entry(entry)
     body = _format_entry(entry)
+    ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
     if source == "code":
         origin = "code graph"
     elif source == "session_context":
@@ -238,7 +241,7 @@ def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
     else:
         day = str(entry.get("time", "") or "")[:10]
         origin = f"earlier session turn, {day}" if day else "earlier session turn"
-    return f"{tags.label(source or 'session', origin, body)}\n{body}"
+    return f"{tags.label(source or 'session', origin, body, ident)}\n{body}"
 
 
 def _outage_output(state: str) -> dict:
@@ -279,6 +282,14 @@ def _has_entry_content(entry: dict) -> bool:
 
 
 async def _run(prompt: str, cwd: str = "") -> dict | None:
+    if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
+        # First, so a recall that returns early leaves this turn with no tags
+        # and the Stop hook cannot check the answer against the previous
+        # turn's (SDK-1071).
+        try:
+            begin_turn(_plugin_common._PLUGIN_DIR, get_session_key())
+        except Exception as exc:
+            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
     config = load_config()
     runtime = resolve_runtime_mode()
     hook_log(
@@ -810,7 +821,11 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         header += f"; {segment}"
 
     # Tag each recalled item so the answer can credit it (SDK-1071).
-    tags = MemoryTags() if credit_enabled() else None
+    tags = (
+        MemoryTags.load(_plugin_common._PLUGIN_DIR, get_session_key())
+        if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
+        else None
+    )
     section_lines = []
     if by_source.get("code"):
         section_lines.append("=== Code graph facts ===")
@@ -841,9 +856,9 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         # a file and a 2 KB preview, so a large recall would cut off anything
         # at the end (SDK-1071).
         instruction = ""
-        if tags is not None and tags.records:
+        if tags is not None and tags.found:
             first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
-            instruction = credit_instruction(first) + "\n\n"
+            instruction = credit_instruction(first, len(tags.found)) + "\n\n"
         full_context = (
             f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
@@ -909,16 +924,11 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
 
     # The Stop hook checks the answer's citations against these (SDK-1071).
-    # Saved every turn, so a turn without memory clears the previous tags.
-    try:
-        save_turn_tags(
-            _plugin_common._PLUGIN_DIR,
-            get_session_key(),
-            tags.records if tags is not None else [],
-            ts=str(int(time.time())),
-        )
-    except Exception as exc:
-        hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
+    if tags is not None:
+        try:
+            tags.save(_plugin_common._PLUGIN_DIR, get_session_key())
+        except Exception as exc:
+            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
 
     output = {
         "hookSpecificOutput": {

@@ -47,9 +47,10 @@ _COUNTER_FILE = _PLUGIN_DIR / "counter.json"
 _ACTIVITY_FILE = _PLUGIN_DIR / "activity.ts"
 _ACTIVITY_LOG = _PLUGIN_DIR / "activity.log"
 _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
-#: Running count of every store per session (prompt, trace, answer, buffered
-#: or not), never reset. The final-sync dedupe key includes it (SDK-1071).
-_STORED_SEQ = _PLUGIN_DIR / "stored-seq.json"
+#: Whether credit tags and the resume notice are on when
+#: ``COGNEE_PLUGIN_CITE_MEMORY`` is unset (SDK-1071). Off on Codex, which shows the
+#: injected instruction in the terminal, until it has been tried live.
+CITE_MEMORY_DEFAULT = False
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 # One state file per session (see record_improve_success / record_improve_failure):
@@ -1544,26 +1545,40 @@ def bump_save_counter(session_id: str, kind: str, *, buffered: bool = False) -> 
         _SAVE_COUNTER.write_text(json.dumps(data), encoding="utf-8")
     except Exception as exc:
         hook_log("save_counter_write_failed", {"path": str(_SAVE_COUNTER), "error": str(exc)[:200]})
-    _bump_stored_seq(session_id)
+    _bump_stored_seq(get_session_key() or session_id)
 
 
-def _bump_stored_seq(session_id: str) -> None:
-    """Advance the session's running stored-item count (see ``read_stored_seq``)."""
+def _stored_seq_path(session_key: str):
+    """``stored.log`` in the session's state folder (see ``read_stored_seq``)."""
+    from _recall_text import session_state_dir
+
+    folder = session_state_dir(_PLUGIN_DIR, session_key)
+    return folder / "stored.log" if folder else None
+
+
+def _bump_stored_seq(session_key: str) -> None:
+    """Advance the session's running stored-item count by one.
+
+    Appends one byte instead of rewriting a count: an append this small is
+    atomic, so parallel store hooks need no lock, nothing is read back, and
+    the count can only grow. One file per session, so no session can wipe
+    another's.
+    """
+    path = _stored_seq_path(session_key)
+    if path is None:
+        return
     try:
-        data = json.loads(_STORED_SEQ.read_text(encoding="utf-8")) if _STORED_SEQ.exists() else {}
-    except Exception:
-        data = {}
-    if not isinstance(data, dict):
-        data = {}
-    try:
-        data[session_id] = int(data.get(session_id, 0) or 0) + 1
-        _PLUGIN_DIR.mkdir(parents=True, exist_ok=True)
-        _STORED_SEQ.write_text(json.dumps(data), encoding="utf-8")
-    except Exception as exc:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+        try:
+            os.write(fd, b".")
+        finally:
+            os.close(fd)
+    except OSError as exc:
         hook_log("stored_seq_write_failed", {"error": str(exc)[:200]})
 
 
-def read_stored_seq(session_id: str) -> int:
+def read_stored_seq(session_key: str) -> int:
     """How many items this session has stored so far, buffered ones included.
 
     Unlike the save counter it is never reset, so a later value means the
@@ -1571,12 +1586,12 @@ def read_stored_seq(session_id: str) -> int:
     on it: the two workers of one exit share a value, a later exit after new
     turns does not.
     """
-    if not session_id:
+    path = _stored_seq_path(session_key)
+    if path is None:
         return 0
     try:
-        data = json.loads(_STORED_SEQ.read_text(encoding="utf-8")) if _STORED_SEQ.exists() else {}
-        return int(data.get(session_id, 0) or 0) if isinstance(data, dict) else 0
-    except Exception:
+        return path.stat().st_size
+    except OSError:
         return 0
 
 

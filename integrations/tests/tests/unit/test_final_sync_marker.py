@@ -9,7 +9,9 @@ plus its running stored-item count:
   * the two workers of one exit share a key, so only one syncs;
   * an exit after new turns (stored or buffered) has a new key and syncs;
   * an exit with nothing new keeps the key and is skipped;
-  * a worker whose every attempt failed releases its claim for the next exit.
+  * a worker whose every attempt failed releases its claim for the next exit;
+  * the count lives in the session's own append-only file, so parallel stores
+    are all counted and no session can reset another's.
 """
 
 from __future__ import annotations
@@ -73,7 +75,7 @@ def test_the_stored_count_is_never_reset_by_the_recall_header(sync):
 
     _store(4)
     _plugin_common.read_and_reset_save_counter(SESSION_ID)  # every prompt does this
-    assert _plugin_common.read_stored_seq(SESSION_ID) == 4
+    assert _plugin_common.read_stored_seq(SESSION_KEY) == 4
 
 
 def test_a_failed_sync_releases_its_claim(sync, monkeypatch):
@@ -111,3 +113,30 @@ def test_distinct_sessions_never_share_a_marker(sync, monkeypatch):
     monkeypatch.setenv("COGNEE_SESSION_KEY", "another-session")
     monkeypatch.setattr(sync, "_load_resolved", lambda: ("claude_another-session",) + ("",) * 6)
     assert sync._claim_final_sync_once() is True
+
+
+def test_parallel_stores_are_all_counted(sync):
+    """Store hooks run in parallel (one per tool call): no store may be lost and
+    the count may never go back, or a later exit could reuse a claimed key."""
+    import threading
+
+    import _plugin_common
+
+    threads = [threading.Thread(target=_store, args=(25,)) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert _plugin_common.read_stored_seq(SESSION_KEY) == 200
+
+
+def test_one_session_cannot_reset_another(sync, monkeypatch):
+    import _plugin_common
+
+    _store(3)
+    monkeypatch.setenv("COGNEE_SESSION_KEY", "another-session")
+    _plugin_common.bump_save_counter("claude_another-session", "answer")
+    assert _plugin_common.read_stored_seq(SESSION_KEY) == 3
+    assert _plugin_common.read_stored_seq("another-session") == 1
+    stored = _plugin_common._PLUGIN_DIR / "session-state" / SESSION_KEY / "stored.log"
+    assert stored.stat().st_size == 3

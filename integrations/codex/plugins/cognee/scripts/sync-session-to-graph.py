@@ -100,7 +100,7 @@ def _final_sync_identity() -> tuple[str, str]:
     the marker expires (SDK-1071). An exit with nothing new keeps the token and
     is skipped.
     """
-    from _plugin_common import read_stored_seq
+    from _plugin_common import get_session_key, read_stored_seq
 
     session_key = str(os.environ.get("COGNEE_SESSION_KEY", "") or "").strip()
     session_id = str(os.environ.get("COGNEE_SYNC_SESSION_ID", "") or "").strip()
@@ -110,11 +110,8 @@ def _final_sync_identity() -> tuple[str, str]:
         token, source = session_id, "COGNEE_SYNC_SESSION_ID"
     else:
         return "", "missing"
-    try:
-        session_id = _load_resolved()[0] or session_id
-    except Exception:
-        pass
-    return f"{token}:{read_stored_seq(session_id)}", source
+    # The store hooks count under the sanitized session key (see bump_save_counter).
+    return f"{token}:{read_stored_seq(get_session_key() or session_id)}", source
 
 
 #: The marker this worker claimed, released again if every attempt fails.

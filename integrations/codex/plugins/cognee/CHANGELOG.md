@@ -13,16 +13,22 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- **Answers credit Cognee memory.** Every recalled item is tagged (`m1`, `m2`…) with
-  where it came from, and on turns where memory was injected the agent is asked to end
-  an answer that used it with one `🧠 Cognee memory [mN]: …` line; the first credit in a
-  session also says how it connects to the earlier work. The Stop hook checks the cited
-  tags against what that turn injected and logs a `memory_credit` event (valid and
-  invented citations). Off with `COGNEE_PLUGIN_CITE_MEMORY=off` (SDK-1071).
-- **Reopening a chat says whether it was saved.** The session-end sync runs after the chat
-  is gone, so on resume of the same chat session start shows once, in the terminal and to
-  the agent, whether the conversation reached long-term memory and when, or why the save
-  failed (SDK-1071).
+- **Answers can credit Cognee memory (off by default on Codex).** With
+  `COGNEE_PLUGIN_CITE_MEMORY=on`, every recalled item is tagged (`m1`, `m2`…) with where
+  it came from, and on turns where memory was injected the agent is told how many
+  memories Cognee found and asked to end an answer that used them with one
+  `🧠 Cognee memory [mN]: …` line; the first credit in a session also says how it
+  connects to the earlier work. Tags are numbered across the session and a memory
+  recalled again keeps its tag (an earlier turn or trace by its server id, anything else
+  by its text). The Stop hook reads only the credit line, checks its tags against the
+  session's and logs a `memory_credit` event (valid, invented, and valid tags from an
+  earlier turn). Off by default because Codex shows the injected instruction in the
+  terminal and it hasn't been tried live there yet (SDK-1071).
+- **Reopening a chat says whether it was sent to long-term memory.** With the same
+  setting on, resuming a chat shows once, in the terminal and to the agent, when the
+  conversation was sent to Cognee, or why the send failed. It says "sent" because the
+  submit runs in the background and a server-side skip on a held lock looks the same
+  until COG-6828 (SDK-1071).
 
 ### Changed
 - **An empty recall no longer injects a memory header.** The "0 hits" line went into the
@@ -35,9 +41,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   within the hour was skipped as already synced, and its new turns waited for the idle
   sync's 90-minute cooldown. The marker is now keyed on the session plus its running
   stored-item count (buffered writes included): the two workers of one exit still sync
-  once, an exit after new turns syncs again, and an exit with nothing new is skipped. A
-  final sync whose every attempt failed releases its marker, so the next exit retries
-  (SDK-1071).
+  once, an exit after new turns syncs again, and an exit with nothing new is skipped. The
+  count is an append-only file per session, so parallel store hooks never lose or reset
+  it. A final sync whose every attempt failed releases its marker, so the next exit
+  retries (SDK-1071).
+- Per-session plugin state (memory tags, credit state, the stored count) lives in
+  `session-state/<session>/`, and folders idle for 30 days are deleted at session start.
 
 ## [1.7.5]
 

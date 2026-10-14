@@ -241,6 +241,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:session_marker_write_failed` | `session.marker_write_failed` |
 | `hook:session_resolved` | `session.resolved` |
 | `hook:session_start_exception` | `session.start_exception` |
+| `hook:session_state_prune_failed` | `session.state_prune_failed` |
+| `hook:session_state_pruned` | `session.state_pruned` |
 | `hook:shared_memory_agent_select_tenant_failed` | `shared_memory.agent_select_tenant_failed` |
 | `hook:shared_memory_grant_denied` | `shared_memory.grant_denied` |
 | `hook:shared_memory_leave_role_failed` | `shared_memory.leave_role_failed` |

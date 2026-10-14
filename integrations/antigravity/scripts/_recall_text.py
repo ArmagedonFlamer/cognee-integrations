@@ -377,28 +377,39 @@ def format_code_facts(facts: list) -> str:
 # ---------------------------------------------------------------------------
 #
 # Every recalled item the hook injects gets a short tag (``m1``, ``m2``…) and a
-# label saying where it came from. An instruction under the memory asks the
+# label saying where it came from. An instruction above the memory asks the
 # agent to end an answer that used memory with one ``🧠 Cognee memory [mN]: …``
-# line. The tags of the turn are saved, and the Stop hook checks the answer's
-# citations against them: a cited tag that was never injected is logged as
-# invented. That log is the measure of how reliably agents credit memory.
+# line. Tags are numbered across the session and a memory recalled again keeps
+# its tag, so a tag always names one memory however many turns later it is
+# cited. The Stop hook checks the answer's credit line against the session's
+# tags: a cited tag that was never handed out is logged as invented. That log
+# is the measure of how reliably agents credit memory.
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
-#: Directory (under the suite's state dir) holding each session's turn tags
-#: (``<session key>.json``) and credit state (``<session key>.credit.json``).
-TAGS_DIRNAME = "memory-tags"
+#: Directory (under the suite's state dir) with one folder per session: its
+#: tags (``tags.json``), credit state (``credit.json``) and the plugin's
+#: running stored-item count (``stored.log``).
+SESSION_STATE_DIRNAME = "session-state"
+TAGS_FILE = "tags.json"
+CREDIT_FILE = "credit.json"
+#: Session folders untouched for this long are deleted at session start.
+SESSION_STATE_MAX_AGE_SECONDS = 30 * 86400
 
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
-_CITATION_RE = re.compile(r"\[(m\d+(?:\s*,\s*m\d+)*)\]")
+#: Only the credit line counts: ``arr[m1]`` in code, or the instruction's own
+#: example quoted back, is not a citation.
+_CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
 _AGENTS = {"claude": "Claude Code", "codex": "Codex", "antigravity": "Antigravity"}
 
 CREDIT_INSTRUCTION = (
-    "Crediting Cognee memory: the memory below is tagged [m1], [m2], …. If your answer "
-    "uses information from a tagged item, end the answer with one line:\n"
+    "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "
+    "as [mN · where it came from]. A memory recalled again in this session keeps its "
+    "tag. If your answer uses information from a tagged item, end the answer with one "
+    "line:\n"
     "> 🧠 Cognee memory [mN]: <what you remembered, and where or when it came from, "
     "as the tag says>\n"
-    "Cite several tags as [m1, m3]. Cite only tags listed below, and only items your "
+    "Cite several tags as [m1, m3]. Cite only tags Cognee gave you, and only items your "
     "answer actually used. Never credit Cognee for what you know from project "
     "instruction files, your own memory files, the code, or this conversation. If no "
     "tagged item was used, do not mention memory."
@@ -409,8 +420,16 @@ FIRST_CREDIT_ADDENDUM = (
 )
 
 
-def credit_enabled() -> bool:
-    return os.environ.get(ENV_CITE_MEMORY, "").strip().lower() not in {"0", "false", "no", "off"}
+def credit_enabled(default: bool = True) -> bool:
+    """Whether credit tags and the resume notice are on.
+
+    ``COGNEE_PLUGIN_CITE_MEMORY`` decides when set; otherwise ``default``, which
+    each host passes (Codex starts with it off).
+    """
+    raw = os.environ.get(ENV_CITE_MEMORY, "").strip().lower()
+    if not raw:
+        return default
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _agent_name(session_id: str) -> str:
@@ -430,29 +449,121 @@ def passage_origin(passage: str) -> str:
     return f"{agent} session"
 
 
+def _safe_key(session_key: str) -> bool:
+    return (
+        bool(session_key)
+        and bool(session_key.strip("."))
+        and all(c.isalnum() or c in "._-" for c in session_key)
+    )
+
+
+def session_state_dir(state_dir, session_key: str):
+    """The session's state folder, or ``None`` for a key unsafe as a file name."""
+    if not _safe_key(session_key):
+        return None
+    return state_dir / SESSION_STATE_DIRNAME / session_key
+
+
+def prune_session_state(state_dir, max_age: float = SESSION_STATE_MAX_AGE_SECONDS) -> int:
+    """Delete session folders none of whose files changed for ``max_age`` seconds."""
+    import shutil
+    import time as _time
+
+    root = state_dir / SESSION_STATE_DIRNAME
+    cutoff = _time.time() - max_age
+    removed = 0
+    try:
+        folders = [p for p in root.iterdir() if p.is_dir()]
+    except OSError:
+        return 0
+    for folder in folders:
+        try:
+            newest = max([folder.stat().st_mtime] + [f.stat().st_mtime for f in folder.iterdir()])
+            if newest < cutoff:
+                shutil.rmtree(folder)
+                removed += 1
+        except OSError:
+            continue
+    return removed
+
+
+def _read_json(path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _write_json(path, data: dict) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+def _memory_id(kind: str, text: str, ident: str = "") -> str:
+    """What makes two recalled items the same memory: the server's id, else the text."""
+    if ident:
+        return f"id:{ident}"
+    import hashlib
+
+    normal = " ".join(str(text or "").split())
+    return f"{kind}:{hashlib.sha1(normal.encode('utf-8')).hexdigest()[:16]}"
+
+
 class MemoryTags:
-    """Hands out ``m1``, ``m2``… for one turn and remembers what each one tagged."""
+    """Hands out ``m1``, ``m2``… across a session and remembers what each one tagged.
+
+    Load the session's tags with :meth:`load`, label this turn's items, then
+    :meth:`save`. A memory seen earlier in the session gets its old tag back;
+    a new one gets the next number.
+    """
 
     SNIPPET_CHARS = 200
 
-    def __init__(self) -> None:
-        self.records: list[dict] = []
+    def __init__(self, state: dict | None = None) -> None:
+        state = state or {}
+        self.turn = int(state.get("turn", 0) or 0)
+        records = state.get("tags")
+        self.records: list[dict] = [r for r in records or [] if isinstance(r, dict)]
+        self._by_id = {str(r.get("id")): r for r in self.records if r.get("id")}
+        self.found: list[str] = []  # this turn's tags, in the order first injected
 
-    def add(self, kind: str, origin: str, text: str) -> str:
-        tag = f"m{len(self.records) + 1}"
-        self.records.append(
-            {
-                "tag": tag,
+    @classmethod
+    def load(cls, state_dir, session_key: str) -> MemoryTags:
+        folder = session_state_dir(state_dir, session_key)
+        return cls(_read_json(folder / TAGS_FILE) if folder else None)
+
+    def save(self, state_dir, session_key: str) -> None:
+        folder = session_state_dir(state_dir, session_key)
+        if folder:
+            _write_json(folder / TAGS_FILE, {"turn": self.turn, "tags": self.records})
+
+    def add(self, kind: str, origin: str, text: str, ident: str = "") -> str:
+        key = _memory_id(kind, text, ident)
+        record = self._by_id.get(key)
+        if record is None:
+            record = {
+                "tag": f"m{len(self.records) + 1}",
+                "id": key,
                 "kind": kind,
                 "origin": origin,
                 "snippet": " ".join(str(text or "").split())[: self.SNIPPET_CHARS],
             }
-        )
-        return tag
+            self.records.append(record)
+            self._by_id[key] = record
+        record["turn"] = self.turn
+        if record["tag"] not in self.found:
+            self.found.append(record["tag"])
+        return record["tag"]
 
-    def label(self, kind: str, origin: str, text: str) -> str:
+    def label(self, kind: str, origin: str, text: str, ident: str = "") -> str:
         """``[mN · origin]`` for an item, registering it."""
-        tag = self.add(kind, origin, text)
+        tag = self.add(kind, origin, text, ident)
         return f"[{tag} · {origin}]" if origin else f"[{tag}]"
 
     def tag_graph(self, context: str) -> str:
@@ -492,80 +603,63 @@ class MemoryTags:
         return "\n\n".join(blocks).strip()
 
 
-def credit_instruction(first_in_session: bool) -> str:
+def begin_turn(state_dir, session_key: str) -> None:
+    """Start a new turn before anything can fail: no tag counts as this turn's yet.
+
+    The recall hook calls this first, so a prompt whose recall returned early
+    (server down, no session, a timeout) has no tags of its own, and the Stop
+    hook cannot mistake the previous turn's for them.
+    """
+    tags = MemoryTags.load(state_dir, session_key)
+    tags.turn += 1
+    tags.save(state_dir, session_key)
+
+
+def credit_instruction(first_in_session: bool, found: int = 0) -> str:
+    noun = "1 memory" if found == 1 else f"{found} memories"
+    text = CREDIT_INSTRUCTION.format(found=noun)
     if first_in_session:
-        return f"{CREDIT_INSTRUCTION} {FIRST_CREDIT_ADDENDUM}"
-    return CREDIT_INSTRUCTION
-
-
-def _safe_key(session_key: str) -> bool:
-    return bool(session_key) and all(c.isalnum() or c in "._-" for c in session_key)
-
-
-def _read_json(path) -> dict:
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _write_json(path, data: dict) -> None:
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        os.replace(tmp, path)
-    except OSError:
-        pass
-
-
-def save_turn_tags(state_dir, session_key: str, records: list, ts: str = "") -> None:
-    """Record this turn's tags for the Stop hook. An empty list clears them."""
-    if _safe_key(session_key):
-        _write_json(state_dir / TAGS_DIRNAME / f"{session_key}.json", {"ts": ts, "tags": records})
-
-
-def load_turn_tags(state_dir, session_key: str) -> list:
-    if not _safe_key(session_key):
-        return []
-    tags = _read_json(state_dir / TAGS_DIRNAME / f"{session_key}.json").get("tags")
-    return tags if isinstance(tags, list) else []
+        return f"{text} {FIRST_CREDIT_ADDENDUM}"
+    return text
 
 
 def has_credited(state_dir, session_key: str) -> bool:
     """Whether an answer in this session has already credited memory."""
-    if not _safe_key(session_key):
-        return False
-    path = state_dir / TAGS_DIRNAME / f"{session_key}.credit.json"
-    return bool(_read_json(path).get("credited_turns"))
+    folder = session_state_dir(state_dir, session_key)
+    return bool(folder and _read_json(folder / CREDIT_FILE).get("credited_turns"))
 
 
-def check_credits(answer: str, records: list) -> dict:
-    """Compare the tags an answer cites with the tags its turn injected.
+def check_credits(answer: str, tags: MemoryTags) -> dict:
+    """Compare the tags an answer's credit line cites with the session's tags.
 
-    Returns ``{"cited", "valid", "invented", "available"}``, tag lists in the
-    order first cited.
+    Returns ``{"cited", "valid", "invented", "earlier", "available"}``: tag
+    lists in the order first cited. ``valid`` tags were handed out this
+    session; ``earlier`` are the valid ones not injected on this turn;
+    ``available`` is how many this turn injected.
     """
     cited: list[str] = []
     for group in _CITATION_RE.findall(answer or ""):
         for tag in re.split(r"\s*,\s*", group):
             if tag not in cited:
                 cited.append(tag)
-    known = {str(r.get("tag")) for r in records if isinstance(r, dict)}
+    known = {str(r.get("tag")): r for r in tags.records}
+    this_turn = {t for t, r in known.items() if r.get("turn") == tags.turn}
+    valid = [t for t in cited if t in known]
     return {
         "cited": cited,
-        "valid": [t for t in cited if t in known],
+        "valid": valid,
         "invented": [t for t in cited if t not in known],
-        "available": len(known),
+        "earlier": [t for t in valid if t not in this_turn],
+        "available": len(this_turn),
     }
 
 
 def record_credit(state_dir, session_key: str, result: dict, ts: str = "") -> None:
     """Count a turn that credited memory with at least one valid tag."""
-    if not (_safe_key(session_key) and result.get("valid")):
+    folder = session_state_dir(state_dir, session_key)
+    if not (folder and result.get("valid")):
         return
-    path = state_dir / TAGS_DIRNAME / f"{session_key}.credit.json"
+    path = folder / CREDIT_FILE
     state = _read_json(path)
     state["credited_turns"] = int(state.get("credited_turns", 0) or 0) + 1
     state.setdefault("first_credit_ts", ts)
@@ -579,7 +673,7 @@ def record_credit(state_dir, session_key: str, result: dict, ts: str = "") -> No
 # The session-end sync runs after the chat is gone, so nothing it does can be
 # shown there. When the user reopens the same chat (resume keeps the session
 # id), session start reads that session's improve record and says, once per
-# sync, whether the conversation reached long-term memory.
+# sync, whether the conversation was sent to long-term memory.
 
 NOTICE_DIRNAME = "sync-notice"
 
@@ -628,9 +722,12 @@ def sync_notice(state: dict, now: float | None = None) -> tuple[str, float]:
             message += f" An earlier save at {_clock(ok_at, now)} has the conversation up to then."
         return message, failed_at
     if ok_at:
+        # "Sent", not "saved": the submit runs in the background, and a server
+        # whose per-session lock was held skips it without saying so.
         left = "when you left at" if state.get("trigger") == "final" else "at"
         return (
-            f"🧠 Cognee saved this conversation to long-term memory {left} {_clock(ok_at, now)}.",
+            f"🧠 This conversation was sent to Cognee's long-term memory {left} "
+            f"{_clock(ok_at, now)}.",
             ok_at,
         )
     return "", 0.0

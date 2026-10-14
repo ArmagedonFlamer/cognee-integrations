@@ -297,25 +297,28 @@ async def _store_tool_call(payload: dict) -> None:
 
 
 def _check_memory_credit(payload: dict) -> None:
-    """Check the answer's Cognee credits against what this turn injected (SDK-1071).
+    """Check the answer's Cognee credits against the session's tags (SDK-1071).
 
-    The recall hook tagged each injected item ``m1``, ``m2``… and saved the
-    tags. A cited tag that was injected is a valid credit; one that was not is
-    invented. Both go to the log, which measures how reliably agents credit
-    memory, and the first valid credit switches off the longer first-credit
-    wording for the rest of the session. Local only: nothing is sent anywhere.
+    The recall hook tags each injected item ``m1``, ``m2``… and keeps a
+    memory's tag for the whole session. A cited tag the session handed out is
+    a valid credit (``earlier`` when it was not injected on this turn); one it
+    never handed out is invented. Both go to the log, which measures how
+    reliably agents credit memory, and the first valid credit switches off the
+    longer first-credit wording for the rest of the session. Local only:
+    nothing is sent anywhere.
     """
     import _plugin_common
-    from _recall_text import check_credits, credit_enabled, load_turn_tags, record_credit
+    from _recall_text import MemoryTags, check_credits, credit_enabled, record_credit
 
-    if not credit_enabled():
+    if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         return
     msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
-    key = get_session_key()
-    records = load_turn_tags(_plugin_common._PLUGIN_DIR, key)
-    if not msg or msg == "null" or not records:
+    if not msg or msg == "null":
         return
-    result = check_credits(msg, records)
+    key = get_session_key()
+    result = check_credits(msg, MemoryTags.load(_plugin_common._PLUGIN_DIR, key))
+    if not result["cited"] and not result["available"]:
+        return  # nothing injected, nothing cited: not a turn that could credit
     record_credit(_plugin_common._PLUGIN_DIR, key, result, ts=str(int(time.time())))
     hook_log("memory_credit", result)
 

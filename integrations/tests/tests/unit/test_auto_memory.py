@@ -129,7 +129,7 @@ def test_refuses_to_clobber_non_object(am, env):
     assert json.loads(_user_settings(env).read_text(encoding="utf-8")) == ["not", "an", "object"]
 
 
-# ── the one-time SessionStart offer ────────────────────────────────────────
+# ── the SessionStart offer ───────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -147,14 +147,41 @@ def _offer(ss, env, source="startup", output=None):
     return (out.get("hookSpecificOutput") or {}).get("additionalContext", "")
 
 
-def test_offered_once_with_runnable_commands(ss, env):
+def _command(text: str, needle: str) -> list[str]:
+    """The offered command containing ``needle``, split the way a shell would."""
+    import shlex
+
+    line = next(line for line in text.splitlines() if needle in line)
+    return shlex.split(line)
+
+
+def test_offered_with_runnable_commands(ss, env):
     text = _offer(ss, env)
     assert "AskUserQuestion" in text
     assert "cognee-auto-memory.py" in text
-    assert "off --scope user" in text
-    assert f'--project-dir "{env["project"]}"' in text
-    assert "keep" in text
-    assert _offer(ss, env) == ""  # never asked twice
+    assert _command(text, "--scope user")[-3:] == ["off", "--scope", "user"]
+    assert _command(text, "--project-dir")[-2:] == ["--project-dir", str(env["project"])]
+    assert _command(text, " keep")[-1] == "keep"
+
+
+def test_offered_commands_quote_a_hostile_project_path(ss, env, tmp_path):
+    """The project path comes from the payload's cwd: a quote, ``$(...)`` or a
+    backtick in a directory name must reach the CLI as part of the name."""
+    project = tmp_path / 'it\'s "$(touch pwned)" `id`'
+    project.mkdir()
+    out = ss._apply_auto_memory_offer({}, {"cwd": str(project), "source": "startup"})
+    text = out["hookSpecificOutput"]["additionalContext"]
+    assert _command(text, "--project-dir")[-1] == str(project)
+
+
+def test_offered_until_the_user_decides_at_most_max_offers_times(ss, env):
+    import _auto_memory
+
+    for _ in range(_auto_memory.MAX_OFFERS):
+        assert "cognee-auto-memory.py" in _offer(ss, env)
+    assert _offer(ss, env) == ""  # the agent never asked, or the user ignored it
+    assert _auto_memory.read_offer()["offer_count"] == _auto_memory.MAX_OFFERS
+    assert "decision" not in _auto_memory.read_offer()
 
 
 def test_offer_appends_to_existing_context(ss, env):

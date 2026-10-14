@@ -2207,29 +2207,38 @@ def _apply_memory_preference(output: dict) -> dict:
 
 
 def _auto_memory_offer_text(script: Path, project: str) -> str:
-    python = sys.executable or "python3"
+    import shlex
+
+    # Quoted for the shell: the project path comes from the payload's cwd, and
+    # a directory name with a quote, ``$(...)`` or a backtick must stay a name.
+    python = shlex.quote(sys.executable or "python3")
+    script_arg = shlex.quote(str(script))
+    project_arg = shlex.quote(project)
     return (
-        "One-time Cognee setup question. Claude Code's built-in auto-memory (MEMORY.md) "
+        "Cognee setup question. Claude Code's built-in auto-memory (MEMORY.md) "
         "is on, so it duplicates Cognee memory and hides what Cognee recalls. Once in "
         "this session, early but without delaying the user's request, ask the user "
         "whether to turn it off. Use the AskUserQuestion tool if you have it, with these "
         "options: 'Turn off for all projects (recommended)', 'Turn off for this project "
         "only', 'Keep it on'. Then run exactly one of these commands and tell the user "
         "its result in one line:\n"
-        f'  "{python}" "{script}" off --scope user\n'
-        f'  "{python}" "{script}" off --scope project --project-dir "{project}"\n'
-        f'  "{python}" "{script}" keep\n'
+        f"  {python} {script_arg} off --scope user\n"
+        f"  {python} {script_arg} off --scope project --project-dir {project_arg}\n"
+        f"  {python} {script_arg} keep\n"
         "The change applies from the next session, and existing MEMORY.md notes stay on "
         "disk. Do not ask again in this session."
     )
 
 
 def _apply_auto_memory_offer(output: dict, payload: dict | None = None) -> dict:
-    """Ask the user, once ever, to turn off Claude Code's auto memory.
+    """Ask the user to turn off Claude Code's auto memory, until they answer.
 
     The hook cannot ask anything itself, so it tells Claude to ask and gives it
-    the exact ``cognee-auto-memory.py`` commands to run. Offered only while auto
-    memory is on by default (see ``_auto_memory.should_offer``), never on a
+    the exact ``cognee-auto-memory.py`` commands to run; running one records
+    the user's decision. Without a decision the offer comes back in later
+    sessions, at most ``_auto_memory.MAX_OFFERS`` times, in case Claude never
+    asked. Offered only while auto memory is on by default (see
+    ``_auto_memory.should_offer``), never on a
     compaction restart (that lands mid-task), and not when the user opted out
     of the Cognee memory steer with ``COGNEE_PREFER_MEMORY=false``.
     """
@@ -2250,7 +2259,7 @@ def _apply_auto_memory_offer(output: dict, payload: dict | None = None) -> dict:
             return output
         script = Path(__file__).resolve().parent / "cognee-auto-memory.py"
         text = _auto_memory_offer_text(script, project)
-        _auto_memory.record_offer(offered_at=_auto_memory.now())
+        _auto_memory.count_offer()
     except Exception as exc:
         hook_log("auto_memory_offer_failed", {"error": str(exc)[:200]})
         return output
@@ -2559,22 +2568,38 @@ async def _start(payload: dict | None = None) -> dict:
     return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
 
 
-def _apply_sync_notice(output: dict) -> dict:
+def _prune_session_state() -> None:
+    """Drop session state folders (memory tags, stored count) idle for 30 days."""
+    try:
+        import _plugin_common
+        from _recall_text import prune_session_state
+
+        removed = prune_session_state(_plugin_common._PLUGIN_DIR)
+        if removed:
+            hook_log("session_state_pruned", {"removed": removed})
+    except Exception as exc:
+        hook_log("session_state_prune_failed", {"error": str(exc)[:200]})
+
+
+def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
     """Say, on reopening a chat, whether it reached long-term memory (SDK-1071).
 
     The session-end sync runs after the chat is gone, so its outcome is shown
     when the same chat is resumed: resume keeps the session id, and the
-    session's improve record says when it was last saved or why the save
-    failed. Shown once per save, in the terminal and to the agent. A new chat
-    or ``/clear`` has no record, so it shows nothing. Off with
+    session's improve record says when it was last sent or why the send
+    failed. Shown once per sync, in the terminal and to the agent, and only on
+    resume: a compaction keeps the session too, but lands mid-task, where an
+    idle or auto sync's notice would only interrupt. Off with
     ``COGNEE_PLUGIN_CITE_MEMORY=off``.
     """
+    if str((payload or {}).get("source") or "") != "resume":
+        return output
     try:
         import _plugin_common
         from _recall_text import credit_enabled, mark_notice_shown, notice_due, sync_notice
         from config import get_session_id
 
-        if not credit_enabled():
+        if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
             return output
         session_id = get_session_id(load_config())
         message, sync_ts = sync_notice(_plugin_common.read_improve_state(session_id))
@@ -2640,7 +2665,8 @@ def main():
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     output = _apply_memory_preference(output)
     output = _apply_auto_memory_offer(output, payload)
-    output = _apply_sync_notice(output)
+    output = _apply_sync_notice(output, payload)
+    _prune_session_state()
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     print(json.dumps(output or {}))

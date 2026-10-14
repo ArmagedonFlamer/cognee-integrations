@@ -2128,22 +2128,38 @@ def _update_nudge_suffix() -> str:
     )
 
 
-def _apply_sync_notice(output: dict) -> dict:
+def _prune_session_state() -> None:
+    """Drop session state folders (memory tags, stored count) idle for 30 days."""
+    try:
+        import _plugin_common
+        from _recall_text import prune_session_state
+
+        removed = prune_session_state(_plugin_common._PLUGIN_DIR)
+        if removed:
+            hook_log("session_state_pruned", {"removed": removed})
+    except Exception as exc:
+        hook_log("session_state_prune_failed", {"error": str(exc)[:200]})
+
+
+def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
     """Say, on reopening a chat, whether it reached long-term memory (SDK-1071).
 
     The session-end sync runs after the chat is gone, so its outcome is shown
     when the same chat is resumed: resume keeps the session id, and the
-    session's improve record says when it was last saved or why the save
-    failed. Shown once per save, in the terminal and to the agent. A new chat
-    or ``/clear`` has no record, so it shows nothing. Off with
+    session's improve record says when it was last sent or why the send
+    failed. Shown once per sync, in the terminal and to the agent, and only on
+    resume: a compaction keeps the session too, but lands mid-task, where an
+    idle or auto sync's notice would only interrupt. Off with
     ``COGNEE_PLUGIN_CITE_MEMORY=off``.
     """
+    if str((payload or {}).get("source") or "") != "resume":
+        return output
     try:
         import _plugin_common
         from _recall_text import credit_enabled, mark_notice_shown, notice_due, sync_notice
         from config import get_session_id
 
-        if not credit_enabled():
+        if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
             return output
         session_id = get_session_id(load_config())
         message, sync_ts = sync_notice(_plugin_common.read_improve_state(session_id))
@@ -2207,7 +2223,8 @@ def main():
             output = asyncio.run(_start(payload)) or {}
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
-    output = _apply_sync_notice(output)
+    output = _apply_sync_notice(output, payload)
+    _prune_session_state()
     output = _apply_host_python_warning(output)
     print(json.dumps(output))
 

@@ -14,22 +14,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **Answers credit Cognee memory.** Every recalled item is tagged (`m1`, `m2`…) with
-  where it came from, and on turns where memory was injected the agent is asked to end
-  an answer that used it with one `🧠 Cognee memory [mN]: …` line; the first credit in a
-  session also says how it connects to the earlier work. The Stop hook checks the cited
-  tags against what that turn injected and logs a `memory_credit` event (valid and
-  invented citations). Off with `COGNEE_PLUGIN_CITE_MEMORY=off` (SDK-1071).
-- **Reopening a chat says whether it was saved.** The session-end sync runs after the chat
-  is gone, so on resume of the same chat session start shows once, in the terminal and to
-  the agent, whether the conversation reached long-term memory and when, or why the save
-  failed (SDK-1071).
+  where it came from, and on turns where memory was injected the agent is told how many
+  memories Cognee found and asked to end an answer that used them with one
+  `🧠 Cognee memory [mN]: …` line; the first credit in a session also says how it
+  connects to the earlier work. Tags are numbered across the session and a memory
+  recalled again keeps its tag (an earlier turn or trace by its server id, anything else
+  by its text). The Stop hook reads only the credit line, checks its tags against the
+  session's and logs a `memory_credit` event (valid, invented, and valid tags from an
+  earlier turn). Every prompt starts a new turn before recall can return early, so a
+  turn whose recall failed never borrows the previous turn's tags. Off with
+  `COGNEE_PLUGIN_CITE_MEMORY=off` (SDK-1071).
+- **Reopening a chat says whether it was sent to long-term memory.** The session-end sync
+  runs after the chat is gone, so on resume of the same chat session start shows once, in
+  the terminal and to the agent, when the conversation was sent to Cognee, or why the
+  send failed. Shown only on resume, not after a compaction. It says "sent" because the
+  submit runs in the background and a server-side skip on a held lock looks the same
+  until COG-6828 (SDK-1071).
 - **Offer to turn off Claude Code's auto-memory.** Claude Code's built-in `MEMORY.md`
-  memory duplicates Cognee, and a plugin can't disable it on its own. On the first
-  session where it is on by default, `SessionStart` now tells Claude to ask once
-  whether to turn it off for all projects or for this project only, and on a yes
-  `scripts/cognee-auto-memory.py` writes `"autoMemoryEnabled": false` to
-  `~/.claude/settings.json` or `.claude/settings.local.json`. Not asked when the
-  setting was chosen explicitly or with `COGNEE_PREFER_MEMORY=false` (SDK-1071).
+  memory duplicates Cognee, and a plugin can't disable it on its own. While it is on by
+  default, `SessionStart` now tells Claude to ask whether to turn it off for all projects
+  or for this project only, and on a yes `scripts/cognee-auto-memory.py` writes
+  `"autoMemoryEnabled": false` to `~/.claude/settings.json` or
+  `.claude/settings.local.json`. The user's answer stops the question; without one it
+  comes back in at most three sessions. The offered commands are shell-quoted. Not asked
+  when the setting was chosen explicitly or with `COGNEE_PREFER_MEMORY=false` (SDK-1071).
 - **`/cognee-memory:cognee-auto-memory`** turns auto-memory off or back on later.
 - **`cognee-doctor` reports auto-memory** on a new `Claude Auto-Memory` line, with the
   fix when it is still on.
@@ -45,9 +53,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   within the hour was skipped as already synced, and its new turns waited for the idle
   sync's 90-minute cooldown. The marker is now keyed on the session plus its running
   stored-item count (buffered writes included): the two workers of one exit still sync
-  once, an exit after new turns syncs again, and an exit with nothing new is skipped. A
-  final sync whose every attempt failed releases its marker, so the next exit retries
-  (SDK-1071).
+  once, an exit after new turns syncs again, and an exit with nothing new is skipped. The
+  count is an append-only file per session, so parallel store hooks never lose or reset
+  it. A final sync whose every attempt failed releases its marker, so the next exit
+  retries (SDK-1071).
+- Per-session plugin state (memory tags, credit state, the stored count) lives in
+  `session-state/<session>/`, and folders idle for 30 days are deleted at session start.
 - The README no longer says disabling auto-memory may be unsupported: both
   `autoMemoryEnabled` and `CLAUDE_CODE_DISABLE_AUTO_MEMORY` are documented by Claude Code.
 

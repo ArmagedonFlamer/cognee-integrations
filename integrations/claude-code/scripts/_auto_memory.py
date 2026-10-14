@@ -35,8 +35,11 @@ SETTING = "autoMemoryEnabled"
 _TRUE = {"1", "true", "yes", "on"}
 _FALSE = {"0", "false", "no", "off"}
 
-#: One-time offer state: when SessionStart asked, and what the user chose.
+#: Offer state: how often SessionStart offered, and what the user chose.
 OFFER_FILE = Path.home() / ".cognee-plugin" / "claude-code" / "auto-memory-offer.json"
+#: Sessions the offer is injected into before we stop, when no decision came back
+#: (the agent may not have asked, or the user ignored it).
+MAX_OFFERS = 3
 
 
 def _managed_settings_path() -> Path:
@@ -187,16 +190,34 @@ def record_offer(**fields) -> None:
         pass
 
 
-def should_offer(project: str | None = None) -> bool:
-    """Ask only once, and only while auto memory is on by default.
+def count_offer() -> None:
+    """Record that SessionStart injected the offer once more."""
+    state = read_offer()
+    try:
+        count = int(state.get("offer_count", 0) or 0)
+    except (TypeError, ValueError):
+        count = 0
+    record_offer(offer_count=count + 1, last_offered_at=now())
 
-    Auto memory switched on explicitly (the env var, or ``autoMemoryEnabled:
-    true`` in any settings file) is a choice someone already made, so we leave
-    it alone; doctor still reports it.
+
+def should_offer(project: str | None = None) -> bool:
+    """Ask until the user decides (at most ``MAX_OFFERS`` sessions), and only
+    while auto memory is on by default.
+
+    Only a decision stops it for good: the offer is injected before anyone
+    has answered, so being offered proves nothing. Auto memory switched on
+    explicitly (the env var, or ``autoMemoryEnabled: true`` in any settings
+    file) is a choice someone already made, so we leave it alone; doctor still
+    reports it.
     """
     offer = read_offer()
-    if offer.get("offered_at") or offer.get("decision"):
+    if offer.get("decision"):
         return False
+    try:
+        if int(offer.get("offer_count", 0) or 0) >= MAX_OFFERS:
+            return False
+    except (TypeError, ValueError):
+        pass
     status = auto_memory_status(project)
     return status["enabled"] and status["scope"] == "default"
 

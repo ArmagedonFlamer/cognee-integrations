@@ -107,6 +107,12 @@ class Suite:
     #: claude-code and codex ship the same script (the doctor hint follows the
     #: tree: ``cognee-doctor.sh`` vs ``doctor.py``); Antigravity does not.
     has_recap_skills: bool
+    #: Capability (SDK-1071): recalled memory is tagged for crediting, and the
+    #: resume notice shown, without ``COGNEE_PLUGIN_CITE_MEMORY`` being set.
+    #: claude-code is on; codex starts off, because its terminal shows the
+    #: injected instruction, until it has been tried live. Antigravity has no
+    #: credit tagging at all.
+    cites_memory_by_default: bool
 
 
 CLAUDE = Suite(
@@ -129,6 +135,7 @@ CLAUDE = Suite(
     has_local_sdk_recall=False,
     has_cross_dataset_search=True,
     has_recap_skills=True,
+    cites_memory_by_default=True,
 )
 
 CODEX = Suite(
@@ -156,6 +163,7 @@ CODEX = Suite(
     has_local_sdk_recall=False,
     has_cross_dataset_search=True,
     has_recap_skills=True,
+    cites_memory_by_default=False,
 )
 
 ANTIGRAVITY = Suite(
@@ -178,6 +186,7 @@ ANTIGRAVITY = Suite(
     has_local_sdk_recall=True,
     has_cross_dataset_search=False,
     has_recap_skills=False,
+    cites_memory_by_default=False,
 )
 
 ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY]

@@ -390,13 +390,14 @@ file memory (`MEMORY.md`).
 
 Claude Code's built-in auto-memory loads `MEMORY.md` into every session, so it
 duplicates Cognee and the agent can't tell which memory a fact came from. A plugin
-can't switch it off by itself, so the plugin asks once:
+can't switch it off by itself, so the plugin asks you:
 
 - On the first session where auto-memory is on by default, `SessionStart` tells Claude
   to ask you whether to turn it off: for all projects (`~/.claude/settings.json`), for
   this project only (`.claude/settings.local.json`), or keep it. On a yes, Claude runs
   `scripts/cognee-auto-memory.py`, which sets `"autoMemoryEnabled": false` in that file.
-  The question is asked once, ever; the state is in
+  Your answer, whichever it is, stops the question for good. Without an answer it comes
+  back in later sessions, three sessions at most. The state is in
   `~/.cognee-plugin/claude-code/auto-memory-offer.json`.
 - It isn't asked when auto-memory was set explicitly (`autoMemoryEnabled` in any
   settings file or `CLAUDE_CODE_DISABLE_AUTO_MEMORY`), or when
@@ -414,7 +415,7 @@ The steer described above stays on either way; turn it off with
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_PREFER_MEMORY` | `true` | Inject SessionStart steer asserting Cognee as the preferred memory |
-| `COGNEE_PLUGIN_CITE_MEMORY` | `on` | Credit recalled memory in the answer; say on resume whether the chat was saved |
+| `COGNEE_PLUGIN_CITE_MEMORY` | `on` | Credit recalled memory in the answer; say on resume whether the chat was sent to long-term memory |
 
 ### Credit in the answer
 
@@ -428,13 +429,21 @@ How it works:
 
 - The recall hook tags every injected item with `m1`, `m2`… and where it came from: a
   Claude Code or Codex session, a dated session learning, a document, graph entities or
-  facts, code-graph facts, or agent guidance.
-- On turns where memory was injected, an instruction under it asks the agent to add the
-  credit line only when the answer used a tagged item, and never for what it knows from
-  CLAUDE.md, MEMORY.md, the code, or the conversation. The first credit in a session also says
-  in a few words how it connects to the earlier work.
-- The Stop hook compares the cited tags with the ones injected on that turn and logs a
-  `memory_credit` event (cited, valid, invented) to `hook.log`. Nothing is sent anywhere.
+  facts, code-graph facts, or agent guidance. Tags are numbered across the session, and a
+  memory recalled again keeps its tag: an earlier turn or trace by its server id,
+  anything else by its text. So a tag names one memory for the whole session.
+- On turns where memory was injected, an instruction above it says how many memories
+  Cognee found for this prompt and asks the agent to add the credit line only when the
+  answer used a tagged item, and never for what it knows from CLAUDE.md, MEMORY.md, the
+  code, or the conversation. The first credit in a session also says in a few words how
+  it connects to the earlier work.
+- The Stop hook reads only the credit line (`arr[m1]` in code is not a citation),
+  compares its tags with the session's and logs a `memory_credit` event to `hook.log`:
+  cited, valid, invented, `earlier` (valid but not injected on this turn) and `available`
+  (how many this turn injected). Nothing is sent anywhere.
+- The tags, the credit state and the final-sync stored count live in one folder per
+  session, `~/.cognee-plugin/claude-code/session-state/<session>/`. Folders idle for 30
+  days are deleted at session start.
 - A turn where recall found nothing injects no memory header into the agent's context;
   the header is still shown to you.
 
@@ -442,13 +451,14 @@ How it works:
 outcome is shown when you resume the same chat:
 
 ```
-🧠 Cognee saved this conversation to long-term memory when you left at 14:32.
+🧠 This conversation was sent to Cognee's long-term memory when you left at 14:32.
 🧠 This conversation wasn't saved to Cognee when you left at 14:32: the Cognee server was unreachable.
 ```
 
-It is shown once per save, in the terminal and to the agent. A new chat or `/clear` shows
-nothing. A sync the server skipped because another improve held the dataset lock is still
-reported as saved until the server fix for that lands (COG-6828).
+It is shown once per sync, in the terminal and to the agent, and only on resume: a new
+chat, `/clear` or a compaction shows nothing. It says "sent", not "saved": the submit
+runs in the background, and a sync the server skipped because another improve held the
+dataset lock can't be told apart until the server fix for that lands (COG-6828).
 
 Both are off with `COGNEE_PLUGIN_CITE_MEMORY=off`.
 
