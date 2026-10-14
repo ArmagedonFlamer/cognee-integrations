@@ -987,9 +987,12 @@ def _ratio_bar(turns: int, with_hits: int, cells: int = 5) -> str:
 
 
 def _tokens_saved(stats: dict, *, compact: bool = False) -> str:
-    if _int(stats, "dedup_measurements") <= 0:
+    if _int(stats, "recalls") <= 0 or "chars_injected" not in stats:
         return "saved n/a" if compact else "tokens saved n/a"
-    tokens = max(0, _int(stats, "dedup_chars_saved")) // 4
+    # Average context tokens per recall * recall count * 6.9 simplifies to
+    # total context tokens * 6.9. Estimate tokens at four characters each;
+    # multiply before rounding so small recalls retain their contribution.
+    tokens = max(0, _int(stats, "chars_injected")) * 69 // 40
     if tokens >= 1_000_000:
         amount = f"{tokens // 100_000 / 10:g}m"
     elif tokens >= 1000:

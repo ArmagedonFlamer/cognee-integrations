@@ -10,6 +10,10 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.29]
+
+- Calculate estimated tokens saved as average injected tokens per recall × recall count × 6.9, using the existing session context counters.
+
 ## [1.6.28]
 
 ### Changed

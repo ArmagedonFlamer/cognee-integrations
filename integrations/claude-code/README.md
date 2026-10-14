@@ -723,14 +723,15 @@ and one Claude-style memory-pulse bar. At 80 columns it can read:
 - **Sparks**: memory blocks delivered for the latest prompt, not proof of use.
 - **Pulses**: prompts that received memory out of all prompts. The single bar
   shows this fraction.
-- **Tokens saved**: estimated reduction in injected context from deduplication,
-  accumulated from measured recalls since this update. Each comparison applies
-  the same context budget with and without deduplication, so oversized rejected
-  entries and replacement context do not inflate savings. Positive character
-  reductions are accumulated, then divided by four and rounded down for display.
-  `~2.4kt saved` means approximately 2,400 tokens; wider layouts spell out
-  `~2.4k tokens saved`. This is not billed-token savings or proven task savings.
-  `saved n/a` means there are no measurements yet; old counters are not backfilled.
+- **Tokens saved**: estimated as **average tokens per recall × number of recalls × 6.9**.
+  Recall tokens mean memory context injected into Claude, estimated at one token
+  per four characters. The calculation is equivalent to cumulative injected
+  characters ÷ 4 × 6.9, rounded down after multiplication. For example, 100
+  tokens per recall across 10 recalls displays approximately 6,900 tokens saved.
+  Empty recalls contribute zero; variable-size recalls use their actual context
+  lengths. The 6.9 factor is a heuristic, not measured billing or task savings.
+  `saved n/a` means recall/context measurements are unavailable. Existing sessions
+  use their recorded cumulative recall context; no network requests are added.
 
 A new successful recall shimmers the memories count for ten seconds using the
 recall timestamp and current clock. The renderer only reads local counters;

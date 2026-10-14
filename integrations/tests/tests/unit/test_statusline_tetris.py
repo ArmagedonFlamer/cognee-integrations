@@ -36,7 +36,7 @@ def sl(suite, statusline, monkeypatch):
     )
     write_json(
         statusline._SESSIONS_DIR / SESSION / "stats.json",
-        {"entries_injected": 124, "dedup_chars_saved": 9600, "dedup_measurements": 2},
+        {"entries_injected": 124, "chars_injected": 1440, "recalls": 2},
     )
     write_json(statusline._RECALL_DIR / f"{SESSION}.json", marker())
     return statusline
@@ -236,14 +236,15 @@ def test_home_without_markers(sl, suite, tmp_path):
     "chars,label",
     [
         (0, "~0 tokens saved"),
-        (3999, "~999 tokens saved"),
-        (4000, "~1k tokens saved"),
-        (9999, "~2.4k tokens saved"),
-        (4_000_000, "~1m tokens saved"),
+        (400, "~690 tokens saved"),
+        (4000, "~6.9k tokens saved"),
+        (1440, "~2.4k tokens saved"),
+        (4_000_000, "~6.9m tokens saved"),
+        (7, "~12 tokens saved"),
     ],
 )
 def test_saved_token_estimate(sl, chars, label):
-    assert sl._tokens_saved({"dedup_chars_saved": chars, "dedup_measurements": 1}) == label
+    assert sl._tokens_saved({"chars_injected": chars, "recalls": 1}) == label
     assert sl._tokens_saved({"entries_deduped": 100}) == "tokens saved n/a"
 
 
@@ -251,3 +252,14 @@ def test_missing_savings_are_not_fabricated(sl):
     write_json(sl._SESSIONS_DIR / SESSION / "stats.json", {"entries_injected": 124})
     line = sl._tetris_line(SESSION)
     assert "saved n/a" in line and "~0" not in line
+
+
+def test_saved_tokens_apply_multiplier_to_total_once(sl):
+    # 100 context tokens/recall * 10 recalls * 6.9 = 6900.
+    assert sl._tokens_saved({"chars_injected": 4000, "recalls": 10}) == "~6.9k tokens saved"
+    # Changing the distribution (including empty recalls) does not change the sum.
+    assert sl._tokens_saved({"chars_injected": 4000, "recalls": 20}) == "~6.9k tokens saved"
+    assert (
+        sl._tokens_saved({"dedup_chars_saved": 99999, "dedup_measurements": 1})
+        == "tokens saved n/a"
+    )
