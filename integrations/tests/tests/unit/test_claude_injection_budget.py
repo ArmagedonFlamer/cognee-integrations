@@ -141,7 +141,7 @@ def test_final_recall_json_includes_notices_within_budget(
         assert "configuration notice omitted" in context
 
 
-def test_main_consumes_notices_once_before_rendering(lookup, monkeypatch, capsys):
+def test_main_consumes_notices_once_before_rendering(suite, lookup, monkeypatch, capsys):
     import io
     import sys
 
@@ -164,8 +164,8 @@ def test_main_consumes_notices_once_before_rendering(lookup, monkeypatch, capsys
     monkeypatch.setattr(
         sys, "stdin", io.StringIO(json.dumps({"session_id": "session", "prompt": "recall memory"}))
     )
-    lookup.main()
-    output = json.loads(capsys.readouterr().out)
+    result = lookup.main()
+    output = result if suite.name == "codex" else json.loads(capsys.readouterr().out)
     assert output["hookSpecificOutput"]["additionalContext"].startswith(
         "URL notice\nCapture notice"
     )
