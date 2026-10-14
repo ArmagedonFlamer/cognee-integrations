@@ -453,7 +453,8 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     )
     if known_bad and cloud_enabled(runtime):
         hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
-        return _outage_output(prior_state)
+        # The notice is one-shot (already consumed by main); never drop it here.
+        return _outage_output(prior_state, notice)
     if known_bad:
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
         # auth_failed instead of being masked as "ready" by an unauthenticated

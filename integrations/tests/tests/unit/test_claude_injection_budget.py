@@ -167,6 +167,24 @@ def test_final_recall_json_includes_notices_within_budget(lookup, monkeypatch, l
         assert "configuration notice omitted" in context
 
 
+@pytest.mark.parametrize("state", ["unreachable", "auth_failed", "server_error"])
+def test_cloud_outage_skip_keeps_the_one_shot_notice(lookup, monkeypatch, state):
+    # The likeliest moment for a base-URL change is right after an outage; the
+    # notice is consumed before _run, so the skip path must still show it.
+    from utils.recall import URL, drive_recall
+
+    notice = "Cognee: base URL changed; start a new session for it to take effect."
+    monkeypatch.setattr(lookup, "cloud_enabled", lambda *_: True)
+    monkeypatch.setattr(lookup, "_run", partial(lookup._run, notice=notice))
+    run = drive_recall(
+        lookup,
+        monkeypatch,
+        recall=lambda *a, **kw: pytest.fail("recall must be skipped"),
+        prior_state={"state": state, "base_url": URL},
+    )
+    assert notice in run.output["hookSpecificOutput"]["additionalContext"]
+
+
 def test_main_consumes_notices_once_before_rendering(lookup, monkeypatch, capsys):
     import io
     import sys
