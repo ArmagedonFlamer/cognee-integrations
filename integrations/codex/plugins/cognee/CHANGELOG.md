@@ -10,6 +10,12 @@ is the cache key and semver record, bumped on each release, not the update trigg
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.1]
+
+- Display cached benchmark answer-improvement results with scope and regression rate; no evaluation calls run during live answers.
+- Refresh quality summaries in the cloud worker at most hourly and hide percentages for unavailable, synthetic or stale results.
+- Add optional evaluation trace callbacks and create isolated datasets before idempotent live fixture seeding.
+
 ## [1.8.0]
 
 ### Added
