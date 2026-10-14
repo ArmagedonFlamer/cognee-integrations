@@ -231,6 +231,9 @@ def main() -> None:
         pidfile=str(pidfile),
     )
     while _owns_pidfile(pidfile) and _pid_alive(parent_pid):
+        from _statusline_config import ensure_statusline_configured
+
+        ensure_statusline_configured(pinned_only=True)
         # Self-heal a stale red connection verdict (throttled internally).
         _reprobe_connection(service_url, api_key)
         time.sleep(_POLL_SECONDS)

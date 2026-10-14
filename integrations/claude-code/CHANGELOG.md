@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.27]
+
+### Changed
+- Add opt-in status-line pinning: restore Cognee at startup, on prompts and in the existing session watcher; preserve other settings and follow plugin updates.
+
 ## [1.6.26]
 
 ### Changed

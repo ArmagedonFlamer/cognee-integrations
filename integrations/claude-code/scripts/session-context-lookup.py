@@ -1100,6 +1100,9 @@ def _recall_min_prompt_chars() -> int:
 
 
 def main():
+    from _statusline_config import ensure_statusline_configured
+
+    ensure_statusline_configured(pinned_only=True)
     if is_observer_child():
         return
     payload_raw = sys.stdin.read()
