@@ -63,11 +63,10 @@ def test_palette_and_meaning(sl, monkeypatch, theme, color):
     monkeypatch.setenv("COLUMNS", "120")
     line = sl._tetris_line(SESSION)
     assert f"\033[38;5;{color}m■" in line
-    assert f"\033[48;5;{color}m\033[30m cognee+ " in line
-    assert "\033[1mmanual" in line
+    assert f"\033[38;5;{color}mcognee: \033[1mmanual" in line
     assert f"\033[38;5;{color}m\033[1mcloud" in line
     assert "●" not in line
-    assert "manual" in plain(sl, line) and "cloud" in plain(sl, line)
+    assert "manual  ·  cloud  ·  124 memories" in plain(sl, line)
     assert "124 memories" in line and "8 sparks" in line and "34/46 pulses" in line
     assert plain(sl, line).count("▰▰▰▰▱") == 1
     assert not any(c in plain(sl, line) for c in "[]▁▂▃▄▅▆▇█▔▀")
@@ -264,23 +263,3 @@ def test_saved_tokens_apply_multiplier_to_total_once(sl):
         sl._tokens_saved({"dedup_chars_saved": 99999, "dedup_measurements": 1})
         == "tokens saved n/a"
     )
-
-
-def test_cognee_badge_stays_visible_at_compact_widths(sl, monkeypatch):
-    for columns in (20, 60, 80, 120):
-        monkeypatch.setenv("COLUMNS", str(columns))
-        line = sl._tetris_line(SESSION)
-        assert "cognee+" in plain(sl, line)
-        assert sl._width(line) <= columns
-
-
-def test_badge_distinguishes_enabled_from_supplied_memory(sl):
-    assert "cognee+" in plain(sl, sl._cognee_badge(marker()))
-    assert "cognee+" not in plain(sl, sl._cognee_badge(marker(hits={"graph": 0})))
-    assert "cognee" in plain(sl, sl._cognee_badge({}))
-
-
-def test_badge_ascii_fallback(sl, monkeypatch):
-    monkeypatch.setattr(sl, "_unicode_output", lambda: False)
-    assert sl._cognee_badge(marker()) == "cognee+"
-    assert sl._cognee_badge({}) == "cognee"

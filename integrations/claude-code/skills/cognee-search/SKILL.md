@@ -7,6 +7,16 @@ description: Search Cognee memory. Session memory is automatically searched on e
 
 Search both session memory and the permanent knowledge graph, optionally filtered by data category.
 
+
+## Visible search progress
+
+Before running a Cognee search, send one short user-visible progress sentence,
+for example: "Searching Cognee for the earlier decision…" or "Checking Cognee's
+code graph for callers of this function…". Name Cognee in the normal working
+text before the tool call; keep this to one update per related search batch.
+Afterwards, describe relevant findings, an empty result, or a failed search
+accurately. Do not claim Cognee improved the answer merely because a search ran.
+
 ## Automatic session search
 
 Session memory is searched **automatically on every user prompt** via the `UserPromptSubmit` hook. You do not need to run this skill to access current-session context.

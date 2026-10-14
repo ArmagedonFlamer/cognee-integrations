@@ -10,9 +10,10 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.6.30]
+## [1.6.31]
 
-- Keep a compact Cognee pill visible in the status stripe. `cognee+` marks memory supplied for the latest prompt without claiming answer quality or proven use.
+- Remove the 1.6.30 status-stripe pill and restore the preceding layout, retaining the 6.9 token-savings formula.
+- Name explicit Cognee searches in the assistant's user-visible progress text; acknowledge automatically supplied memory only when it informs the response.
 
 ## [1.6.29]
 

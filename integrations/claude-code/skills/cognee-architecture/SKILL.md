@@ -5,6 +5,16 @@ description: Explain repository architecture, inspect hotspots, draw a code grap
 
 # Explain architecture from code facts
 
+
+## Visible search progress
+
+Before running a Cognee search, send one short user-visible progress sentence,
+for example: "Searching Cognee for the earlier decision…" or "Checking Cognee's
+code graph for callers of this function…". Name Cognee in the normal working
+text before the tool call; keep this to one update per related search batch.
+Afterwards, describe relevant findings, an empty result, or a failed search
+accurately. Do not claim Cognee improved the answer merely because a search ran.
+
 Run `"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-doctor.sh" --json` and check
 `cognee_server` before these queries. `architecture`, `insights`, and diagram output
 require server **1.6.3 or newer**. For an older or unknown version, explain the

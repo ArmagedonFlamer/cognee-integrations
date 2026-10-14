@@ -1002,18 +1002,6 @@ def _tokens_saved(stats: dict, *, compact: bool = False) -> str:
     return f"~{amount}t saved" if compact else f"~{amount} tokens saved"
 
 
-def _cognee_badge(marker: dict) -> str:
-    """Presence badge; + means memory was supplied, never proof of answer use."""
-    supplied = isinstance(marker.get("hits"), dict) and _hit_count(marker["hits"]) > 0
-    label = "cognee+" if supplied else "cognee"
-    if not _unicode_output():
-        return label
-    color = "141" if os.environ.get("COGNEE_STATUSLINE_THEME", "").lower() != "light" else "93"
-    if supplied:
-        return f"\033[48;5;{color}m\033[30m {label} {_RESET}"
-    return f"{_purple()}\033[7m {label} {_RESET}"
-
-
 def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     purple = _purple()
     now = time.time() if now is None else now
@@ -1027,8 +1015,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     # No verdict is not healthy: retain a visible, neutral unknown indicator.
     health = health or "? "
     dataset = _clean_label(_active_dataset(session_id))
-    badge = _cognee_badge(marker)
-    brand = f"{badge} {purple}\033[1m{dataset}{_RESET} · {purple}\033[1m{_active_mode()}{_RESET}"
+    brand = f"{purple}cognee: \033[1m{dataset}{_RESET} · {purple}\033[1m{_active_mode()}{_RESET}"
     stats = (
         _read_json(_SESSIONS_DIR / session_id / "stats.json")
         if _path_safe(session_id) and session_id not in {".", ".."}
@@ -1061,19 +1048,17 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
             if decoration:
                 decoration = f"  {purple}{decoration}{_RESET}"
     credits, update = _credits_segment(), _update_segment()
-    compact_core = core
+    compact_core = health + f"{purple}\033[1m{dataset} · {_active_mode()}{_RESET} · " + chip
     savings = " · " + _tokens_saved(stats)
     short_savings = " · " + _tokens_saved(stats, compact=True)
-    # Keep the Cognee badge at every width. If necessary, omit the latest
-    # spark count (the badge already indicates delivery) before losing the bar.
-    pulse_counts = re.sub(r" · \d+ sparks?", "", counts)
+    # Keep the new savings metric alongside session memories. At 80 columns,
+    # shorten the brand and token unit before dropping the single bar or data.
     candidates = []
     if columns > 60:
         candidates += [
             core + counts + decoration + savings + credits + update,
             compact_core + counts + decoration + savings + credits + update,
             compact_core + counts + decoration + short_savings + credits + update,
-            compact_core + pulse_counts + decoration + short_savings + credits + update,
         ]
     candidates += [
         core + counts + savings + credits + update,
