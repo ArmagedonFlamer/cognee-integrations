@@ -711,13 +711,18 @@ the shim, checks that `claude` can actually answer (one tiny real call), or stop
 
 ## Status line
 
-The default status line uses a purple health square, bold dataset and location,
+The default status line uses a Cognee pill, a purple health square, bold dataset and location,
 and one Claude-style memory-pulse bar. At 80 columns it can read:
 
 ```text
-■ manual · cloud · 124 memories · 8 sparks · 34/46 pulses  ▰▰▰▰▱ · ~2.4kt saved
+■ cognee+ manual · cloud · 124 memories · 34/46 pulses ▰▰▰▰▱ · ~2.4kt saved
 ```
 
+- **Cognee pill**: stays visible in compact layouts. `cognee+` means memory was
+  supplied for the latest prompt; `cognee` means the plugin is enabled without
+  memory delivered for that prompt. This does not claim the answer used the
+  memory or that the answer was better. At narrow widths the latest spark count
+  can be omitted to retain the badge, session counts, single bar and savings.
 - **Memories**: cumulative memory entries injected into this session. This is not
   a unique-memory count; an entry reinjected after compaction counts again.
 - **Sparks**: memory blocks delivered for the latest prompt, not proof of use.
