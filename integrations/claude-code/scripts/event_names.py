@@ -218,6 +218,7 @@ EVENT_NAMES = {
     "hook:recall_auth_rejected": "recall.auth_rejected",
     "hook:recall_breaker_open": "recall.breaker_open",
     "hook:recall_budget_exceeded": "recall.budget_exceeded",
+    "hook:recall_budget_reduced": "recall.budget_reduced",
     "hook:recall_dataset_hint": "recall.dataset_hint",
     "hook:recall_context_unparsed": "recall.context_unparsed",
     "hook:recall_context_trimmed": "recall.context_trimmed",

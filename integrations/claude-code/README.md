@@ -1068,6 +1068,7 @@ Each operation has its own client timeout, tunable independently (all in seconds
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_RECALL_BUDGET` | `45` cloud / `20` local | Whole-recall deadline in seconds for the per-prompt lookup; a scope that overruns contributes no hits |
+| `COGNEE_RECALL_SLOW_BUDGET` | `5` | Per-prompt recall deadline after `COGNEE_SLOW_STREAK_THRESHOLD` (default `3`) consecutive timeout-only prompts. It lasts `COGNEE_SLOW_STREAK_WINDOW` seconds (default `600`) or until a recall answers; then one prompt tries the full budget again |
 | `COGNEE_INJECT_MAX_CHARS` | `9000` | Maximum serialized hook output, including headers and notices. Values are clamped to `1024`–`9000` so the JSON envelope and visibility header fit; whole memory entries are dropped first. |
 | `COGNEE_RECALL_PASSAGE_CHARS` | `1200` | Per-passage cap, cut at a paragraph break and marked with how much was cut; `0` disables this trimming. The final output still obeys `COGNEE_INJECT_MAX_CHARS`. |
 | `COGNEE_RECALL_CONTEXT_CHARS` | `0` | Optional passage-trimming budget, disabled by default. The final `COGNEE_INJECT_MAX_CHARS` cap drops whole entries, including entities and facts when necessary; graph facts have priority over passages. |

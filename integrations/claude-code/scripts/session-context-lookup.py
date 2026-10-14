@@ -47,6 +47,7 @@ from _plugin_common import (
     hook_log,
     is_observer_child,
     load_resolved,
+    mark_recall_slow,
     mark_server_ready,
     notify,
     other_readable_datasets,
@@ -55,6 +56,7 @@ from _plugin_common import (
     quiet_hook_output,
     read_and_reset_save_counter,
     read_connection_state,
+    recall_slow_until,
     recall_via_http,
     record_payment_required,
     record_slow_probe,
@@ -561,6 +563,14 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
     recall_budget = _float_env("COGNEE_RECALL_BUDGET", 45.0 if cloud_enabled(runtime) else 20.0)
+    # After slow_streak_threshold() timeout-only prompts the server is treated as
+    # slow: recall gets a few seconds until a recall answers or the window ends,
+    # so a hung server cannot cost the full budget on every prompt.
+    slow_until = recall_slow_until(service_url)
+    recall_slow = time.time() < slow_until
+    if recall_slow:
+        recall_budget = min(recall_budget, _float_env("COGNEE_RECALL_SLOW_BUDGET", 5.0))
+        hook_log("recall_budget_reduced", {"budget_s": recall_budget})
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
     # Respect the shared circuit breaker: when the server has been failing (tripped
@@ -787,11 +797,13 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                 _breaker_failure("http 5xx", service_url=service_url, reason="server_error")
             except Exception:
                 pass
-        elif scope_timeouts and not scopes_answered_err:
-            # Timeouts describe latency, not an outage. Keep streak diagnostics
-            # without writing a failure marker that would block later recalls.
+        elif scope_timeouts and not scopes_answered_err and not recall_slow:
+            # Timeouts describe latency, not an outage: recall is never skipped,
+            # only shortened (see recall_slow_until above). A timeout under the
+            # short budget proves nothing new and does not extend it.
             streak = record_slow_probe(service_url)
-            if streak >= slow_streak_threshold():
+            if streak >= slow_streak_threshold() or slow_until:
+                mark_recall_slow(service_url)
                 hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
     except Exception as exc:
         hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})

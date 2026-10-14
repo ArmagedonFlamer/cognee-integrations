@@ -3333,9 +3333,37 @@ def record_slow_probe(service_url: str) -> int:
     if now - last_at > _slow_streak_window_seconds():
         count = 0
     count += 1
-    state[url] = {"count": count, "last_at": now}
+    state[url] = {**entry, "count": count, "last_at": now}
     _write_slow_streaks(state)
     return count
+
+
+def recall_slow_until(service_url: str) -> float:
+    """When the shortened per-prompt recall budget ends (0 when it never applied).
+
+    A value in the past means recall was slow before: the next full-budget
+    timeout re-arms the short budget at once instead of after a new streak.
+    """
+    entry = _read_slow_streaks().get(_normalize_service_url(service_url))
+    try:
+        return float(entry.get("slow_until") or 0) if isinstance(entry, dict) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def mark_recall_slow(service_url: str) -> float:
+    """Shorten per-prompt recall for one streak window after repeated timeouts.
+
+    ``clear_slow_streak`` (any recall that answers) ends it early. When the window
+    passes, one prompt runs with the full budget again to test the server.
+    """
+    url = _normalize_service_url(service_url)
+    state = _read_slow_streaks()
+    entry = state.get(url) if isinstance(state.get(url), dict) else {}
+    until = datetime.now(timezone.utc).timestamp() + _slow_streak_window_seconds()
+    state[url] = {**entry, "slow_until": until}
+    _write_slow_streaks(state)
+    return until
 
 
 def clear_slow_streak(service_url: str) -> None:
