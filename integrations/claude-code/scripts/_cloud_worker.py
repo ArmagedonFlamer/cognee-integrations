@@ -25,6 +25,9 @@ SERVER_WIDE_FAILURES = {401, 402, 403, 408, 429}
 #: The worker exits after this long with no queued work and no active session;
 #: every hook calls ensure_worker(), so the next prompt starts it again.
 IDLE_EXIT_SECONDS = 30 * 60
+#: A submit that timed out client-side is still running on the server; after this
+#: many, the request is archived instead of paying for the same improve again.
+MAX_IMPROVE_TIMEOUTS = 3
 
 
 def enabled(runtime: dict = None) -> bool:
@@ -322,26 +325,9 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                     or not result.get("payload_hash")
                 ):
                     raise RuntimeError("capture response did not confirm the event receipt")
-            from _plugin_common import bump_turn_counter, clear_payment_required
-            from _session_stats import update
-
-            update(item["host_key"], saves=1, metadata={"session_id": item["session_id"]})
-            bump_turn_counter(item["session_id"])
-            clear_payment_required()
             path.unlink()
-            log(
-                "trace_stored" if item["kind"] == "trace" else "stop_stored",
-                session=item["session_id"],
-                via="cloud_spool",
-            )
             delivered += 1
-            request_improve(item["dataset"], item["session_id"], "idle")
-            log(
-                "cloud_capture_delivered",
-                session=item["session_id"],
-                kind=item["kind"],
-                verified=already_stored,
-            )
+            _after_delivery(item, already_stored)
         except Exception as exc:
             if getattr(exc, "code", None) == 409 and item.get("idempotent"):
                 try:
@@ -365,6 +351,39 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                 break
             held.add(session)
     return delivered
+
+
+def _after_delivery(item: dict, verified: bool) -> None:
+    """Bookkeeping for an event the server already holds.
+
+    Runs after the spool file is gone and never raises: a failure here must
+    not send the event through the retry path, which would write it back.
+    """
+    try:
+        from _plugin_common import bump_turn_counter, clear_payment_required
+        from _session_stats import update
+
+        update(item["host_key"], saves=1, metadata={"session_id": item["session_id"]})
+        bump_turn_counter(item["session_id"])
+        clear_payment_required()
+        log(
+            "trace_stored" if item["kind"] == "trace" else "stop_stored",
+            session=item["session_id"],
+            via="cloud_spool",
+        )
+        request_improve(item["dataset"], item["session_id"], "idle")
+        log(
+            "cloud_capture_delivered",
+            session=item["session_id"],
+            kind=item["kind"],
+            verified=verified,
+        )
+    except Exception as exc:
+        log(
+            "cloud_delivery_bookkeeping_failed",
+            session=item.get("session_id", ""),
+            error=type(exc).__name__,
+        )
 
 
 def has_pending_work(*, now: float = None) -> bool:
@@ -407,12 +426,63 @@ def improve_outcome(result) -> dict:
     return {"ok": True, "reason": "completed", "distillation_entries": added}
 
 
+def improve_submit_timeout() -> float:
+    from _plugin_common import IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS, _float_env
+
+    return _float_env("COGNEE_IMPROVE_SUBMIT_TIMEOUT", IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS)
+
+
+def _timed_out(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", None)
+    return (
+        isinstance(exc, TimeoutError)
+        or isinstance(reason, TimeoutError)
+        or "timed out" in str(exc).lower()
+    )
+
+
+def _throttle(path: Path, item: dict, now: float) -> bool:
+    """Apply the local cooldown / backoff / no-new-entries gate to an automatic improve.
+
+    Returns True when the improve must not run now. Explicit requests (session end,
+    pre-compact, manual sync, dataset switch) never come here.
+    """
+    from _plugin_common import improve_cooldown_seconds, improve_throttle_reason, read_improve_state
+
+    why = improve_throttle_reason(item["session_id"])
+    if not why:
+        return False
+    with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
+        current = read(path) if acquired else {}
+        if current.get("generation") != item.get("generation"):
+            return True
+        if why == "no_new_entries":
+            path.unlink()
+        else:
+            state = read_improve_state(item["session_id"])
+            last = max(
+                float(state.get("last_improved_at", 0) or 0),
+                float(state.get("last_failed_at", 0) or 0),
+            )
+            current["next_attempt"] = max(now + 60, last + improve_cooldown_seconds())
+            atomic_json(path, current)
+    log("auto_improve_throttled", session=item["session_id"], reason=item["reason"], why=why)
+    return True
+
+
 def process_improves(improve, *, now: float = None) -> int:
+    """Submit at most one improve per pass, explicit requests first.
+
+    A submit can block for the whole submit timeout; one per pass keeps captures
+    flowing between them and lets a dataset switch go ahead of queued idle work.
+    """
+    from _plugin_common import record_improve_failure, record_improve_success
+
     now = time.time() if now is None else now
-    done = 0
     identity = target()
     pending_sessions = {read(p).get("session_id") for p in (root() / "spool").glob("*.json")}
-    for path in sorted((root() / "improve-wanted").glob("*.json")):
+    due = []
+    for path in (root() / "improve-wanted").glob("*.json"):
         item = read(path)
         if not item or now - item.get("created_at", 0) > MAX_AGE:
             _expire(path, "improve")
@@ -421,63 +491,78 @@ def process_improves(improve, *, now: float = None) -> int:
             continue
         if item["session_id"] in pending_sessions:
             continue
-        state = read(session_dir(item["host_key"]) / "worker.json")
-        idle = now - state.get("activity_at", 0)
-        if item["reason"] not in {"final", "precompact", "manual", "switch"} and idle < 60:
-            continue
-        try:
-            outcome = improve_outcome(improve(item))
-        except Exception as exc:
-            outcome = {"ok": False, "reason": type(exc).__name__}
-        with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
-            if not acquired:
+        explicit = item["reason"] in EXPLICIT_IMPROVES
+        if not explicit:
+            state = read(session_dir(item["host_key"]) / "worker.json")
+            if now - state.get("activity_at", 0) < 60 or _throttle(path, item, now):
                 continue
-            current = read(path)
-            if current.get("generation") != item.get("generation"):
-                continue  # a newer request must not be acknowledged or overwritten
-            if outcome.get("ok"):
-                from _session_stats import update
+        due.append((not explicit, item.get("requested_at", 0), path.name, path, item))
+    if not due:
+        return 0
+    *_, path, item = min(due)
+    try:
+        outcome = improve_outcome(improve(item))
+    except Exception as exc:
+        outcome = {
+            "ok": False,
+            "reason": "timed out" if _timed_out(exc) else type(exc).__name__,
+        }
+    with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
+        if not acquired:
+            return 0
+        current = read(path)
+        if current.get("generation") != item.get("generation"):
+            return 0  # a newer request must not be acknowledged or overwritten
+        if outcome.get("ok"):
+            from _session_stats import update
 
-                update(
-                    item["host_key"],
-                    improves_landed=1,
-                    distillation_entries=outcome.get("distillation_entries", 0),
-                )
-                path.unlink()
-                atomic_json(
-                    session_dir(item["host_key"]) / "last-improve.json",
-                    {**outcome, "at": now, "session_id": item["session_id"]},
-                )
-                log(
-                    "improve_fired",
-                    session=item["session_id"],
-                    dataset=item["dataset"],
-                    trigger=item["reason"],
-                    ok=True,
-                    reason="completed",
-                )
-                done += 1
-                from _context_cache import request_refresh
+            update(
+                item["host_key"],
+                improves_landed=1,
+                distillation_entries=outcome.get("distillation_entries", 0),
+            )
+            record_improve_success(item["session_id"], item["dataset"], item["reason"])
+            path.unlink()
+            atomic_json(
+                session_dir(item["host_key"]) / "last-improve.json",
+                {**outcome, "at": now, "session_id": item["session_id"]},
+            )
+            log(
+                "improve_fired",
+                session=item["session_id"],
+                dataset=item["dataset"],
+                trigger=item["reason"],
+                ok=True,
+                reason="completed",
+            )
+            from _context_cache import request_refresh
 
-                request_refresh(item["dataset"], item["session_id"], item["host_key"])
-            else:
-                reason = outcome.get("reason", "unconfirmed")
-                _retry(
-                    path,
-                    item,
-                    now,
-                    reason,
-                    retry_after=5 if reason in {"busy", "running"} else None,
-                )
-                log(
-                    "improve_fired",
-                    session=item["session_id"],
-                    dataset=item["dataset"],
-                    trigger=item["reason"],
-                    ok=False,
-                    reason=outcome.get("reason"),
-                )
-    return done
+            request_refresh(item["dataset"], item["session_id"], item["host_key"])
+            return 1
+        reason = outcome.get("reason", "unconfirmed")
+        record_improve_failure(item["session_id"], item["dataset"], item["reason"], reason)
+        log(
+            "improve_fired",
+            session=item["session_id"],
+            dataset=item["dataset"],
+            trigger=item["reason"],
+            ok=False,
+            reason=reason,
+        )
+        if reason == "timed out":
+            # The server is most likely still running this improve. Resubmitting
+            # soon pays for it twice; wait out the cooldown, then give up.
+            from _plugin_common import improve_cooldown_seconds
+
+            item["timeouts"] = int(item.get("timeouts", 0)) + 1
+            if item["timeouts"] >= MAX_IMPROVE_TIMEOUTS:
+                _expire(path, "improve_timed_out")
+                return 0
+            retry_after = max(improve_cooldown_seconds(), improve_submit_timeout())
+        else:
+            retry_after = 5 if reason in {"busy", "running"} else None
+        _retry(path, item, now, reason, retry_after=retry_after)
+    return 0
 
 
 def _bootstrap_sessions() -> None:
@@ -652,7 +737,7 @@ def run() -> None:
                     "session_ids": [item["session_id"]],
                     "run_in_background": False,
                 },
-                timeout=180,
+                timeout=improve_submit_timeout(),
             )
 
         while True:

@@ -357,6 +357,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.cloud_worker_error`: cloud worker error.
 - `cloud.cloud_capture_rejected`: the server permanently rejected a queued capture (400/413/422); it was expired so the queue keeps moving.
 - `cloud.cloud_worker_idle_exit`: the worker exited with no queued work and no session active for 30 minutes; the next hook restarts it.
+- `cloud.cloud_delivery_bookkeeping_failed`: a capture was delivered but updating counters or queuing the follow-up improve failed; the event is not re-sent.
 - `cloud.context_digest_inject_failed`: startup digest skipped because its cache could not be read.
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.

@@ -320,3 +320,89 @@ def test_worker_idles_out_only_without_work_or_recent_sessions(worker):
     worker.atomic_json(launch, {"activity_at": 1_000})
     assert worker.has_pending_work(now=1_000 + 60)
     assert not worker.has_pending_work(now=1_000 + worker.IDLE_EXIT_SECONDS + 1)
+
+
+COMPLETED = {"stages": [{"status": "completed"}]}
+
+
+def test_automatic_improves_share_the_local_cooldown_and_new_entry_gate(worker, monkeypatch):
+    import _plugin_common as common
+
+    calls = []
+
+    def improve(item):
+        calls.append(item["reason"])
+        return COMPLETED
+
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "idle")
+    assert worker.process_improves(improve) == 1
+    # Another turn lands inside the 90-minute cooldown: no second billed improve.
+    common.bump_turn_counter("sid")
+    path = worker.request_improve("ds", "sid", "idle")
+    assert worker.process_improves(improve) == 0
+    assert worker.read(path)["next_attempt"] > worker.time.time() + 3600
+    # Explicit requests (session end, manual sync, switch) are never throttled.
+    worker.request_improve("ds", "sid", "final")
+    assert worker.process_improves(improve) == 1
+    # After the cooldown, nothing new since the last improve: drop the request.
+    monkeypatch.setenv("COGNEE_IMPROVE_COOLDOWN", "0")
+    path = worker.request_improve("ds", "sid", "idle")
+    assert worker.process_improves(improve) == 0 and not path.exists()
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "idle")
+    assert worker.process_improves(improve) == 1
+    assert calls == ["idle", "final", "idle"]
+
+
+def test_timed_out_improve_is_not_resubmitted_soon_and_is_capped(worker, monkeypatch):
+    monkeypatch.delenv("COGNEE_IMPROVE_SUBMIT_TIMEOUT", raising=False)
+    assert worker.improve_submit_timeout() == 420.0
+    path = worker.request_improve("ds", "sid", "manual")
+    calls = []
+
+    def slow(item):
+        calls.append(item)
+        raise TimeoutError("The read operation timed out")
+
+    now = worker.time.time()
+    for attempt in range(1, worker.MAX_IMPROVE_TIMEOUTS):
+        assert worker.process_improves(slow, now=now) == 0
+        due = worker.read(path)["next_attempt"]
+        assert due >= now + 5400
+        assert worker.process_improves(slow, now=due - 1) == 0  # nothing resubmitted early
+        now = due
+    assert worker.process_improves(slow, now=now) == 0
+    assert len(calls) == worker.MAX_IMPROVE_TIMEOUTS
+    assert not path.exists() and (path.parent / "expired" / path.name).exists()
+
+
+def test_delivered_capture_is_never_written_back_when_bookkeeping_fails(worker, monkeypatch):
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "once"}, "answer")
+
+    def busy(*a, **kw):
+        raise OSError("improve request busy")
+
+    monkeypatch.setattr(worker, "request_improve", busy)
+    sent = []
+    assert worker.drain(lambda item: sent.append(item) or {"entry_id": "saved"}) == 1
+    assert not path.exists() and not list((worker.root() / "spool").glob("*.json"))
+    assert worker.drain(lambda item: sent.append(item) or {"entry_id": "saved"}) == 0
+    assert len(sent) == 1
+    stats = json.loads((worker.session_dir("host-a") / "stats.json").read_text())
+    assert stats["saves"] == 1
+
+
+def test_one_improve_per_pass_with_explicit_requests_first(worker):
+    worker.request_improve("ds", "idle-session", "idle")
+    worker.request_improve("ds", "switching", "switch")
+    seen = []
+
+    def improve(item):
+        seen.append(item["session_id"])
+        return COMPLETED
+
+    assert worker.process_improves(improve) == 1
+    assert seen == ["switching"]
+    assert worker.process_improves(improve) == 1
+    assert seen == ["switching", "idle-session"]
