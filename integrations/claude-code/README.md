@@ -1199,7 +1199,9 @@ report hint within the existing injection budget; `COGNEE_REPORT_HINT=false`
 disables it.
 
 The report leads with **What Cognee did for you**, per-session delivery evidence,
-quality bars, every failed gate and its measured value, then the unchanged grade.
+quality bars for reliability, usefulness, cost and hygiene, the measured scorecard,
+then the unchanged grade. There is no latency bar or "Needs attention" section;
+latency measurements remain in the scorecard.
 `report --full` shows the original complete recommendation layout;
 `report --ascii` uses #/- score bars; `--format markdown` fences the bars.
 Delivery segments classify each recall once (zero hit, fully in transcript,

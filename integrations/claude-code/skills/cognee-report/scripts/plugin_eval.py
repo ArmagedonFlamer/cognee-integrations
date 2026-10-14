@@ -2213,6 +2213,8 @@ def render_text(card: Dict[str, Any], markdown: bool = False, *, full=False, asc
     if markdown:
         lines.append("```")
     for sub in SUBSCORES:
+        if sub == "latency":
+            continue
         score = card["grade"]["subscores"][sub]
         lines.append(
             "%s %s %s" % (score_bar(score, ascii), "n/a" if score is None else "%.0f" % score, sub)
@@ -2249,39 +2251,8 @@ def render_text(card: Dict[str, Any], markdown: bool = False, *, full=False, asc
         ]
     if card.get("notes"):
         lines += ["", h2 + "Notes"] + ["- " + note for note in card["notes"]]
-    lines += ["", h2 + "Needs attention"]
-    for metric in card["grade"]["metrics"]:
-        if metric["status"] != "fail":
-            continue
-        action = _GATE_ACTIONS.get(
-            metric["key"], "Inspect this metric with --full and rerun after the fix."
-        )
-        lines.append(
-            "- %s: %s (n=%d); %s"
-            % (metric["label"], fmt_value(metric["value"], metric["unit"]), metric["n"], action)
-        )
-    if not any(metric["status"] == "fail" for metric in card["grade"]["metrics"]):
-        lines.append("No failed gates; low-n and unmeasured metrics remain listed above.")
     lines += ["", headline]
     return "\n".join(lines) + "\n"
-
-
-_GATE_ACTIONS = {
-    "hit_rate": "Check dataset routing and retrieval with representative queries.",
-    "novelty_rate": "Inspect deduplication and receipt reasons for repeated memory.",
-    "graph_hit_share": "Check that improve completed and graph retrieval ran.",
-    "store_landed_rate": "Inspect failed writes and drain the durable queue.",
-    "improve_ok_rate": "Inspect improve failures and retry after resolving their cause.",
-    "hook_crash_rate": "Fix the failing hook shown by --full and rerun it.",
-    "recall_p95_ms": "Inspect slow recall scopes; keep the 45-second cloud limit.",
-    "session_start_p95_ms": "Inspect SessionStart blocking work and connection checks.",
-    "empty_injection_rate": "Inspect empty recall overhead and injection receipts.",
-    "median_injected_tokens": "Inspect injection size and whole-item budget selection.",
-    "overhead_share": "Inspect injected tokens relative to model input.",
-    "recall_error_rate": "Inspect failed recall scopes and their connection diagnostics.",
-    "top_event_share": "Inspect the dominant event and repetitive logging.",
-    "largest_log_mb": "Check bounded log rotation and retention.",
-}
 
 
 def render_full_text(card: Dict[str, Any], markdown: bool = False) -> str:

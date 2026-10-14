@@ -1,6 +1,6 @@
 ---
 name: cognee-report
-description: "Evaluate Cognee from local telemetry. Use for evaluate Cognee, how is Cognee doing or performing, grade, assess or audit Cognee, is Cognee worth it, did the update help, Cognee stats, and memory quality. Reports delivery evidence, quality bars, failed gates and an evidence-based grade. For coding activity summaries use cognee-standup or cognee-digest instead."
+description: "Evaluate Cognee from local telemetry. Use for evaluate Cognee, how is Cognee doing or performing, grade, assess or audit Cognee, is Cognee worth it, did the update help, Cognee stats, and memory quality. Reports delivery evidence, quality bars, a measured scorecard and an evidence-based grade. For coding activity summaries use cognee-standup or cognee-digest instead."
 ---
 
 # Cognee performance report
@@ -67,9 +67,9 @@ legacy/guidance entries have hashes only; do not present those as source citatio
 The receipt describes delivery selection, not whether an item improved the answer.
 
 The default report leads with **What Cognee did for you**, **Where it helped**,
-**Quality**, **Needs attention**, then the unchanged grade. Keep every failed
-gate and its measured value visible, including low-n markers. Show the generated
-bars rather than inventing scores. Use `--ascii` for #/- bars or `--format markdown`
+**Quality**, then the unchanged grade. Omit the latency bar and the entire
+**Needs attention** section. Keep latency measurements and gate results in the
+scorecard, including low-n markers. Show the generated bars rather than inventing scores. Use `--ascii` for #/- bars or `--format markdown`
 for fenced bars. `--full` restores the detailed layout and all recommendation
 why/do lines. Session hashes are evidence references, never memory content;
 new-token counts from clipped historical bodies are estimates. Delivery quality
