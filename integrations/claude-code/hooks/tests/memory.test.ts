@@ -103,6 +103,17 @@ function wire(
   return clock
 }
 
+// The plugin's cross-session store, as a map the test can read back.
+function fakeStore(on: Parameters<Parameters<typeof test>[1]>[1], entries: Record<string, unknown> = {}) {
+  const store = new Map(Object.entries(entries))
+  on('store.get', ($, e) => ({ value: store.get(e.key) }))
+  on('store.set', ($, e) => {
+    store.set(e.key, e.value)
+    return { value: undefined }
+  })
+  return store
+}
+
 function argvOf(calls: Call[], script: string): readonly string[] | undefined {
   return calls.find(c => c.argv.some(a => a.endsWith(`/scripts/${script}`)))?.argv
 }
@@ -120,7 +131,7 @@ function resultText(ran: { result?: unknown; deny?: string; text?: string; isErr
   return { text: typeof ran.result === 'string' ? ran.result : String(ran.text ?? ''), isError: false }
 }
 
-test('session start registers the two tools and the command', async ($, on) => {
+test('session start registers the two tools and the commands', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)
   const tools: string[] = []
@@ -135,7 +146,7 @@ test('session start registers the two tools and the command', async ($, on) => {
   })
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   expect(tools).toEqual(['search', 'remember'])
-  expect(commands).toEqual(['cognee-dataset'])
+  expect(commands).toEqual(['cognee-dataset', 'cognee-tour'])
 })
 
 test('the tools row can be switched off', { options: { tools: false } }, async ($, on) => {
@@ -400,6 +411,84 @@ test('the row is the whole band when the engine draws nothing of its own, so no 
   // The wire's engine band is an empty Text: it is left out, so the tree is
   // our one row, not a column with an empty row under it.
   expect(drawn.props?.flexDirection).toBe('row')
+  await ui.unmount()
+})
+
+test('the first session on a machine gets the tour under the row, once', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  const store = fakeStore(on)
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /the dataset name is a picker/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /cognee: / })).toBeDefined()
+
+  await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
+  expect(await ui.find({ type: 'Text', text: /means memory is connected/ })).toBeDefined()
+  await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
+  expect(await ui.find({ type: 'Text', text: /\/cognee-tour replays this/ })).toBeDefined()
+  expect((await ui.find({ type: 'Button', key: 'tourNext' }))!.props.label).toBe('done')
+  await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
+  expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeUndefined()
+  expect(toasts.some(t => t.includes('/cognee-tour replays it'))).toBe(true)
+  await ui.unmount()
+
+  const seen = store.get('tour') as { version: number; finished: boolean }
+  expect(seen.version).toBe(1)
+  expect(seen.finished).toBe(true)
+})
+
+test('skip ends the tour and it is not shown again', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  const store = fakeStore(on)
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Button', key: 'tourSkip' })).toBeDefined()
+  await $.ui.press({ plugin: PLUGIN, key: 'tourSkip' })
+  expect(await ui.find({ type: 'Button', key: 'tourSkip' })).toBeUndefined()
+  await ui.unmount()
+  const seen = store.get('tour') as { version: number; finished: boolean }
+  expect(seen.finished).toBe(false)
+})
+
+test('a machine that has seen this tour gets no hints', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  fakeStore(on, { tour: { version: 1, at: 1, finished: true } })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /cognee: / })).toBeDefined()
+  await ui.unmount()
+})
+
+test('/cognee-tour replays it, and the tour row in /config turns it off', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  fakeStore(on, { tour: { version: 1, at: 1, finished: true } })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const answer = await $.command.run({ command: 'cognee-tour', args: '' })
+  expect(answer.text).toContain('tour')
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /the dataset name is a picker/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('with the tour off a first session gets no hints', { options: { tour: false } }, async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  fakeStore(on)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeUndefined()
   await ui.unmount()
 })
 

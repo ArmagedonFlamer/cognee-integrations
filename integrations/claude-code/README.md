@@ -454,9 +454,9 @@ Final sync on session end is triggered by the `SessionEnd` detached worker, with
 - `/cognee-memory:cognee-standup`, `/cognee-memory:cognee-digest`,
   `/cognee-memory:cognee-timeline` — recaps over recorded sessions (below)
 
-With the hooks module loaded (Claude Code 2.1.287+), one more command and two tools
-join them: `/cognee-dataset [name]`, and the tools `mcp__cognee-memory__search` and
-`mcp__cognee-memory__remember`, described under
+With the hooks module loaded (Claude Code 2.1.287+), two more commands and two tools
+join them: `/cognee-dataset [name]` and `/cognee-tour`, and the tools
+`mcp__cognee-memory__search` and `mcp__cognee-memory__remember`, described under
 [Dataset picker and tools](#dataset-picker-and-tools). The skills stay the path for the
 judgement-heavy work (forget, sync, code indexing, the recaps) and for every Claude
 Code that does not load mods.
@@ -896,9 +896,24 @@ The module also adds, on both surfaces:
 - **One line under each answer:** `🧠 recalled 3 memories`, the memories this answer
   was given. Quiet when nothing was recalled, and never for a subagent's turn.
 
-Four rows in `/config` switch each piece: `icon` (`brain` or `none`), `band` (off,
+**First-run tour.** The first session on a machine gets three short hints under
+the row, each about what is right above it, with `next` and `skip` buttons:
+
+```
+○ 🧠 cognee: [agent_sessions ▾] · local
+↑ the dataset name is a picker: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
+```
+
+then what the dot, the mode and the end of the row mean, then how Cognee recalls
+and Claude can search or remember, and the two commands. `done` or `skip` ends it and it is not shown again:
+the plugin's own store (Claude Code keeps it per plugin, across sessions) records
+that this version of the tour was seen. `/cognee-tour` replays it any time. In a
+terminal, focus the band with `ctrl+x tab` to press the buttons, or click them.
+
+Five rows in `/config` switch each piece: `icon` (`brain` or `none`), `band` (off,
 no row is drawn and no session is marked, so a line you added below the prompt
-shows again), `spinner`, `answerLine` (a fifth, `tools`, is described below).
+shows again), `spinner`, `answerLine`, `tour` (a sixth, `tools`, is described
+below).
 
 The module never calls the Cognee server and runs nothing on a timer while the
 session is idle. It reads the activity marker when the hooks fire (session start,
@@ -948,8 +963,8 @@ does not load mods and for the judgement the skill text carries.
 | `remember` | `content` (the text) or `file` (a path, stored under its real name so code rides the code path), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
 
 While a tool runs the spinner says `· 🧠 searching memory…` or `· 🧠 remembering…`
-on both surfaces, as it says `· 🧠 switching dataset…` during a switch. A fifth
-`/config` row, `tools`, turns the registration off; the skills are unaffected.
+on both surfaces, as it says `· 🧠 switching dataset…` during a switch. The
+`tools` row in `/config` turns the registration off; the skills are unaffected.
 
 Everything here hooks only Claude Code's native events, as the band does: no
 `classic.*` mirrors, nothing on a timer, and no system-prompt or skill-text

@@ -50,6 +50,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   included. Plain text until the listing lands or when it fails.
   `/cognee-dataset <name>` switches from the prompt the same way, on every
   surface; `/cognee-dataset` alone lists the datasets.
+- **A first-run tour on the status row.** The first session on a machine shows
+  three short hints under the row, each about what is right above it (the
+  dataset picker; the dot, the mode and the activity; how Cognee recalls and
+  Claude can search or remember, and the commands), with `next` and `skip`. Seen once, it is not shown again:
+  the plugin's store records the tour version. `/cognee-tour` replays it; the
+  `tour` row in `/config` turns it off.
 - **Two tools Claude calls directly.** The hooks module registers
   `mcp__cognee-memory__search` (`query`, `top_k`, `scope` graph|code,
   `dataset_id`) and `mcp__cognee-memory__remember` (`content` or `file`,

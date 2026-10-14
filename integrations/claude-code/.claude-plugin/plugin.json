@@ -55,6 +55,12 @@
       "title": "Memory tools for Claude",
       "description": "Register search and remember as tools Claude can call directly (mcp__cognee-memory__search / remember) instead of going through a skill and a shell command.",
       "default": true
+    },
+    "tour": {
+      "type": "boolean",
+      "title": "First-run tour",
+      "description": "On the first session on this machine, show three short hints under the status row about what it shows and does (/cognee-tour replays them).",
+      "default": true
     }
   }
 }

@@ -17,6 +17,9 @@
 //     dataset, or typing the name of a new one, switches the session there
 //     without a model turn (`/cognee-dataset <name>` does the same from the
 //     prompt);
+//   * a first-run tour: three dim hint lines under the row, each about the
+//     thing above it, shown once per machine (the plugin's store remembers)
+//     and again on `/cognee-tour`;
 //   * two tools the model calls directly, `mcp__cognee-memory__search` and
 //     `mcp__cognee-memory__remember`, served by the plugin's own shell
 //     wrappers: no skill file to read, no Bash row, structured arguments.
@@ -128,6 +131,19 @@ let switching = false
 // make the value one no dataset can be named, so it never collides.
 const NEW_DATASET = '+ new dataset…'
 let namingDataset = false
+
+// The first-run tour: one hint line under the row per step, about what is
+// right above it. Shown once per machine (the store key survives sessions);
+// bump TOUR_VERSION to show a rewritten tour once more. -1 is "not showing".
+const TOUR_VERSION = 1
+const TOUR_STEPS = [
+  '↑ the dataset name is a picker: pick another dataset, or "+ new dataset…" to create one',
+  '↑ ● means memory is connected · local or cloud is where it lives · the end of the row says what memory is doing',
+  'Cognee recalls memory on every prompt, and Claude can search or remember on its own · /cognee-dataset <name> switches by name · /cognee-tour replays this',
+]
+let tourOn = true
+let tourStep = -1
+let tourChecked = false
 // One listing per session, refreshed after a switch or by the pane's refresh.
 let datasetsListed = false
 let datasetsListing = false
@@ -479,6 +495,34 @@ async function refreshSnapshot($: any): Promise<void> {
   rendererFailures += 1
 }
 
+// ── the tour ────────────────────────────────────────────────────────────────
+// Once, at the first draw of the band (the person is looking at the row by
+// then; at session start the Desktop app has no surface yet).
+async function startTourIfFirstRun($: any): Promise<void> {
+  if (tourChecked) return
+  tourChecked = true
+  if (!tourOn) return
+  try {
+    const seen = (await $.store.get('tour')) as { version?: unknown } | undefined
+    if (seen && toNumber(seen.version) === TOUR_VERSION) return
+  } catch {
+    return
+  }
+  tourStep = 0
+  redraw($)
+}
+
+async function endTour($: any, finished: boolean): Promise<void> {
+  tourStep = -1
+  redraw($)
+  try {
+    await $.store.set('tour', { version: TOUR_VERSION, at: (await $.clock.now()) / 1000, finished })
+  } catch {
+    // shown again next session, which is the worst case
+  }
+  if (finished) $.ui.toast(`${icon}that is the tour · /cognee-tour replays it`)
+}
+
 // ── the dataset picker ──────────────────────────────────────────────────────
 function sessionKeyArgs(): string[] {
   return sessionId ? ['--session-key', sessionId] : []
@@ -547,6 +591,7 @@ export const register: Register = (on, options) => {
   spinnerOn = options.spinner !== false
   answerLineOn = options.answerLine !== false
   toolsOn = options.tools !== false
+  tourOn = options.tour !== false
 
   on('session.start', async ($, e, next) => {
     await bindSession($)
@@ -561,6 +606,10 @@ export const register: Register = (on, options) => {
       name: 'cognee-dataset',
       description: 'Switch this session to another Cognee dataset; without a name, list them.',
       argumentHint: '[name]',
+    })
+    await $.command.register({
+      name: 'cognee-tour',
+      description: 'Replay the short tour of the Cognee status row.',
     })
     if (toolsOn) {
       await $.tool.register({
@@ -604,6 +653,13 @@ export const register: Register = (on, options) => {
     // A session start still connecting or bootstrapping: watch it land.
     if (active) await startPoll($, POLL_WINDOW_MS)
     return next(e)
+  })
+
+  on('command.run', { command: 'cognee-tour' }, $ => {
+    tourChecked = true
+    tourStep = 0
+    redraw($)
+    return { text: 'Cognee: the tour is on the status row above the prompt.' }
   })
 
   // /cognee-dataset <name> switches from the prompt, on every surface; alone
@@ -763,6 +819,7 @@ export const register: Register = (on, options) => {
     const snap = snapshot
     const parts: RenderElement[] = []
     if (!datasetsListed && !datasetsListing) void loadDatasets($)
+    void startTourIfFirstRun($)
     const current = switchTargets.find(r => r.current)?.name ?? snap?.dataset ?? ''
     const canPick = switchTargets.length > 0 && switchTargets.some(r => r.name === current)
     const picker = () =>
@@ -842,7 +899,35 @@ export const register: Register = (on, options) => {
     if (snap?.update) parts.push(Text({ color: 'yellow', children: [` · ${snap.update}`] }))
 
     const row = Box({ flexDirection: 'row', width: e.props.bodyColumns, children: parts })
-    return drawsSomething(theirs) ? Box({ flexDirection: 'column', children: [row, theirs as RenderElement] }) : row
+    const rows: RenderElement[] = [row]
+    const hint = TOUR_STEPS[tourStep]
+    if (hint !== undefined) {
+      const last = tourStep === TOUR_STEPS.length - 1
+      rows.push(
+        Box({
+          flexDirection: 'row',
+          width: e.props.bodyColumns,
+          children: [
+            Text({ dimColor: true, children: [`${hint}  `] }),
+            Button({
+              key: 'tourNext',
+              label: last ? 'done' : 'next',
+              onPress: () => {
+                if (last) void endTour($, true)
+                else {
+                  tourStep += 1
+                  redraw($)
+                }
+              },
+            }),
+            Text({ children: [' '] }),
+            Button({ key: 'tourSkip', label: 'skip', plain: true, dimColor: true, onPress: () => void endTour($, false) }),
+          ],
+        }),
+      )
+    }
+    if (drawsSomething(theirs)) rows.push(theirs as RenderElement)
+    return rows.length === 1 ? row : Box({ flexDirection: 'column', children: rows })
   })
 
   // While Claude works: "Thinking · 🧠 recalling…". On the desktop for every
