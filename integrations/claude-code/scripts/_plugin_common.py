@@ -3351,17 +3351,32 @@ def recall_slow_until(service_url: str) -> float:
         return 0.0
 
 
+_SLOW_RECALL_MAX_WINDOW_SECONDS = 3600.0
+
+
 def mark_recall_slow(service_url: str) -> float:
-    """Shorten per-prompt recall for one streak window after repeated timeouts.
+    """Shorten per-prompt recall for a while after repeated timeouts.
 
     ``clear_slow_streak`` (any recall that answers) ends it early. When the window
-    passes, one prompt runs with the full budget again to test the server.
+    passes, one prompt runs with the full budget to re-test the server; each
+    re-test that times out again doubles the window (the streak window first,
+    capped at an hour), so a long hang costs a full wait about once an hour.
+    The re-test keeps the full budget on purpose: a server that is slow but
+    working would never pass a re-test under the short budget.
     """
     url = _normalize_service_url(service_url)
     state = _read_slow_streaks()
     entry = state.get(url) if isinstance(state.get(url), dict) else {}
-    until = datetime.now(timezone.utc).timestamp() + _slow_streak_window_seconds()
-    state[url] = {**entry, "slow_until": until}
+    try:
+        strikes = int(entry.get("slow_strikes") or 0) + 1
+    except (TypeError, ValueError):
+        strikes = 1
+    window = min(
+        _slow_streak_window_seconds() * 2 ** min(strikes - 1, 16),
+        max(_SLOW_RECALL_MAX_WINDOW_SECONDS, _slow_streak_window_seconds()),
+    )
+    until = datetime.now(timezone.utc).timestamp() + window
+    state[url] = {**entry, "slow_until": until, "slow_strikes": strikes}
     _write_slow_streaks(state)
     return until
 

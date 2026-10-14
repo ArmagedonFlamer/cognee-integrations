@@ -269,3 +269,18 @@ def test_claude_slow_marker_survives_streak_updates_and_clears_on_answer(suite, 
     assert common.recall_slow_until(URL) == until
     common.clear_slow_streak(URL)
     assert common.recall_slow_until(URL) == 0.0
+
+
+def test_claude_failed_retests_back_off_to_an_hour(suite, isolated_modules, monkeypatch):
+    if suite.name != "claude-code":
+        pytest.skip("Claude short recall budget")
+    common = isolated_modules(suite, "_plugin_common")
+    monkeypatch.delenv("COGNEE_SLOW_STREAK_WINDOW", raising=False)
+    windows = []
+    for _ in range(5):
+        start = common.datetime.now(common.timezone.utc).timestamp()
+        windows.append(round(common.mark_recall_slow(URL) - start, -1))
+    assert windows == [600, 1200, 2400, 3600, 3600]
+    common.clear_slow_streak(URL)  # any answer resets the back-off
+    start = common.datetime.now(common.timezone.utc).timestamp()
+    assert round(common.mark_recall_slow(URL) - start, -1) == 600

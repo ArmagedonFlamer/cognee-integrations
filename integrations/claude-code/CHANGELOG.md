@@ -65,7 +65,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Cloud per-prompt recall waits up to 45 seconds; local mode keeps 20 seconds, and the
   environment overrides still apply. After three timeout-only prompts in a row, recall
   gets 5 seconds (`COGNEE_RECALL_SLOW_BUDGET`) for ten minutes or until a recall
-  answers, so a hung server does not cost the full wait on every prompt.
+  answers, so a hung server does not cost the full wait on every prompt. Each
+  full-length re-test that times out again doubles that window, up to an hour.
 
 ### Fixed
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
