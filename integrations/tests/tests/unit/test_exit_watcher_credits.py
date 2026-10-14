@@ -41,8 +41,9 @@ def test_watcher_never_imports_or_calls_refresh_credits(suite):
     assert "COGNEE_CREDITS_CHECK_INTERVAL" not in src
 
 
-def test_watcher_loop_has_no_additional_network_work(suite):
-    """Claude also repairs an opted-in status line locally; no credits polling."""
+def test_watcher_loop_only_reprobes_connection(suite):
+    """The steady-state loop body is the connection self-heal plus the sleep;
+    nothing else runs per poll."""
     tree = ast.parse(_watcher_source(suite))
     loops = [n for n in ast.walk(tree) if isinstance(n, ast.While)]
     assert len(loops) == 1, "expected exactly one steady-state loop"
@@ -52,10 +53,7 @@ def test_watcher_loop_has_no_additional_network_work(suite):
         for n in ast.walk(stmt)
         if isinstance(n, ast.Call)
     ]
-    expected = ["_reprobe_connection", "time.sleep"]
-    if suite.name == "claude-code":
-        expected.insert(0, "ensure_statusline_configured")
-    assert calls == expected, calls
+    assert calls == ["_reprobe_connection", "time.sleep"], calls
 
 
 def test_credits_check_error_event_is_retired(suite, isolated_modules):
