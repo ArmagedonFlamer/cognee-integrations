@@ -145,7 +145,7 @@ _HOST_PYTHON_CANDIDATES = (
 # refusal reaches the user as a systemMessage (the worker that hits it runs
 # detached, with nothing it prints visible). Cleared once a venv is ready.
 _HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
-_PINNED_COGNEE_VERSION = "1.6.1"
+_PINNED_COGNEE_VERSION = "1.6.3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Maps a configured backend provider env var to the cognee package "extra" that
@@ -350,7 +350,7 @@ def _venv_cognee_version() -> str:
 
 
 # One distribution per extra whose presence in the venv proves that extra's
-# drivers are installed (verified against cognee 1.6.1's optional-dependencies:
+# drivers are installed (verified against cognee 1.6.3's optional-dependencies:
 # fastembed and codegraph are empty extras there, their packages being core).
 # Probing the venv is deliberately preferred over recording installed extras in
 # venv-ready.json: that marker is shared with plugins that don't know about
@@ -2063,9 +2063,8 @@ async def _start(payload: dict | None = None) -> dict:
     # an immediate improve on startup.
     touch_activity()
 
-    # Launch the idle watcher (syncs session memory to graph after the agent
-    # goes idle). Runs in both local-server and cloud modes — the watcher picks
-    # the HTTP or local sync path itself. COGNEE_IDLE_DISABLED opts out.
+    # Launch the idle watcher (update and LLM-key checks, periodic shared-memory
+    # refresh). COGNEE_IDLE_DISABLED opts out.
     if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() not in (
         "1",
         "true",
@@ -2126,19 +2125,6 @@ def _update_nudge_suffix() -> str:
         f"\n\nCognee update available {installed} → {latest} — run "
         "`codex plugin marketplace upgrade cognee` to update."
     )
-
-
-def _prune_session_state() -> None:
-    """Drop session state folders (memory tags, stored count) idle for 30 days."""
-    try:
-        import _plugin_common
-        from _recall_text import prune_session_state
-
-        removed = prune_session_state(_plugin_common._PLUGIN_DIR)
-        if removed:
-            hook_log("session_state_pruned", {"removed": removed})
-    except Exception as exc:
-        hook_log("session_state_prune_failed", {"error": str(exc)[:200]})
 
 
 def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
@@ -2224,7 +2210,6 @@ def main():
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     output = _apply_sync_notice(output, payload)
-    _prune_session_state()
     output = _apply_host_python_warning(output)
     print(json.dumps(output))
 

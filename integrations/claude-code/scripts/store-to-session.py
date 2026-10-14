@@ -23,6 +23,7 @@ import urllib.error
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
 from _plugin_common import (
     append_warmup_entry,
     bump_save_counter,
@@ -60,11 +61,16 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
     """Fire-and-forget session improve; failures are logged but never raised.
 
     The server bridges the session itself from its session cache (improve);
-    see run_session_improve_detailed. Shares the cooldown / backoff gate with the
-    idle watcher; the session-end sync ignores it and covers whatever a skip
-    here leaves behind. Without server auth there is nothing to submit to —
-    the session-end sync picks the session up once a key is available.
+    see run_session_improve_detailed. Honours the cooldown / backoff gate; the
+    session-end sync ignores it and covers whatever a skip here leaves behind.
+    Without server auth there is nothing to submit to — the session-end sync
+    picks the session up once a key is available.
     """
+    if cloud_enabled():
+        from _cloud_worker import request_improve
+
+        request_improve(dataset, session_id, reason)
+        return
     improve_start = time.monotonic()
     throttled = improve_throttle_reason(session_id)
     if throttled:
@@ -126,6 +132,11 @@ def _infer_status(payload: dict) -> tuple[str, str]:
         if response.get("is_error") or response.get("error"):
             err = response.get("error") or response.get("message") or "Tool reported an error."
             return "error", _truncate_str(err, 500)
+        if response.get("interrupted"):
+            return "error", "Tool interrupted."
+        exit_code = response.get("exit_code", response.get("exitCode", 0))
+        if exit_code not in (0, "0", None):
+            return "error", "Tool exited with code %s." % exit_code
     if isinstance(payload.get("error"), str) and payload["error"]:
         return "error", _truncate_str(payload["error"], 500)
     return "success", ""
@@ -146,12 +157,40 @@ def _load_session() -> tuple[str, str, str]:
     return session_id, dataset, user_id
 
 
+def _low_signal_trace(tool: str, output, status: str) -> bool:
+    if tool in {"Read", "Grep", "Glob"}:
+        return True
+    if tool != "Bash" or status != "success":
+        return False
+    if isinstance(output, dict):
+        if output.get("exit_code", 0) or output.get("exitCode", 0) or output.get("interrupted"):
+            return False
+        # Claude Code adds flags such as isImage/noOutputExpected; only the
+        # output streams decide. A result without either stream is unknown.
+        if "stdout" not in output and "stderr" not in output:
+            return False
+        if output.get("isImage") or output.get("is_error"):
+            return False
+        return (
+            not str(output.get("stdout") or "").strip()
+            and not str(output.get("stderr") or "").strip()
+        )
+    return output is None or (isinstance(output, str) and not output.strip())
+
+
 async def _store_tool_call(payload: dict) -> None:
     """Write a PostToolUse event as a TraceEntry."""
     tool_name = payload.get("tool_name", "unknown")
     tool_input = payload.get("tool_input") or {}
     tool_output = payload.get("tool_output") or payload.get("tool_response") or ""
-    from _capture_policy import CapturePatternError, allow_tool, redact
+    from _capture_policy import (
+        CapturePatternError,
+        allow_tool,
+        is_plugin_invocation,
+        low_signal_bash,
+        redact,
+        safe_first_token,
+    )
 
     try:
         allowed = allow_tool(tool_name, tool_input)
@@ -167,17 +206,53 @@ async def _store_tool_call(payload: dict) -> None:
     tool_output = redact(tool_output)
     payload = redact(payload)
 
-    # Suppress self-reference: any Bash call that mentions 'cognee' is
-    # likely the plugin/CLI talking to itself and would recurse.
-    if tool_name == "Bash":
-        cmd = ""
-        if isinstance(tool_input, dict):
-            cmd = str(tool_input.get("command", ""))
-        if "cognee" in cmd:
-            hook_log("skip_self_cognee_bash", {"cmd_prefix": cmd[:80]})
-            return
-
+    command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
     status, error_message = _infer_status(payload)
+    reason = is_plugin_invocation(command) if tool_name == "Bash" else ""
+    low_signal = tool_name == "Bash" and low_signal_bash(command, tool_output, status)
+    # Cloud mode also drops Read/Grep/Glob and Bash calls that succeeded with no output.
+    low_signal = low_signal or (
+        cloud_enabled() and _low_signal_trace(tool_name, tool_output, status)
+    )
+    from _session_stats import update
+
+    if tool_name == "Bash":
+        hook_log(
+            "bash_capture_decision",
+            {
+                "host_session_id": get_session_key(),
+                "outcome": "skipped_self"
+                if reason
+                else "skipped_low_signal"
+                if low_signal
+                else "captured",
+            },
+        )
+        update(
+            get_session_key(),
+            bash_post_tool_use=1,
+            bash_skipped_self=int(bool(reason)),
+            bash_skipped_low_signal=int(not reason and low_signal),
+            bash_traces_captured=int(not reason and not low_signal),
+        )
+    if reason or low_signal:
+        update(
+            get_session_key(),
+            traces_skipped=1,
+            traces_skipped_self=int(bool(reason)),
+            traces_skipped_low_signal=int(not reason),
+        )
+    if reason:
+        hook_log(
+            "skip_self_cognee_bash", {"first_token": safe_first_token(command), "reason": reason}
+        )
+        return
+    if low_signal:
+        hook_log(
+            "trace_skipped_low_signal",
+            {"tool": tool_name, "first_token": safe_first_token(command)},
+        )
+        return
 
     # Normalize method_params: small structured dict is ideal; fall back
     # to a truncated-string dict if we got something non-JSON-safe.
@@ -219,6 +294,13 @@ async def _store_tool_call(payload: dict) -> None:
         # LLM summary can flip this in a future config.
         "generate_feedback_with_llm": False,
     }
+
+    if cloud_enabled(runtime):
+        from _cloud_worker import enqueue
+
+        enqueue(dataset, session_id, entry, "trace")
+        bump_save_counter(session_id, "trace", buffered=True)
+        return
 
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe — a stale marker
@@ -365,6 +447,14 @@ async def _store_assistant_stop(payload: dict) -> None:
         "context": redact(pending.get("context", "")),
     }
 
+    if cloud_enabled(runtime):
+        from _cloud_worker import enqueue
+
+        # The worker counts delivered entries toward the every-N improve trigger.
+        enqueue(dataset, session_id, entry, "answer")
+        bump_save_counter(session_id, "answer", buffered=True)
+        return
+
     if not server_usable(runtime.get("base_url", "")):
         # Server unreachable (stale marker AND a failed probe): buffer the
         # structured entry for a later /remember/entry replay (improve bridges
@@ -501,7 +591,8 @@ def main():
                 asyncio.run(_store_assistant_stop(payload))
                 # End-of-turn code-graph freshness: independent of whether an
                 # assistant message was stored (edits happen either way).
-                _maybe_reingest_code_repo(payload)
+                if not cloud_enabled():
+                    _maybe_reingest_code_repo(payload)
             else:
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:

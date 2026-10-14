@@ -138,5 +138,5 @@ def test_one_session_cannot_reset_another(sync, monkeypatch):
     _plugin_common.bump_save_counter("claude_another-session", "answer")
     assert _plugin_common.read_stored_seq(SESSION_KEY) == 3
     assert _plugin_common.read_stored_seq("another-session") == 1
-    stored = _plugin_common._PLUGIN_DIR / "session-state" / SESSION_KEY / "stored.log"
+    stored = _plugin_common._PLUGIN_DIR / "sessions" / SESSION_KEY / "stored.log"
     assert stored.stat().st_size == 3

@@ -10,23 +10,28 @@ both logged, which is how we measure whether agents credit memory reliably.
 Contract:
   * graph memory is tagged per passage, plus one tag each for entities and
     facts; a passage's label names the agent session or document it came from;
-  * a memory recalled again in the session keeps its tag: an earlier turn or
-    trace by its server id, anything else by its text;
+  * a memory recalled again in the session keeps its tag: an evidence item by
+    its citation, an earlier turn or trace by its server id, anything else by
+    its text;
+  * where the host trims memory to a size budget or skips what is already in
+    context, only the tags that reach the context count as this prompt's;
   * the instruction rides only on turns that injected something, says how many
     memories this prompt found, and keeps the longer first-credit wording until
     an answer has credited memory once;
   * only the credit line counts: ``arr[m1]`` in code is not a citation;
   * every prompt starts a new turn before recall can return early, so a cited
     tag from an earlier turn is logged as ``earlier``, never as this turn's;
-  * an empty recall injects no header;
+  * an empty recall carries no instruction and no tags;
   * ``COGNEE_PLUGIN_CITE_MEMORY=off`` turns all of it off, and Codex starts
     with it off.
 
-``_recall_text`` is byte-identical in every suite; the hook tests run for the
-suites whose recall hook uses it (claude-code and codex).
+``_recall_text``'s credit section is the same in every suite; the hook tests run
+for the suites whose recall hook uses it (claude-code and codex).
 """
 
 from __future__ import annotations
+
+import re
 
 import pytest
 from utils.recall import drive_recall
@@ -130,7 +135,7 @@ def test_credit_state_round_trip(rt, tmp_path):
     assert not rt.has_credited(tmp_path, SESSION_KEY)  # an invented-only turn doesn't count
     rt.record_credit(tmp_path, SESSION_KEY, {"valid": ["m1"]})
     assert rt.has_credited(tmp_path, SESSION_KEY)
-    assert (tmp_path / "session-state" / SESSION_KEY / "credit.json").is_file()
+    assert (tmp_path / "sessions" / SESSION_KEY / "credit.json").is_file()
 
 
 @pytest.mark.parametrize("key", ["../escape", "..", "", "a/b"])
@@ -142,23 +147,6 @@ def test_unsafe_session_keys_write_nothing(rt, tmp_path, key):
     rt.begin_turn(state, key)
     rt.record_credit(state, key, {"valid": ["m1"]})
     assert not any(tmp_path.rglob("*.json"))
-
-
-def test_idle_session_folders_are_pruned(rt, tmp_path):
-    import os
-    import time
-
-    for key in ("old", "fresh"):
-        tags = rt.MemoryTags()
-        tags.add("memory", "Cognee memory", key)
-        tags.save(tmp_path, key)
-    old = tmp_path / "session-state" / "old"
-    stale = time.time() - rt.SESSION_STATE_MAX_AGE_SECONDS - 60
-    for path in (old / "tags.json", old):
-        os.utime(path, (stale, stale))
-    assert rt.prune_session_state(tmp_path) == 1
-    assert not old.exists()
-    assert (tmp_path / "session-state" / "fresh" / "tags.json").is_file()
 
 
 # ── the recall hook ────────────────────────────────────────────────────────
@@ -187,21 +175,58 @@ def _saved(rt, lookup):
     return rt.MemoryTags.load(_state_dir(lookup), SESSION_KEY)
 
 
+def _tag_of(ctx: str, origin: str) -> str:
+    """The tag ``ctx`` shows for the item labelled ``origin``."""
+    match = re.search(rf"\[(m\d+) · {re.escape(origin)}\]", ctx)
+    assert match, f"no [mN · {origin}] in context"
+    return match.group(1)
+
+
+def _assert_counted_as_shown(ctx: str, tags) -> None:
+    """Exactly the tags visible in the context count as this turn's, and the
+    instruction states that number."""
+    shown = {r["tag"] for r in tags.records if r.get("turn") == tags.turn}
+    visible = {t for t in re.findall(r"\[(m\d+) · ", ctx)}
+    assert shown == visible
+    if "Crediting Cognee memory" in ctx:  # a tiny size budget can leave it out
+        noun = "1 memory" if len(shown) == 1 else f"{len(shown)} memories"
+        assert f"Cognee found {noun} for this prompt" in ctx
+
+
 def test_hit_is_tagged_and_carries_the_first_credit_instruction(lookup, monkeypatch, rt):
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert "[m1 · Codex session]" in ctx
+    _tag_of(ctx, "Codex session")
+    _tag_of(ctx, "Claude Code session learning, 2026-10-03")
+    _tag_of(ctx, "knowledge graph entities")
     assert "Cognee found 5 memories for this prompt" in ctx
     assert "> 🧠 Cognee memory [mN]:" in ctx
     assert "first Cognee credit in this session" in ctx
-    assert [r["tag"] for r in _saved(rt, lookup).records] == ["m1", "m2", "m3", "m4", "m5"]
+    tags = _saved(rt, lookup)
+    assert len(tags.records) == 5
+    _assert_counted_as_shown(ctx, tags)
 
 
-def test_the_next_prompt_reuses_the_tags_of_memories_seen_before(lookup, monkeypatch, rt):
-    drive_recall(lookup, monkeypatch, recall=HIT)
-    ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert "[m1 · Codex session]" in ctx and "[m6" not in ctx
-    assert "Cognee found 5 memories for this prompt" in ctx
-    assert len(_saved(rt, lookup).records) == 5
+def test_a_memory_recalled_on_a_later_prompt_keeps_its_tag(lookup, monkeypatch, rt):
+    first = _context(drive_recall(lookup, monkeypatch, recall=HIT))
+    codex_tag = _tag_of(first, "Codex session")
+    new = "Session ID: codex_new\n\nQuestion: tabs?\n\nAnswer: spaces."
+    more = {
+        "graph": [
+            {"source": "graph", "text": CONTEXT.replace(PASSAGE_DOC, f"{PASSAGE_DOC}\n---\n{new}")}
+        ]
+    }
+    second = _context(drive_recall(lookup, monkeypatch, recall=more))
+    tags = _saved(rt, lookup)
+    assert len(tags.records) == 6  # one new memory, five known ones
+    assert next(
+        r["tag"] for r in tags.records if r["snippet"].startswith("Session ID: codex_01")
+    ) == (codex_tag)
+    # Shown again it keeps its tag; a host that skips memory already in context
+    # does not show it, and then it does not count as this prompt's.
+    if PASSAGE_CODEX in second:
+        assert f"[{codex_tag} · Codex session]" in second
+    assert "[m6 · Codex session]" in second
+    _assert_counted_as_shown(second, tags)
 
 
 def test_an_earlier_turn_keeps_its_tag_by_server_id(lookup, monkeypatch, rt):
@@ -220,10 +245,11 @@ def test_after_a_credit_the_short_instruction(lookup, monkeypatch, rt):
     assert "first Cognee credit" not in ctx
 
 
-def test_empty_recall_injects_nothing_and_leaves_no_tags_for_the_turn(lookup, monkeypatch, rt):
+def test_empty_recall_has_no_instruction_and_no_tags_for_the_turn(lookup, monkeypatch, rt):
     drive_recall(lookup, monkeypatch, recall=HIT)
     run = drive_recall(lookup, monkeypatch, recall={})
-    assert _context(run) == ""
+    ctx = _context(run)
+    assert "Crediting Cognee memory" not in ctx and "[m" not in ctx
     assert run.output["hookSpecificOutput"].get("systemMessage") or run.output.get("systemMessage")
     assert rt.check_credits("", _saved(rt, lookup))["available"] == 0
 
@@ -243,7 +269,7 @@ def test_a_recall_that_returns_early_still_starts_a_new_turn(lookup, monkeypatch
 def test_opt_out(lookup, monkeypatch, rt):
     monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "off")
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert "[m1" not in ctx and "🧠" not in ctx
+    assert not re.search(r"\[m\d+ · ", ctx) and "🧠" not in ctx
     assert PASSAGE_CODEX in ctx  # memory itself is unchanged
 
 
@@ -252,7 +278,7 @@ def test_default_per_host(suite, lookup, monkeypatch):
     instruction, until it has been tried live."""
     monkeypatch.delenv("COGNEE_PLUGIN_CITE_MEMORY")
     ctx = _context(drive_recall(lookup, monkeypatch, recall=HIT))
-    assert ("[m1 ·" in ctx) is suite.cites_memory_by_default
+    assert bool(re.search(r"\[m\d+ · ", ctx)) is suite.cites_memory_by_default
 
 
 # ── the Stop hook ──────────────────────────────────────────────────────────
@@ -319,15 +345,26 @@ def test_stop_logs_a_citation_on_a_turn_without_memory_as_invented(stop, rt):
     assert stop.events[0][1]["invented"] == ["m1"]
 
 
-def test_instruction_survives_claude_codes_preview_cut(lookup, monkeypatch):
+def test_instruction_comes_before_the_memory(lookup, monkeypatch):
     """Claude Code shows the model only a 2 KB preview of hook context over 10,000
     characters, so the instruction must come before the memory, not after it."""
     big = {"graph": [{"source": "graph", "text": CONTEXT + "\n- filler fact." * 1500}]}
     ctx = _context(drive_recall(lookup, monkeypatch, recall=big))
-    assert len(ctx) > 10_000
     at = ctx.index("> 🧠 Cognee memory [mN]:")
-    assert at < ctx.index("[m1 ·")
+    assert at < re.search(r"\[m\d+ · ", ctx).start()
     assert ctx.index("first Cognee credit") < 2_000
+
+
+def test_memory_trimmed_to_fit_is_not_counted(lookup, monkeypatch, rt):
+    """A host that trims memory to a size budget tags before trimming: only the
+    tags that made it into the context count as this prompt's."""
+    monkeypatch.setenv("COGNEE_INJECT_MAX_CHARS", "1024")
+    passages = [f"Cognee doc {i}: " + "detail " * 40 for i in range(12)]
+    text = "## Relevant passages\n" + "\n---\n".join(passages)
+    ctx = _context(
+        drive_recall(lookup, monkeypatch, recall={"graph": [{"source": "graph", "text": text}]})
+    )
+    _assert_counted_as_shown(ctx, _saved(rt, lookup))
 
 
 # ── "this conversation was saved" on resume ────────────────────────────────

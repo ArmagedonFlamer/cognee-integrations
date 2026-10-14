@@ -361,19 +361,10 @@ def _resolve_env_file() -> str:
     return desc
 
 
-def _resolve_auto_memory() -> str:
-    """Claude Code's built-in auto memory (MEMORY.md), which duplicates Cognee."""
-    import _auto_memory
-
-    status = _auto_memory.auto_memory_status()
-    if not status["enabled"]:
-        return "Off" if status["scope"] == "default" else f"Off ({status['source']})"
-    where = "default" if status["scope"] == "default" else status["source"]
-    return f"On ({where}) — duplicates Cognee; turn off with /cognee-memory:cognee-auto-memory"
-
-
 def collect_report() -> dict:
     """Gather all diagnostic fields into an ordered dict."""
+    from _auto_memory import state as auto_memory_state
+
     mode = _resolve_mode()
     display_url, raw_url = _resolve_server_url()
     api_key_source = _resolve_api_key_source()
@@ -391,7 +382,6 @@ def collect_report() -> dict:
         "server_url": display_url if display_url != "-" else None,
         "api_key_source": api_key_source,
         "memory_sharing": memory_sharing,
-        "auto_memory": _resolve_auto_memory(),
         "reachable": health["reachable"],
         "latency_ms": health["latency_ms"],
         "runtime_python": runtime_python,
@@ -401,6 +391,7 @@ def collect_report() -> dict:
         "embedding_model": embedding_model,
         "embedding_dimensions": embedding_dimensions,
         "circuit_breaker": circuit_breaker,
+        "auto_memory": auto_memory_state(),
     }
 
 
@@ -410,7 +401,6 @@ _DISPLAY_ORDER = [
     ("Server URL", "server_url"),
     ("API Key Source", "api_key_source"),
     ("Memory Sharing", "memory_sharing"),
-    ("Claude Auto-Memory", "auto_memory"),
     ("Reachable", "reachable"),
     ("Latency", "latency_ms"),
     ("Runtime Python", "runtime_python"),
@@ -420,6 +410,7 @@ _DISPLAY_ORDER = [
     ("Embedding Model", "embedding_model"),
     ("Embedding Dims", "embedding_dimensions"),
     ("Circuit Breaker", "circuit_breaker"),
+    ("Claude Auto Memory", "auto_memory"),
 ]
 
 

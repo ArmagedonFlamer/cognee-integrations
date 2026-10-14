@@ -183,7 +183,7 @@ def test_a_single_slow_prompt_earns_no_verdict(lookup, monkeypatch):
     )
 
 
-def test_a_streak_of_slow_prompts_escalates_but_never_to_unreachable(lookup, monkeypatch):
+def test_a_streak_of_slow_prompts_escalates_but_never_to_unreachable(lookup, monkeypatch, suite):
     """Nothing was refused, so the server is there — just not answering."""
     run = drive_recall(
         lookup,
@@ -193,12 +193,26 @@ def test_a_streak_of_slow_prompts_escalates_but_never_to_unreachable(lookup, mon
         slow_threshold=3,
     )
 
-    assert any(write[0] == "not_responding" for write in run.writes), run.writes
+    if suite.name == "claude-code":
+        assert run.writes == [], "slow cloud recalls must not become a sticky outage"
+    else:
+        assert any(write[0] == "not_responding" for write in run.writes), run.writes
     assert not any(write[0] == "unreachable" for write in run.writes), (
         f"a slow server must not be reported as down: {run.writes}"
     )
     assert run.breaker == [], "timeouts must not feed the breaker even at the threshold"
     assert run.fired("slow_streak_escalated"), run.events
+
+
+def test_claude_cloud_ignores_legacy_slow_marker(lookup, monkeypatch, suite):
+    if suite.name != "claude-code":
+        pytest.skip("Claude cloud worker")
+    monkeypatch.setattr(lookup, "cloud_enabled", lambda *_: True)
+    run = drive_recall(
+        lookup, monkeypatch, recall={}, prior_state={"state": "not_responding", "base_url": URL}
+    )
+    assert sorted(run.calls) == sorted(CODE_SCOPES)
+    assert not run.fired("recall_skipped_not_ready")
 
 
 # ── success: the attempt is the ready probe ───────────────────────────────────
@@ -216,3 +230,57 @@ def test_a_successful_recall_with_a_fresh_marker_writes_nothing(lookup, monkeypa
     run = drive_recall(lookup, monkeypatch, recall={}, ready_hint=True)
 
     assert run.writes == [], run.writes
+
+
+def test_claude_slow_streak_shortens_recall_until_the_window_ends(lookup, monkeypatch, suite):
+    """A hung server costs a few seconds per prompt, not the full budget, and is re-tested."""
+    if suite.name != "claude-code":
+        pytest.skip("Claude short recall budget")
+    import time
+
+    marks = []
+    monkeypatch.setattr(lookup, "mark_recall_slow", lambda url: marks.append(url))
+    timeout = _raise(lambda: TimeoutError("timed out"))
+
+    # Third timeout-only prompt in a row: arm the short budget.
+    monkeypatch.setattr(lookup, "recall_slow_until", lambda url: 0.0)
+    full = drive_recall(lookup, monkeypatch, recall=timeout, slow_streak=3, slow_threshold=3)
+    assert marks == [URL] and min(full.timeouts.values()) > 5
+
+    # Inside the window: a few seconds, and a timeout neither extends nor re-arms it.
+    marks.clear()
+    monkeypatch.setattr(lookup, "recall_slow_until", lambda url: time.time() + 600)
+    short = drive_recall(lookup, monkeypatch, recall=timeout, slow_streak=4, slow_threshold=3)
+    assert max(short.timeouts.values()) <= 5.0 and short.fired("recall_budget_reduced")
+    assert marks == []
+
+    # Window over: one full-budget attempt; another timeout re-arms immediately.
+    monkeypatch.setattr(lookup, "recall_slow_until", lambda url: time.time() - 1)
+    retest = drive_recall(lookup, monkeypatch, recall=timeout, slow_streak=1, slow_threshold=3)
+    assert min(retest.timeouts.values()) > 5 and marks == [URL]
+
+
+def test_claude_slow_marker_survives_streak_updates_and_clears_on_answer(suite, isolated_modules):
+    if suite.name != "claude-code":
+        pytest.skip("Claude short recall budget")
+    common = isolated_modules(suite, "_plugin_common")
+    until = common.mark_recall_slow(URL)
+    common.record_slow_probe(URL)
+    assert common.recall_slow_until(URL) == until
+    common.clear_slow_streak(URL)
+    assert common.recall_slow_until(URL) == 0.0
+
+
+def test_claude_failed_retests_back_off_to_an_hour(suite, isolated_modules, monkeypatch):
+    if suite.name != "claude-code":
+        pytest.skip("Claude short recall budget")
+    common = isolated_modules(suite, "_plugin_common")
+    monkeypatch.delenv("COGNEE_SLOW_STREAK_WINDOW", raising=False)
+    windows = []
+    for _ in range(5):
+        start = common.datetime.now(common.timezone.utc).timestamp()
+        windows.append(round(common.mark_recall_slow(URL) - start, -1))
+    assert windows == [600, 1200, 2400, 3600, 3600]
+    common.clear_slow_streak(URL)  # any answer resets the back-off
+    start = common.datetime.now(common.timezone.utc).timestamp()
+    assert round(common.mark_recall_slow(URL) - start, -1) == 600

@@ -383,17 +383,16 @@ identity is one stderr line and exit 1, pointing at `scripts/doctor.py --json`.
 
 Session→graph sync runs through Cognee's session-aware `improve` endpoint: the server bridges the session from its own session cache (feedback weights, Q&A persist, compact trace-feedback persist, distillation, enrichment) instead of the plugin re-posting the full accumulated session text — which used to trigger a complete re-cognify of the whole transcript on every sync. There is no fallback: a server without session-aware improve (`/api/v1/improve` answering 404/405/422) is logged as `improve_unsupported` and the session is reported as not synced.
 
-An idle watcher runs in the background for the lifetime of each launch. It polls activity every `COGNEE_IDLE_POLL` seconds and fires an improve when the session has been quiet for `COGNEE_IDLE_THRESHOLD` seconds. An automatic improve also fires every `COGNEE_AUTO_IMPROVE_EVERY` stored tool calls/stops (`0` disables it).
+A background watcher runs for the lifetime of each launch. It runs the update and LLM-key checks at start, then wakes every `COGNEE_IDLE_POLL` seconds to refresh shared agent memory when due and to notice a stop. An automatic improve fires every `COGNEE_AUTO_IMPROVE_EVERY` stored tool calls/stops (`0` disables it).
 
-Both of those automatic triggers share one **per-session cooldown**: after any successful improve of a session (idle, auto, manual or final), no further idle/auto improve runs for `COGNEE_IMPROVE_COOLDOWN` seconds, and none runs at all until at least one new prompt, tool call or answer has been stored since. The timestamp and turn count are persisted per session under `~/.cognee-plugin/codex/improve-state/`, so they survive the watcher process, which exits after each bridge and is respawned on the next prompt. (Until 1.4.4 the cooldown lived only in that process's memory and was reset on every respawn, so in practice an improve ran after every prompt.) The session-end final sync, a manual `python3 "${CODEX_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"` run and the dataset-switch sync ignore the cooldown and always run. Leaving a session syncs it once per exit that has something new: the two workers one exit can start share a marker keyed on the session and its running stored-item count, so a resumed session that is left again after new turns syncs again, and an exit with nothing new is skipped. A final sync whose every attempt failed releases its marker, so the next exit retries.
+That automatic trigger honours a **per-session cooldown**: after any successful improve of a session (auto, manual or final), no further auto improve runs for `COGNEE_IMPROVE_COOLDOWN` seconds, and none runs at all until at least one new prompt, tool call or answer has been stored since. The timestamp and turn count are persisted per session under `~/.cognee-plugin/codex/improve-state/`, so they survive across hook processes. (Until 1.4.4 the cooldown lived only in that process's memory and was reset on every respawn, so in practice an improve ran after every prompt.) The session-end final sync, a manual `python3 "${CODEX_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"` run and the dataset-switch sync ignore the cooldown and always run. Leaving a session syncs it once per exit that has something new: the two workers one exit can start share a marker keyed on the session and its running stored-item count, so a resumed session that is left again after new turns syncs again, and an exit with nothing new is skipped. A final sync whose every attempt failed releases its marker, so the next exit retries.
 
 A **failed** attempt arms the same window as a **backoff**: if the submit timed out, the server was unreachable, or the server answered *busy* (its per-session improve lock is held by another run), no automatic improve of that session runs again until `COGNEE_IMPROVE_COOLDOWN` seconds have passed. A busy answer is never retried by the plugin — the in-flight improve persists everything above the session's server-side watermark, and the next trigger covers whatever landed after it. (Until 1.6.3 only a success armed the cooldown, the plugin held its own per-session lock, and a busy answer was re-submitted every 15 seconds for up to ten minutes, each re-submit counted by the server as one more improve.)
 
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_IDLE_POLL` | `10` | Poll interval in seconds |
-| `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle improve fires |
-| `COGNEE_IMPROVE_COOLDOWN` | `5400` | Minimum seconds between automatic (idle/auto) improves of one session; persisted per session |
+| `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session; persisted per session |
 | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST (agent-context extraction and distillation run inside the request) |
 
@@ -491,9 +490,9 @@ How it works:
   compares its tags with the session's and logs a `memory_credit` event to `hook.log`:
   cited, valid, invented, `earlier` (valid but not injected on this turn) and `available`
   (how many this turn injected). Nothing is sent anywhere.
-- The tags, the credit state and the final-sync stored count live in one folder per
-  session, `~/.cognee-plugin/codex/session-state/<session>/`. Folders idle for 30 days
-  are deleted at session start.
+- The tags, the credit state and the final-sync stored count live in the session's
+  folder, `~/.cognee-plugin/codex/sessions/<session>/`, which the state sweep removes
+  after a week idle.
 - A turn where recall found nothing injects no memory header into the agent's context;
   the header is still shown to you.
 
@@ -725,8 +724,7 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 | local URL override | `COGNEE_LOCAL_API_URL` | `http://localhost:8011` | Local API base URL |
 | local LLM | `LLM_API_KEY`, `LLM_MODEL` | unset | Required for local mode runtime |
 | idle watcher poll | `COGNEE_IDLE_POLL` | `10` | Idle watcher poll interval in seconds |
-| idle watcher threshold | `COGNEE_IDLE_THRESHOLD` | `60` | Seconds of inactivity before idle improve fires |
-| improve cooldown | `COGNEE_IMPROVE_COOLDOWN` | `5400` | Minimum seconds between automatic (idle/auto) improves of one session |
+| improve cooldown | `COGNEE_IMPROVE_COOLDOWN` | `86400` (24 h) | Minimum seconds between auto improves of one session |
 | auto-improve threshold | `COGNEE_AUTO_IMPROVE_EVERY` | `150` | Stored tool calls/stops between automatic improves (`0` disables) |
 | improve submit timeout | `COGNEE_IMPROVE_SUBMIT_TIMEOUT` | `420` | Read timeout for the improve POST |
 | recall minimum prompt length | `COGNEE_RECALL_MIN_PROMPT_CHARS` | `5` | Prompts shorter than this (surrounding whitespace not counted) skip the per-prompt recall. Values below `5` or non-numeric fall back to `5`. Capture is unaffected. |

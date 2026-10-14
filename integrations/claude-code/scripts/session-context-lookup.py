@@ -21,14 +21,19 @@ Configuration:
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
+import re
 import sys
 import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
 import _plugin_common
+from _cloud_worker import enabled as cloud_enabled
+from _evidence import evidence_items, render_item, write_receipt
+from _injection_budget import fit_sections, injection_limit
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
@@ -43,6 +48,7 @@ from _plugin_common import (
     hook_log,
     is_observer_child,
     load_resolved,
+    mark_recall_slow,
     mark_server_ready,
     notify,
     other_readable_datasets,
@@ -51,6 +57,7 @@ from _plugin_common import (
     quiet_hook_output,
     read_and_reset_save_counter,
     read_connection_state,
+    recall_slow_until,
     recall_via_http,
     record_payment_required,
     record_slow_probe,
@@ -68,6 +75,7 @@ from _plugin_common import (
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
+    PASSAGE_SEPARATOR,
     MemoryTags,
     begin_turn,
     code_facts,
@@ -75,6 +83,10 @@ from _recall_text import (
     credit_instruction,
     format_code_facts,
     has_credited,
+    is_session_transcript,
+    passage_origin,
+    split_passages,
+    split_sections,
     trim_recall_text,
 )
 from config import get_dataset, get_session_id, load_config
@@ -196,7 +208,7 @@ def _format_entry(entry: dict) -> str:
             mrv = json.dumps(mrv, default=str)
         mrv = str(mrv)[:TRUNCATE_RETURN]
         parts = [f"[trace] {origin} — {status}"]
-        if feedback:
+        if feedback and not re.fullmatch(r"\s*\w+ succeeded\.?\s*", str(feedback)):
             parts.append(f"  feedback: {feedback}")
         if mrv:
             parts.append(f"  output: {mrv}")
@@ -215,53 +227,261 @@ def _format_entry(entry: dict) -> str:
     return "\n".join(lines)
 
 
-def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
-    """``_format_entry`` with the item's credit tag (SDK-1071), when tagging is on.
+def _line_entries(text: str) -> list[str]:
+    """Split fact/prose lines while keeping fenced code and entity records whole."""
+    if len(json.dumps(text)) <= 1024:
+        return [text.strip()] if text.strip() else []
+    entries, pending = [], []
+    fence = ""
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        marker = re.match(r"^(`{3,}|~{3,})", stripped)
+        if fence:
+            pending.append(line)
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                entries.append("\n".join(pending))
+                pending, fence = [], ""
+        elif marker:
+            pending.append(line)
+            fence = marker[1]
+        elif stripped.startswith("### "):
+            if pending:
+                entries.append("\n".join(pending))
+            pending = [line]
+        elif pending and pending[0].lstrip().startswith("### ") and stripped:
+            pending.append(line)
+        elif stripped:
+            entries.append("\n".join(pending + [line]))
+            pending = []
+    if pending:
+        entries.append("\n".join(pending))
+    return entries
 
-    Graph memory is tagged per passage plus one tag each for its entities and
-    facts; every other item gets one tag naming where it came from. An earlier
-    turn or trace is known by its server id, so it keeps its tag when recalled
-    again.
-    """
-    if tags is None:
-        return _format_entry(entry)
-    source = entry.get("source", "")
-    if source == "graph_context":
-        entry = dict(entry)
-        entry["text"] = tags.tag_graph(str(entry.get("text", "") or entry.get("content", "")))
-        return _format_entry(entry)
-    body = _format_entry(entry)
-    ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
+
+def _entry_origin(source: str, entry: dict) -> str:
+    """Where a non-graph recall item came from, in a few words for its tag."""
     if source == "code":
-        origin = "code graph"
-    elif source == "session_context":
-        origin = "agent guidance"
-    elif source == "trace":
-        origin = f"agent trace, {entry.get('origin_function', '?')}"
-    else:
-        day = str(entry.get("time", "") or "")[:10]
-        origin = f"earlier session turn, {day}" if day else "earlier session turn"
-    return f"{tags.label(source or 'session', origin, body, ident)}\n{body}"
+        return "code graph"
+    if source == "session_context":
+        return "agent guidance"
+    if source == "graph_context":
+        return "Cognee memory"
+    if source == "trace":
+        return f"agent trace, {entry.get('origin_function', '?')}"
+    day = str(entry.get("time", "") or "")[:10]
+    return f"earlier session turn, {day}" if day else "earlier session turn"
 
 
-def _outage_output(state: str) -> dict:
+def _injection_sections(
+    by_source: dict, tags: MemoryTags | None = None, labels: dict | None = None
+) -> list[dict]:
+    """Expose bare records; shared labels belong to one section heading.
+
+    With ``tags``, every item carries its credit tag (SDK-1071): an evidence
+    item, passage, session turn or trace on its own first line, a block of
+    entities, facts or other lines on its heading. Tags are only assigned
+    here; ``labels`` collects each ``[mN · origin]`` so the caller can count
+    the ones that survive the budget and dedupe as shown.
+    """
+    grouped = {}
+
+    def label(kind, origin, text, ident=""):
+        if tags is None:
+            return ""
+        tag = tags.assign(kind, origin, text, ident)
+        text = f"[{tag} · {origin}]"
+        if labels is not None:
+            labels[text] = tag
+        return text
+
+    def tagged(text, kind, origin, ident=""):
+        mark = label(kind, origin, text, ident)
+        return f"{mark}\n{text}" if mark else text
+
+    def add_block(source, kind, title, priority, entries, result_id, mark):
+        """One tag for a block of entries: on the heading, or on the block's first
+        entry when an earlier result already gave the section its heading."""
+        if mark and entries:
+            if (source, kind) in grouped:
+                entries = [f"{mark}\n{entries[0]}"] + entries[1:]
+            else:
+                title = f"{title} {mark}"
+        add(source, kind, title, priority, entries, result_id)
+
+    def add(source, kind, title, priority, entries, result_id, separator="\n\n"):
+        section = grouped.setdefault(
+            (source, kind),
+            {
+                "title": title,
+                "entries": [],
+                "priority": priority,
+                "source": source,
+                "entry_ids": {},
+                "separator": separator,
+            },
+        )
+        for entry in entries:
+            if entry.strip():
+                section["entries"].append(entry)
+                section["entry_ids"][entry] = result_id
+
+    for source, title, priority in (
+        ("code", "=== Code graph facts ===", 50),
+        ("graph_context", "=== Cognee memory ===", 40),
+        ("session_context", "=== Active agent guidance ===", 30),
+        ("session", "=== Prior session turns ===", 20),
+        ("trace", "=== Prior agent trace ===", 10),
+    ):
+        for result_id, entry in enumerate(by_source.get(source, [])):
+            items = evidence_items(entry)
+            available = [(render_item(item), item) for item in items or []]
+            available = [(text, item) for text, item in available if text]
+            # Evidence replaces the legacy text only when something can be shown;
+            # a result whose items are all unavailable keeps its plain text.
+            if source == "graph_context" and available:
+                for text, item in available:
+                    derived = (item.get("source") or {}).get("derived")
+                    origin = "derived graph evidence" if derived else "source evidence"
+                    # Keyed by its citation: the same evidence keeps its tag.
+                    text = tagged(text, "evidence", origin, str(item.get("citation") or ""))
+                    add(source, "evidence", title, priority, [text], result_id)
+                    grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
+                continue
+            if source == "graph_context":
+                text = str(entry.get("text") or entry.get("content") or "")
+                parts = split_sections(text)
+                if any(parts.get(k) is not None for k in ("passages", "entities", "facts")):
+                    for kind, heading, rank in (
+                        ("preamble", "", 40),
+                        ("entities", "## Relevant entities", 41),
+                        ("facts", "## Related facts", 41),
+                        ("passages", "## Relevant passages", 40),
+                    ):
+                        if parts.get(kind):
+                            label_ = f"=== Cognee memory: {kind} ===\n[cognee-memory]"
+                            if heading:
+                                label_ += "\n" + heading
+                            if kind != "passages":
+                                entries = _line_entries(parts[kind])
+                                origin = {
+                                    "preamble": "Cognee memory",
+                                    "entities": "knowledge graph entities",
+                                    "facts": "knowledge graph facts",
+                                }[kind]
+                                mark = label(kind, origin, parts[kind])
+                                add_block(source, kind, label_, rank, entries, result_id, mark)
+                                continue
+                            passages = [
+                                tagged(p, "passage", passage_origin(p))
+                                for p in split_passages(parts[kind])
+                            ]
+                            # Raw turns bridged from other sessions are the bulk and
+                            # the least distilled: across every dataset they go before
+                            # session learnings and remembered documents.
+                            add(
+                                source,
+                                kind,
+                                label_,
+                                rank,
+                                [p for p in passages if not is_session_transcript(_untag(p))],
+                                result_id,
+                                PASSAGE_SEPARATOR,
+                            )
+                            add(
+                                source,
+                                "transcripts",
+                                "=== Cognee memory: transcripts ===\n[cognee-memory]\n"
+                                "## Passages from other sessions",
+                                rank - 1,
+                                [p for p in passages if is_session_transcript(_untag(p))],
+                                result_id,
+                                PASSAGE_SEPARATOR,
+                            )
+                    continue
+            formatted = _format_entry(entry)
+            origin = _entry_origin(source, entry)
+            if source in {"graph_context", "code", "session_context"}:
+                prefix, _, body = formatted.partition("\n")
+                mark = label(source, origin, formatted)
+                block = _line_entries(body)
+                add_block(source, "body", title + "\n" + prefix, priority, block, result_id, mark)
+            else:
+                # An earlier turn or trace is known by its server id, so it keeps
+                # its tag when recalled again.
+                ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
+                add(
+                    source,
+                    "body",
+                    title,
+                    priority,
+                    [tagged(formatted, source, origin, ident)],
+                    result_id,
+                )
+    return list(grouped.values())
+
+
+def _untag(text: str) -> str:
+    """``text`` without the credit tag line ``_injection_sections`` put on it."""
+    first, sep, rest = text.partition("\n")
+    if sep and first.startswith("[m") and " · " in first and first.endswith("]"):
+        return rest
+    return text
+
+
+def _recall_output(context: str, notice: str = "") -> dict:
+    """The exact printed envelope, including both user- and model-visible notices."""
+    header = context.split("\n", 1)[0]
+    return with_base_url_notice(
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "UserPromptSubmit",
+                "additionalContext": context,
+                "systemMessage": header,
+            }
+        },
+        "UserPromptSubmit",
+        notice=notice,
+    )
+
+
+def _report_hint(prompt: str) -> str:
+    if os.environ.get("COGNEE_REPORT_HINT", "true").strip().lower() in {"0", "false", "no", "off"}:
+        return ""
+    import re
+
+    evaluation = re.search(
+        r"\b(?:evaluate|grade|assess|audit|check on)\s+cognee\b|"
+        r"\bhow\s+is\s+cognee\s+(?:doing|performing)\b|"
+        r"\bis\s+cognee\s+worth\s+it\b|\bdid\s+the\s+update\s+help\b|"
+        r"\bcognee\s+stats\b|\bmemory\s+quality\b",
+        prompt,
+        re.IGNORECASE,
+    )
+    return "Use /cognee-report for an evaluation" if evaluation else ""
+
+
+def _bounded_notice(header: str, notice: str) -> str:
+    """Keep a visible diagnostic even when a long URL/pattern exhausts the budget."""
+    if len(json.dumps(_recall_output(header, notice))) + 1 <= injection_limit():
+        return notice
+    hook_log("hook_notice_failed", {"source": "injection_budget", "error": notice})
+    return "Cognee: configuration notice omitted to fit context; inspect hook.log for details."
+
+
+def _outage_output(state: str, notice: str = "") -> dict:
     """Envelope for a prompt whose recall was skipped: see ``outage_header``."""
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
     header = outage_header(state, saves, warmup_backlog(), "; ")
-    return {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": header,
-            "systemMessage": header,
-        }
-    }
+    return _recall_output(header, _bounded_notice(header, notice))
 
 
 def _has_entry_content(entry: dict) -> bool:
     """Return True when a recall entry has useful content to inject."""
     source = entry.get("source", "")
     if source == "graph_context":
+        if evidence_items(entry):
+            return True
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
@@ -281,7 +501,7 @@ def _has_entry_content(entry: dict) -> bool:
     return any(str(entry.get(field, "") or "").strip() for field in fields)
 
 
-async def _run(prompt: str, cwd: str = "") -> dict | None:
+async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         # First, so a recall that returns early leaves this turn with no tags
         # and the Stop hook cannot check the answer against the previous
@@ -320,12 +540,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # tests/test_connection_target_match.py).
     prior_same_target = same_connection_target(service_url, str(prior.get("base_url") or ""))
     prior_state = str(prior.get("state") or ("ready" if prior.get("ready_at") else ""))
+    # Ignore legacy not_responding markers: a slow recall is not an outage.
     known_bad = prior_same_target and prior_state in (
         "auth_failed",
         "unreachable",
         "server_error",
-        "not_responding",
     )
+    if known_bad and cloud_enabled(runtime):
+        hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
+        # The notice is one-shot (already consumed by main); never drop it here.
+        return _outage_output(prior_state, notice)
     if known_bad:
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
         # auth_failed instead of being masked as "ready" by an unauthenticated
@@ -349,7 +573,9 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             # Report the outage instead of going quiet: the recorded failure
             # names it when the probe itself was inconclusive.
-            return _outage_output(state if state in DEFINITIVE_FAILURE_STATES else prior_state)
+            return _outage_output(
+                state if state in DEFINITIVE_FAILURE_STATES else prior_state, notice
+            )
 
     session_id = _load_session_id()
     if not session_id:
@@ -428,11 +654,19 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # very same interval. COGNEE_RECALL_TIMEOUT is NOT read here — it still
     # bounds the explicit cognee-search path (_cognee_client.py).
     #
-    # The default (20s) is sized for the graph scope, the only expensive call.
+    # Defaults are 45s for cloud and 20s for local graph recall.
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
-    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 20.0)
+    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 45.0 if cloud_enabled(runtime) else 20.0)
+    # After slow_streak_threshold() timeout-only prompts the server is treated as
+    # slow: recall gets a few seconds until a recall answers or the window ends,
+    # so a hung server cannot cost the full budget on every prompt.
+    slow_until = recall_slow_until(service_url)
+    recall_slow = time.time() < slow_until
+    if recall_slow:
+        recall_budget = min(recall_budget, _float_env("COGNEE_RECALL_SLOW_BUDGET", 5.0))
+        hook_log("recall_budget_reduced", {"budget_s": recall_budget})
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
     # Respect the shared circuit breaker: when the server has been failing (tripped
@@ -519,6 +753,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 dataset_ids=scope_dataset_ids,
                 code_query=scope_code_query,
                 timeout=scope_timeout,
+                # Only this hook renders evidence items; other graph callers skip the cost.
+                evidence_mode="context" if "graph" in scope_list else None,
             )
         except Exception as caught:
             exc = caught
@@ -657,19 +893,13 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 _breaker_failure("http 5xx", service_url=service_url, reason="server_error")
             except Exception:
                 pass
-        elif scope_timeouts and not scopes_answered_err:
-            # Every attempted scope timed out and none got an HTTP answer: no
-            # verdict on its own, but N consecutive such prompts are a pattern.
-            # Escalate to "not_responding" — deliberately distinct from
-            # "unreachable" (positively absent: refused/DNS): the server exists
-            # but is not answering. A lone timeout never writes anything.
+        elif scope_timeouts and not scopes_answered_err and not recall_slow:
+            # Timeouts describe latency, not an outage: recall is never skipped,
+            # only shortened (see recall_slow_until above). A timeout under the
+            # short budget proves nothing new and does not extend it.
             streak = record_slow_probe(service_url)
-            if streak >= slow_streak_threshold():
-                write_connection_state(
-                    "not_responding",
-                    service_url,
-                    detail="%d consecutive timeout-only prompts" % streak,
-                )
+            if streak >= slow_streak_threshold() or slow_until:
+                mark_recall_slow(service_url)
                 hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
     except Exception as exc:
         hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})
@@ -689,7 +919,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             continue
         # Work on a copy: the source is re-tagged and the text trimmed below,
         # and the caller's items are not ours to rewrite.
-        r = dict(r)
+        r = copy.deepcopy(r)
         src = r.get("source", "session")
         # The graph scope tags results source=graph; keep the historical
         # graph_context bucket name so the status line, last_recall.json
@@ -697,11 +927,18 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         if src == "graph":
             r["source"] = "graph_context"
             src = "graph_context"
+            # Preserve the own-session exclusion for structured source passages too.
+            for item in evidence_items(r) or []:
+                if (
+                    session_id
+                    and f"Session ID: {session_id}\n" in str(item.get("text") or "") + "\n"
+                ):
+                    item["status"] = "own_session"
             # Keep the retrieved context only (SDK-904): the question template
             # goes, own-session passages go, the rest is capped and pruned.
             # Unparsed text (a pre-1.6.0 bare context, an unknown template)
             # is injected whole — fail-open, logged.
-            if r.get("text"):
+            if r.get("text") and not any(render_item(i) for i in evidence_items(r) or []):
                 trimmed, guidance, stats = trim_recall_text(
                     str(r.get("text") or ""), prompt, session_id
                 )
@@ -747,8 +984,6 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         except Exception:
             pass
     _totals["turns"] += 1
-    if total > 0:
-        _totals["turns_with_hits"] += 1
 
     # Name the other datasets the user could search instead (see
     # _other_datasets_hint). The block is static text, so it rides along on
@@ -772,6 +1007,136 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
             )
 
+    # Build a one-line visibility header so the user (via the assistant's
+    # context) can tell that memory fired on this turn — both what it
+    # recalled right now and what the previous turn persisted.
+    header = (
+        "Cognee memory: recall "
+        f"{counts['graph_context']} memory"
+        + (f" / {counts['code']} code" if code_lane else "")
+        + "; "
+        + saves_segment(saves_last_turn)
+    )
+    # Writes the server never received are not saves: a buffering outage gets
+    # its own segment, plus whatever still waits for replay (SDK-467).
+    for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
+        header += f"; {segment}"
+
+    if scope_timeouts:
+        header += "; memory recall timed out"
+    # Tag each recalled item so the answer can credit it (SDK-1071).
+    tags = (
+        MemoryTags.load(_plugin_common._PLUGIN_DIR, get_session_key())
+        if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
+        else None
+    )
+    labels: dict = {}
+    memory_sections = _injection_sections(by_source, tags, labels)
+    # Reserve the largest possible drop notice before fitting. Replacing it
+    # with the actual smaller count (or removing it) can only shrink output.
+    entry_count = sum(len(section["entries"]) for section in memory_sections)
+    reserved_drop = f"; {entry_count} dropped to fit" if entry_count else ""
+    header += reserved_drop
+    hint = _report_hint(prompt)
+    hint_sections = [{"entries": [hint], "required": True, "counted": False}] if hint else []
+    # The credit instruction goes right under the header, not after the memory:
+    # Claude Code replaces hook context over 10,000 characters with a file and a
+    # 2 KB preview, so anything at the end could be cut off. Reserved with the
+    # largest count and corrected after fitting, which can only shrink it; never
+    # deduplicated, since the count changes the meaning. It outranks every memory
+    # entry but is not required: at the smallest budget it gives way rather than
+    # fail the whole recall (SDK-1071).
+    first_credit = bool(labels) and not has_credited(_plugin_common._PLUGIN_DIR, _key)
+    reserved_instruction = (
+        credit_instruction(first_credit, len(set(labels.values()))) if labels else ""
+    )
+    instruction_sections = (
+        [{"entries": [reserved_instruction], "priority": 100, "counted": False, "dedupe": False}]
+        if reserved_instruction
+        else []
+    )
+    sections = (
+        [{"entries": [header], "required": True}]
+        + instruction_sections
+        + hint_sections
+        + memory_sections
+    )
+    if not total and not scope_timeouts:
+        sections.append(
+            {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
+        )
+    if dataset_hint:
+        sections.append({"entries": [dataset_hint], "priority": 0, "counted": False})
+    notice = _bounded_notice(header, notice)
+
+    def measure(text):
+        return len(json.dumps(_recall_output(text, notice))) + 1
+
+    if cloud_enabled(runtime) and _key_safe and total:
+        from _injection_ledger import render as render_deduped
+
+        try:
+            full_context, injection_stats, header = render_deduped(
+                _key,
+                header,
+                sections[1:],
+                injection_limit(),
+                measure=measure,
+            )
+        except (OSError, ValueError) as exc:
+            hook_log("injection_ledger_failed", {"error": str(exc)[:200]})
+            full_context, injection_stats = fit_sections(
+                sections, injection_limit(), measure=measure
+            )
+    else:
+        full_context, injection_stats = fit_sections(sections, injection_limit(), measure=measure)
+    if _key_safe:
+        try:
+            unavailable = [
+                item
+                for entries in by_source.values()
+                for entry in entries
+                for item in evidence_items(entry) or []
+                if item.get("status") != "available"
+            ]
+            write_receipt(_key, memory_sections, injection_stats, unavailable)
+        except (OSError, ValueError) as exc:
+            hook_log("injection_receipt_failed", {"error": str(exc)[:200]})
+    retrieved_counts = counts
+    retrieved_total = total
+    counts = {source: injection_stats["source_hits"].get(source, 0) for source in counts}
+    total = sum(counts.values())
+    dropped = injection_stats["entries_dropped"]
+    actual_header = full_context.split("\n", 1)[0]
+    actual_header = actual_header.replace(
+        f"recall {retrieved_counts['graph_context']} memory",
+        f"recall {counts['graph_context']} memory",
+        1,
+    )
+    if code_lane:
+        actual_header = actual_header.replace(
+            f" / {retrieved_counts['code']} code", f" / {counts['code']} code", 1
+        )
+    if reserved_drop:
+        actual_header = actual_header.replace(
+            reserved_drop, f"; {dropped} dropped to fit" if dropped else "", 1
+        )
+    full_context = actual_header + full_context[len(full_context.split("\n", 1)[0]) :]
+    if tags is not None:
+        # Only what survived the budget and the dedupe was injected on this turn.
+        for mark, tag in labels.items():
+            if mark in full_context:
+                tags.show(tag)
+    if reserved_instruction and reserved_instruction in full_context:
+        if tags.found:
+            instruction = credit_instruction(first_credit, len(tags.found))
+            full_context = full_context.replace(reserved_instruction, instruction, 1)
+        else:
+            full_context = full_context.replace("\n\n" + reserved_instruction, "", 1)
+    injection_stats["context_chars"] = len(full_context)
+    if total:
+        _totals["turns_with_hits"] += 1
+
     # Write last-turn counts so the status line script can render them.
     # Best-effort; failure here must not break the hook output.
     try:
@@ -787,6 +1152,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 .datetime.now(__import__("datetime").timezone.utc)
                 .isoformat(timespec="seconds"),
                 "hits": counts,
+                "retrieved_hits": retrieved_counts,
+                "entries_dropped": dropped,
                 "per_scope": per_scope,
                 "saves_last_turn": saves_last_turn,
                 "session_totals": _totals,
@@ -805,90 +1172,44 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     except Exception as exc:
         hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
 
-    # Build a one-line visibility header so the user (via the assistant's
-    # context) can tell that memory fired on this turn — both what it
-    # recalled right now and what the previous turn persisted.
-    header = (
-        "Cognee memory: recall "
-        f"{counts['graph_context']} memory"
-        + (f" / {counts['code']} code" if code_lane else "")
-        + "; "
-        + saves_segment(saves_last_turn)
+    hook_log(
+        "context_lookup_hit" if total else "context_lookup_empty",
+        {
+            "counts": counts,
+            "retrieved_hits": retrieved_total,
+            "per_scope": per_scope,
+            "saves_last_turn": saves_last_turn,
+            "elapsed_ms": elapsed_ms(recall_start),
+            **{
+                k: v
+                for k, v in injection_stats.items()
+                if k not in {"entries", "source_hits", "deduped_entries"}
+            },
+        },
     )
-    # Writes the server never received are not saves: a buffering outage gets
-    # its own segment, plus whatever still waits for replay (SDK-467).
-    for segment in buffered_saves_segments(saves_last_turn, warmup_backlog()):
-        header += f"; {segment}"
+    message = (
+        f"injected context ({counts})"
+        if total
+        else "no recall matches"
+        if not retrieved_total
+        else "no new memory injected"
+    )
+    if dropped:
+        message += f"; {dropped} dropped to fit"
+    notify(f"{message}; saves last turn {saves_last_turn}")
 
-    # Tag each recalled item so the answer can credit it (SDK-1071).
-    tags = (
-        MemoryTags.load(_plugin_common._PLUGIN_DIR, get_session_key())
-        if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
-        else None
+    from _session_stats import update as update_stats
+
+    update_stats(
+        _key,
+        recalls=1,
+        hits=int(total > 0),
+        entries_injected=injection_stats["entries_kept"],
+        entries_deduped=injection_stats.get("entries_deduped", 0),
+        chars_injected=len(full_context),
+        recall_ms=elapsed_ms(recall_start),
+        metadata={"dataset": session_dataset, "session_id": session_id, "server_url": service_url},
     )
-    section_lines = []
-    if by_source.get("code"):
-        section_lines.append("=== Code graph facts ===")
-        for e in by_source["code"]:
-            section_lines.append(_tagged_entry(e, tags))
-            section_lines.append("")
-    if by_source.get("graph_context"):
-        section_lines.append("=== Cognee memory ===")
-        for e in by_source["graph_context"]:
-            section_lines.append(_tagged_entry(e, tags))
-            section_lines.append("")
-    # A server older than 1.6.0 answers the graph scope with the bare context
-    # and nothing else arrives on this request; whatever a server does tag with
-    # another source is still rendered rather than dropped.
-    for src, title in (
-        ("session_context", "=== Active agent guidance ==="),
-        ("trace", "=== Prior agent trace ==="),
-        ("session", "=== Prior session turns ==="),
-    ):
-        if by_source.get(src):
-            section_lines.append(title)
-            for e in by_source[src]:
-                section_lines.append(_tagged_entry(e, tags))
-                section_lines.append("")
-    if total > 0:
-        # The credit instruction goes right under the header, not after the
-        # memory: Claude Code replaces hook context over 10,000 characters with
-        # a file and a 2 KB preview, so a large recall would cut off anything
-        # at the end (SDK-1071).
-        instruction = ""
-        if tags is not None and tags.found:
-            first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
-            instruction = credit_instruction(first, len(tags.found)) + "\n\n"
-        full_context = (
-            f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
-            + "\n".join(section_lines).strip()
-        )
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
-        hook_log(
-            "context_lookup_hit",
-            {
-                "counts": counts,
-                "per_scope": per_scope,
-                "saves_last_turn": saves_last_turn,
-                "elapsed_ms": elapsed_ms(recall_start),
-            },
-        )
-        notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
-    else:
-        # Nothing recalled: the agent gets no memory header (a "0 hits" line on
-        # most turns read as "Cognee does nothing", SDK-1071). The status line
-        # still shows the counts; the dataset hint, when due, still goes in.
-        full_context = dataset_hint
-        hook_log(
-            "context_lookup_empty",
-            {
-                "per_scope": per_scope,
-                "saves_last_turn": saves_last_turn,
-                "elapsed_ms": elapsed_ms(recall_start),
-            },
-        )
-        notify(f"no recall matches; saves last turn {saves_last_turn}")
 
     # Audit log: persist full recall details per turn. The hook output stays a
     # short summary because Codex renders additionalContext in the terminal.
@@ -912,11 +1233,13 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     "session_id": session_id,
                     "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
                     "hits": counts,
+                    "retrieved_hits": retrieved_counts,
                     "per_scope": per_scope,
                     # The header the user sees: an empty recall no longer
                     # puts it in the injected context (SDK-1071).
                     "header": header,
                     "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                    **{k: v for k, v in injection_stats.items() if k != "entries"},
                 }
             ),
         )
@@ -930,14 +1253,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         except Exception as exc:
             hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
 
-    output = {
-        "hookSpecificOutput": {
-            "hookEventName": "UserPromptSubmit",
-            "additionalContext": full_context,
-            "systemMessage": header,
-        }
-    }
-    return output
+    return _recall_output(full_context, notice)
 
 
 def _recall_min_prompt_chars() -> int:
@@ -987,13 +1303,17 @@ def main():
         return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
 
+    notice_output = with_base_url_notice(None, "UserPromptSubmit") or {}
+    notice = str(notice_output.get("hookSpecificOutput", {}).get("additionalContext") or "")
     output = None
     try:
         with quiet_hook_output("session-context-lookup"):
-            output = asyncio.run(_run(prompt, cwd))
+            output = asyncio.run(_run(prompt, cwd, notice=notice))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
-    output = with_base_url_notice(output, "UserPromptSubmit")
+    if output is None and notice:
+        header = "Cognee memory: recall unavailable"
+        output = _recall_output(header, _bounded_notice(header, notice))
     if output:
         print(json.dumps(output))
 

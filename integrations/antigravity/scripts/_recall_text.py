@@ -387,14 +387,13 @@ def format_code_facts(facts: list) -> str:
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
-#: Directory (under the suite's state dir) with one folder per session: its
-#: tags (``tags.json``), credit state (``credit.json``) and the plugin's
-#: running stored-item count (``stored.log``).
-SESSION_STATE_DIRNAME = "session-state"
+#: Directory (under the suite's state dir) with one folder per session, shared
+#: with the rest of the plugin's per-session state: its tags (``tags.json``),
+#: credit state (``credit.json``) and running stored-item count
+#: (``stored.log``). The state sweep removes folders idle for a week.
+SESSION_STATE_DIRNAME = "sessions"
 TAGS_FILE = "tags.json"
 CREDIT_FILE = "credit.json"
-#: Session folders untouched for this long are deleted at session start.
-SESSION_STATE_MAX_AGE_SECONDS = 30 * 86400
 
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
 #: Only the credit line counts: ``arr[m1]`` in code, or the instruction's own
@@ -464,29 +463,6 @@ def session_state_dir(state_dir, session_key: str):
     return state_dir / SESSION_STATE_DIRNAME / session_key
 
 
-def prune_session_state(state_dir, max_age: float = SESSION_STATE_MAX_AGE_SECONDS) -> int:
-    """Delete session folders none of whose files changed for ``max_age`` seconds."""
-    import shutil
-    import time as _time
-
-    root = state_dir / SESSION_STATE_DIRNAME
-    cutoff = _time.time() - max_age
-    removed = 0
-    try:
-        folders = [p for p in root.iterdir() if p.is_dir()]
-    except OSError:
-        return 0
-    for folder in folders:
-        try:
-            newest = max([folder.stat().st_mtime] + [f.stat().st_mtime for f in folder.iterdir()])
-            if newest < cutoff:
-                shutil.rmtree(folder)
-                removed += 1
-        except OSError:
-            continue
-    return removed
-
-
 def _read_json(path) -> dict:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
@@ -520,7 +496,8 @@ class MemoryTags:
 
     Load the session's tags with :meth:`load`, label this turn's items, then
     :meth:`save`. A memory seen earlier in the session gets its old tag back;
-    a new one gets the next number.
+    a new one gets the next number. When the context is trimmed after tagging,
+    :meth:`assign` the tags first and :meth:`show` only the ones that made it.
     """
 
     SNIPPET_CHARS = 200
@@ -543,7 +520,8 @@ class MemoryTags:
         if folder:
             _write_json(folder / TAGS_FILE, {"turn": self.turn, "tags": self.records})
 
-    def add(self, kind: str, origin: str, text: str, ident: str = "") -> str:
+    def assign(self, kind: str, origin: str, text: str, ident: str = "") -> str:
+        """The item's tag, without counting it as injected on this turn."""
         key = _memory_id(kind, text, ident)
         record = self._by_id.get(key)
         if record is None:
@@ -556,10 +534,21 @@ class MemoryTags:
             }
             self.records.append(record)
             self._by_id[key] = record
-        record["turn"] = self.turn
-        if record["tag"] not in self.found:
-            self.found.append(record["tag"])
         return record["tag"]
+
+    def show(self, tag: str) -> None:
+        """Count ``tag`` as injected on this turn."""
+        for record in self.records:
+            if record.get("tag") == tag:
+                record["turn"] = self.turn
+                if tag not in self.found:
+                    self.found.append(tag)
+                return
+
+    def add(self, kind: str, origin: str, text: str, ident: str = "") -> str:
+        tag = self.assign(kind, origin, text, ident)
+        self.show(tag)
+        return tag
 
     def label(self, kind: str, origin: str, text: str, ident: str = "") -> str:
         """``[mN · origin]`` for an item, registering it."""

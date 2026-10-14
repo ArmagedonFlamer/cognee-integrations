@@ -34,6 +34,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **An empty recall no longer injects a memory header.** The "0 hits" line went into the
   agent's context on most turns; it is still shown to the user, and the recall audit log
   now records it in a `header` field.
+- **Shell commands that mention "cognee" are captured again.** Automatic capture used to
+  drop any shell command containing the word, which lost most real work inside Cognee
+  repositories. Only commands that actually run the plugin or the Cognee CLI are now
+  skipped, together with successful read-only lookups (`cat`, `ls`, `grep`, `git log`,
+  …). Failures, builds, tests, edits and pipelines are kept. Skips are logged without
+  the command text.
 
 ### Fixed
 - **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
@@ -45,8 +51,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
   count is an append-only file per session, so parallel store hooks never lose or reset
   it. A final sync whose every attempt failed releases its marker, so the next exit
   retries (SDK-1071).
-- Per-session plugin state (memory tags, credit state, the stored count) lives in
-  `session-state/<session>/`, and folders idle for 30 days are deleted at session start.
+- The memory tags, credit state and stored count live in the session's
+  `sessions/<session>/` folder, which the state sweep now removes after a week idle.
+- **Reading a secret file through the shell no longer stores it in memory.** Automatic
+  capture skipped `.env`, SSH keys, `~/.aws/credentials`, `.npmrc` and the other
+  secret-file globs only when the file arrived as a structured path (`Read`,
+  `Edit`, …). A shell call such as `cat ~/.aws/credentials`, `less ~/.ssh/id_rsa`,
+  `source .env.local` or `grep KEY .env` was captured with its output. A shell
+  command is now split into words (quotes removed, `$HOME` / `${HOME}` read as `~`,
+  words cut at `|`, `;`, `&`, `<`, `>`, parentheses and backticks) and is not captured
+  when any word matches the same globs, `COGNEE_CAPTURE_DENY_PATHS` included. A path
+  reached through another variable or a glob (`cat ~/.aws/cred*`) is not recognised.
+- **Redaction missed AWS and npm credentials.** The credential rule only fired when a
+  secret word ended the name, so `aws_secret_access_key = …`, `aws_access_key_id = …`,
+  `SECRET_KEY = …`, `SecretAccessKey` / `SessionToken` in AWS JSON and the
+  `.npmrc` `_authToken=` / `_auth=` lines passed through. These names are now
+  redacted, as are AWS access key ids anywhere (`AKIA…`, `ASIA…`, … plus 16
+  characters), `npm_…` tokens and `pypi-…` upload tokens.
 
 ## [1.7.5]
 

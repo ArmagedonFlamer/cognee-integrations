@@ -113,6 +113,11 @@ class Suite:
     #: injected instruction, until it has been tried live. Antigravity has no
     #: credit tagging at all.
     cites_memory_by_default: bool
+    #: Behaviour: a prompt whose recall found nothing still injects the memory
+    #: header and ``(no memory matches for this prompt)``. codex injects nothing
+    #: then (SDK-1071: a "0 hits" line on most turns read as "Cognee does
+    #: nothing"); the user still sees the header.
+    injects_empty_recall: bool
 
 
 CLAUDE = Suite(
@@ -136,6 +141,7 @@ CLAUDE = Suite(
     has_cross_dataset_search=True,
     has_recap_skills=True,
     cites_memory_by_default=True,
+    injects_empty_recall=True,
 )
 
 CODEX = Suite(
@@ -164,6 +170,7 @@ CODEX = Suite(
     has_cross_dataset_search=True,
     has_recap_skills=True,
     cites_memory_by_default=False,
+    injects_empty_recall=False,
 )
 
 ANTIGRAVITY = Suite(
@@ -187,6 +194,7 @@ ANTIGRAVITY = Suite(
     has_cross_dataset_search=False,
     has_recap_skills=False,
     cites_memory_by_default=False,
+    injects_empty_recall=True,
 )
 
 ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY]

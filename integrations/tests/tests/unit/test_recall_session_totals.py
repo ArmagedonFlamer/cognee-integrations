@@ -79,7 +79,10 @@ def test_a_miss_counts_the_turn_but_not_a_hit(lookup, monkeypatch, per_session):
 
 
 def test_totals_accumulate_across_prompts(lookup, monkeypatch, per_session):
-    for results in (HIT, _MISS, HIT, HIT, _MISS):
+    for turn, results in enumerate((HIT, _MISS, HIT, HIT, _MISS)):
+        # Each hit is new memory; duplicate handling has its own ledger test.
+        if results is HIT:
+            results = {"graph": [{"source": "graph", "text": f"New fact from turn {turn}"}]}
         drive_recall(lookup, monkeypatch, recall=results)
     marker = per_session()
     assert marker["session_totals"] == {"turns": 5, "turns_with_hits": 3}
