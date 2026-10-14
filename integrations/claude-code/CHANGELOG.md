@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.32]
+
+- Highlight the plain `cognee` label between two purple squares, consistently across recall outcomes.
+- Rename the default stripe counters to reminiscence, ideas and imprints; retain one bar and the 6.9 token-savings estimate.
+
 ## [1.6.31]
 
 - Remove the 1.6.30 status-stripe pill and restore the preceding layout, retaining the 6.9 token-savings formula.

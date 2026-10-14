@@ -715,23 +715,23 @@ The search, code-graph and architecture skills ask Claude to name Cognee in its
 normal user-visible progress text before a search, for example “Searching Cognee
 for the earlier decision…”. Session-start guidance also asks for a natural
 acknowledgement when supplied memory actually informs the response. This uses
-assistant progress text; it does not add a status-stripe pill or change the
+assistant progress text; it does not add a native host chip or change the
 host's private reasoning display. It is model guidance, not a guaranteed host UI
 event. Irrelevant background recall does not require an announcement.
 
 ## Status line
 
-The default status line uses a purple health square, bold dataset and location,
-and one Claude-style memory-pulse bar. At 80 columns it can read:
+The default status line highlights `cognee` between two purple squares, with bold
+dataset and location and one Claude-style imprint bar. At 80 columns it can read:
 
 ```text
-■ manual · cloud · 124 memories · 8 sparks · 34/46 pulses  ▰▰▰▰▱ · ~2.4kt saved
+■ cognee ■ manual·cloud·124 reminiscence · 34/46 imprints  ▰▰▰▰▱ · ~2.4kt saved
 ```
 
-- **Memories**: cumulative memory entries injected into this session. This is not
+- **Reminiscence**: cumulative memory entries injected into this session. This is not
   a unique-memory count; an entry reinjected after compaction counts again.
-- **Sparks**: memory blocks delivered for the latest prompt, not proof of use.
-- **Pulses**: prompts that received memory out of all prompts. The single bar
+- **Ideas**: memory blocks delivered for the latest prompt, not proof of use.
+- **Imprints**: prompts that received memory out of all prompts. The single bar
   shows this fraction.
 - **Tokens saved**: estimated as **average tokens per recall × number of recalls × 6.9**.
   Recall tokens mean memory context injected into Claude, estimated at one token
@@ -743,7 +743,7 @@ and one Claude-style memory-pulse bar. At 80 columns it can read:
   `saved n/a` means recall/context measurements are unavailable. Existing sessions
   use their recorded cumulative recall context; no network requests are added.
 
-A new successful recall shimmers the memories count for ten seconds using the
+A new successful recall shimmers the reminiscence count for ten seconds using the
 recall timestamp and current clock. The renderer only reads local counters;
 measurement happens in the existing recall hook without additional requests.
 
@@ -754,8 +754,8 @@ colours. Unknown connection health appears as `?`.
 
 `COLUMNS` controls the single-line width (80 by default, capped at 120). At 60
 columns decorations disappear first; dataset, mode, health and memory count
-are retained when they fit, alongside token savings. At 80 columns the brand
-and token unit shorten before metrics are dropped. Longer optional segments are
+are retained when they fit, alongside token savings. The highlighted brand stays visible; token units shorten and the latest-prompt
+ideas count is omitted before the bar and imprint ratio are dropped. Longer optional segments are
 then omitted, and very
 narrow lines are clipped. Wider terminals add no extra fields. Non-UTF-8 stdout
 uses ASCII (`#`, `-`, `[x]`) instead of block glyphs. A renderer error falls back
@@ -766,7 +766,7 @@ to classic output.
 | `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
 | `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
 | `COGNEE_STATUSLINE_PIN` | `false` | `true` restores Cognee when another command replaces the user status line; opt-in |
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Sparks and pulse ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (memories and token savings remain) |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Ideas and imprint ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (reminiscence and token savings remain) |
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
 `cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /

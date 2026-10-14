@@ -1010,12 +1010,12 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     marker = _recall_marker(session_id)
     phase = _animation_phase(marker, now)
     health = _status_prefix(session_id)
-    if "●" in health:
-        health = purple + "■" + _RESET + " "
-    # No verdict is not healthy: retain a visible, neutral unknown indicator.
-    health = health or "? "
+    # Branding is constant; failures and unknown health remain separate indicators.
+    health = "" if "●" in health else health or "? "
     dataset = _clean_label(_active_dataset(session_id))
-    brand = f"{purple}cognee: \033[1m{dataset}{_RESET} · {purple}\033[1m{_active_mode()}{_RESET}"
+    color = "93" if os.environ.get("COGNEE_STATUSLINE_THEME", "").lower() == "light" else "141"
+    badge = f"{purple}■\033[48;5;{color}m\033[30m cognee {_RESET}{purple}■{_RESET}"
+    brand = f"{badge} {purple}\033[1m{dataset}{_RESET} · {purple}\033[1m{_active_mode()}{_RESET}"
     stats = (
         _read_json(_SESSIONS_DIR / session_id / "stats.json")
         if _path_safe(session_id) and session_id not in {".", ".."}
@@ -1029,8 +1029,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
             if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}
             else "\033[38;5;183m"
         )
-    memory_label = "memory" if count == 1 else "memories"
-    chip = f"{shimmer}{count} {memory_label}{_RESET}"
+    chip = f"{shimmer}{count} reminiscence{_RESET}"
     core = health + brand + " · " + chip
     counts_mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
     counts, decoration = "", ""
@@ -1038,35 +1037,43 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
         if counts_mode == "full":
             counts = _recall_diagnostic_segment(marker, marker["hits"])
         else:
-            counts = f" · {_plural(_hit_count(marker['hits']), 'spark')}"
+            counts = f" · {_plural(_hit_count(marker['hits']), 'idea')}"
             totals = marker.get("session_totals")
             if isinstance(totals, dict):
                 turns = max(0, _int(totals, "turns"))
                 with_hits = max(0, min(turns, _int(totals, "turns_with_hits")))
-                counts += f" · {with_hits}/{turns} pulses"
+                counts += f" · {with_hits}/{turns} imprints"
                 decoration = _ratio_bar(turns, with_hits)
             if decoration:
                 decoration = f"  {purple}{decoration}{_RESET}"
     credits, update = _credits_segment(), _update_segment()
-    compact_core = health + f"{purple}\033[1m{dataset} · {_active_mode()}{_RESET} · " + chip
+    imprint_counts = re.sub(r" · \d+ ideas?", "", counts)
     savings = " · " + _tokens_saved(stats)
     short_savings = " · " + _tokens_saved(stats, compact=True)
-    # Keep the new savings metric alongside session memories. At 80 columns,
-    # shorten the brand and token unit before dropping the single bar or data.
+    # Keep the badge at every width. Shorten units and omit the latest-prompt
+    # count before dropping the single bar and cumulative imprint ratio.
     candidates = []
     if columns > 60:
         candidates += [
             core + counts + decoration + savings + credits + update,
-            compact_core + counts + decoration + savings + credits + update,
-            compact_core + counts + decoration + short_savings + credits + update,
+            core + counts + decoration + short_savings + credits + update,
+            core + imprint_counts + decoration + short_savings + credits + update,
+            core.replace(" · ", "·")
+            + imprint_counts
+            + decoration
+            + short_savings
+            + credits
+            + update,
         ]
     candidates += [
         core + counts + savings + credits + update,
-        compact_core + counts + short_savings + credits + update,
+        core + counts + short_savings + credits + update,
         core + savings + credits + update,
-        compact_core + short_savings + credits + update,
+        core + short_savings + credits + update,
         core + savings,
-        compact_core + short_savings,
+        core + short_savings,
+        core,
+        core.replace(" · ", "·"),
     ]
     if columns > 60:
         candidates = [
