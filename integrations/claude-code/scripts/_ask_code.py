@@ -29,7 +29,8 @@ repository around the current directory, which here also finds a repository
 indexed by git URL through the checkout's remotes; ``--dataset`` overrides it.
 ``ask`` probes ``capabilities`` first; the other commands call their operation
 directly. ``--json`` prints the operation's payload as the server returned it.
-Each request times out after 45 s (``COGNEE_ASK_CODE_TIMEOUT`` overrides).
+Each request times out after 45 s (``COGNEE_ASK_CODE_TIMEOUT`` overrides); the
+best-effort candidate search after an empty name lookup waits at most 10 s.
 
 Exit statuses (the skill tells the agent what to do for each):
 
@@ -128,6 +129,9 @@ _SUBGRAPH_CUTS = {
 _TRUNCATED = "truncated: yes ("
 # Search hits shown in place of the candidates recall drops from a name miss.
 _CANDIDATES = 5
+# That search is best effort and follows two full requests (the lookup and the
+# capabilities probe), so it gets a short timeout of its own.
+_CANDIDATE_TIMEOUT_SECONDS = 10.0
 # What a name lookup can resolve: search's default kinds without flows, which
 # only ``flows show`` looks up.
 _LOOKUP_KINDS = ["symbol", "route", "module", "storage", "service"]
@@ -410,7 +414,7 @@ def error_stop(target, operation, envelope):
     return Stop(EXIT_UNAVAILABLE, unavailable_message(message))
 
 
-def run(target, code_query, text=""):
+def run(target, code_query, text="", timeout=None):
     """Run one CODE operation: its payload, or None for an empty result.
 
     Goes through the plugin's shared recall client, so a server the hooks'
@@ -428,7 +432,7 @@ def run(target, code_query, text=""):
         _TOP_K,
         target.dataset,
         code_query=code_query,
-        timeout=request_timeout(),
+        timeout=timeout or request_timeout(),
     )
     if result == UNREACHABLE:
         raise Stop(
@@ -459,9 +463,12 @@ def explain_empty(target, code_query, subject):
     try:
         caps = run(target, {"operation": "capabilities"})
     except Stop as stop:
-        if stop.status == EXIT_UNAVAILABLE:
+        # Unavailable and no code graph are definite answers. Anything else (an
+        # older server without capabilities) cannot tell, and recall's empty
+        # result is a seed miss by default.
+        if stop.status in (EXIT_UNAVAILABLE, EXIT_NO_CODE_GRAPH):
             raise
-        caps = {}  # cannot tell; recall's empty result is a seed miss by default
+        caps = {}
     if caps is None or _count(caps, "nodes") == 0:
         return Stop(EXIT_NO_CODE_GRAPH, no_code_graph_message(target, "the result was empty"))
     if operation == "flows" and _dict(caps.get("features")).get("flows") is False:
@@ -496,7 +503,9 @@ def search_candidates(target, code_query, caps):
         "limit": _CANDIDATES,
     }
     try:
-        payload = run(target, query, text)
+        payload = run(
+            target, query, text, timeout=min(request_timeout(), _CANDIDATE_TIMEOUT_SECONDS)
+        )
     except Stop:
         return ""
     return ", ".join(

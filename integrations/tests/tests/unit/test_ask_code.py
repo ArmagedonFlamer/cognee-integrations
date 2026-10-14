@@ -1178,6 +1178,43 @@ def test_an_empty_navigation_result_without_a_graph_is_no_code_graph(ask, server
     assert_message(out, "has no code graph")
 
 
+def test_an_empty_lookup_whose_probe_says_no_code_graph_is_no_code_graph(ask, server, capsys):
+    """A definite no_code_graph from the capabilities probe is not a seed miss."""
+    server.answers = {
+        "neighbors": [],
+        "capabilities": (
+            422,
+            {
+                "detail": "This dataset has no code graph. [CodeSearchValidationError]",
+                "code": "no_code_graph",
+            },
+        ),
+    }
+    status, out, _ = run(ask, capsys, "neighbors", "place_order", "--dataset", DATASET)
+    assert status == ask.EXIT_NO_CODE_GRAPH == 4
+    assert server.operations == ["neighbors", "capabilities"]
+    assert_message(out, "has no code graph")
+
+
+def test_the_candidate_search_gets_a_short_timeout(ask, server, monkeypatch, capsys):
+    """A best-effort search must not hold an empty lookup for a full request timeout."""
+    server.answers = {
+        "neighbors": [],
+        "capabilities": [entry(CAPABILITIES)],
+        "search": [entry(SEARCH)],
+    }
+    status, _, _ = run(ask, capsys, "neighbors", "token", "--dataset", DATASET)
+    assert status == ask.EXIT_NOT_FOUND
+    assert [request["timeout"] for request in server.requests] == [45.0, 45.0, 10.0]
+
+    # a shorter request timeout also bounds the search
+    server.requests.clear()
+    monkeypatch.setenv("COGNEE_ASK_CODE_TIMEOUT", "7")
+    status, _, _ = run(ask, capsys, "neighbors", "token", "--dataset", DATASET)
+    assert status == ask.EXIT_NOT_FOUND
+    assert [request["timeout"] for request in server.requests] == [7.0, 7.0, 7.0]
+
+
 def test_flows_on_a_snapshot_without_flows_is_feature_unavailable(ask, server, capsys):
     """recall softens feature_unavailable to an empty list; capabilities says why."""
     no_flows = capabilities(features={"docs": True, "flows": False})
