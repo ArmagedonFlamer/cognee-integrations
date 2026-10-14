@@ -56,7 +56,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Evaluation reports lead with delivery, session evidence, quality bars and explicit
   failed gates.
 - Cloud per-prompt recall waits up to 45 seconds; local mode keeps 20 seconds, and the
-  environment overrides still apply.
+  environment overrides still apply. After three timeout-only prompts in a row, recall
+  gets 5 seconds (`COGNEE_RECALL_SLOW_BUDGET`) for ten minutes or until a recall
+  answers, so a hung server does not cost the full wait on every prompt.
 
 ### Fixed
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
@@ -92,6 +94,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `cognee-report` no longer crashes on Windows consoles that are not UTF-8.
 - The status line no longer hides credit or update notices when Claude Code does not
   report a terminal width, and Windows terminals get the real glyphs instead of ASCII.
+- Cloud improves after ordinary turns follow the same 90-minute cooldown, failure
+  backoff and "nothing new" check as local mode; session end, pre-compact, manual sync
+  and dataset switch still run at once. The worker submits one improve at a time
+  (explicit ones first) with the 420-second submit timeout, does not resubmit a
+  timed-out improve before the cooldown, and gives up after three timeouts.
+- A delivered capture is never sent back to the queue when queuing its follow-up
+  improve fails, so saves are not counted twice.
+- A failing digest refresh is logged, backs off, and is dropped after five attempts,
+  after the cache TTL, or when it belongs to another account, so the worker can still
+  exit when idle.
 - Recall keeps the plain memory text when the server returns evidence but none of it
   can be shown, and only the prompt hook asks for evidence, so file context,
   pre-compact and recap do not pay for lookups they never read.
