@@ -61,10 +61,10 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
     """Fire-and-forget session improve; failures are logged but never raised.
 
     The server bridges the session itself from its session cache (improve);
-    see run_session_improve_detailed. Shares the cooldown / backoff gate with the
-    idle watcher; the session-end sync ignores it and covers whatever a skip
-    here leaves behind. Without server auth there is nothing to submit to —
-    the session-end sync picks the session up once a key is available.
+    see run_session_improve_detailed. Honours the cooldown / backoff gate; the
+    session-end sync ignores it and covers whatever a skip here leaves behind.
+    Without server auth there is nothing to submit to — the session-end sync
+    picks the session up once a key is available.
     """
     if cloud_enabled():
         from _cloud_worker import request_improve
@@ -165,10 +165,14 @@ def _low_signal_trace(tool: str, output, status: str) -> bool:
     if isinstance(output, dict):
         if output.get("exit_code", 0) or output.get("exitCode", 0) or output.get("interrupted"):
             return False
-        metadata = {"stdout", "stderr", "exit_code", "exitCode", "interrupted", "is_error"}
+        # Claude Code adds flags such as isImage/noOutputExpected; only the
+        # output streams decide. A result without either stream is unknown.
+        if "stdout" not in output and "stderr" not in output:
+            return False
+        if output.get("isImage") or output.get("is_error"):
+            return False
         return (
-            set(output) <= metadata
-            and not str(output.get("stdout") or "").strip()
+            not str(output.get("stdout") or "").strip()
             and not str(output.get("stderr") or "").strip()
         )
     return output is None or (isinstance(output, str) and not output.strip())
@@ -206,10 +210,9 @@ async def _store_tool_call(payload: dict) -> None:
     status, error_message = _infer_status(payload)
     reason = is_plugin_invocation(command) if tool_name == "Bash" else ""
     low_signal = tool_name == "Bash" and low_signal_bash(command, tool_output, status)
+    # Cloud mode also drops Read/Grep/Glob and Bash calls that succeeded with no output.
     low_signal = low_signal or (
-        cloud_enabled()
-        and tool_name != "Bash"
-        and _low_signal_trace(tool_name, tool_output, status)
+        cloud_enabled() and _low_signal_trace(tool_name, tool_output, status)
     )
     from _session_stats import update
 
@@ -375,6 +378,33 @@ async def _store_tool_call(payload: dict) -> None:
         hook_log("trace_store_noresult", {"tool": tool_name})
 
 
+def _check_memory_credit(payload: dict) -> None:
+    """Check the answer's Cognee credits against the session's tags (SDK-1071).
+
+    The recall hook tags each injected item ``m1``, ``m2``… and keeps a
+    memory's tag for the whole session. A cited tag the session handed out is
+    a valid credit (``earlier`` when it was not injected on this turn); one it
+    never handed out is invented. Both go to the log, which measures how
+    reliably agents credit memory, and the first valid credit switches off the
+    longer first-credit wording for the rest of the session. Local only:
+    nothing is sent anywhere.
+    """
+    import _plugin_common
+    from _recall_text import MemoryTags, check_credits, credit_enabled, record_credit
+
+    if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
+        return
+    msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
+    if not msg or msg == "null":
+        return
+    key = get_session_key()
+    result = check_credits(msg, MemoryTags.load(_plugin_common._PLUGIN_DIR, key))
+    if not result["cited"] and not result["available"]:
+        return  # nothing injected, nothing cited: not a turn that could credit
+    record_credit(_plugin_common._PLUGIN_DIR, key, result, ts=str(int(time.time())))
+    hook_log("memory_credit", result)
+
+
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
     from _capture_policy import capture_enabled, redact
@@ -418,10 +448,10 @@ async def _store_assistant_stop(payload: dict) -> None:
     }
 
     if cloud_enabled(runtime):
-        from _cloud_worker import enqueue, request_improve
+        from _cloud_worker import enqueue
 
+        # The worker counts delivered entries toward the every-N improve trigger.
         enqueue(dataset, session_id, entry, "answer")
-        request_improve(dataset, session_id, "stop")
         bump_save_counter(session_id, "answer", buffered=True)
         return
 
@@ -554,6 +584,10 @@ def main():
     try:
         with quiet_hook_output("store-to-session"):
             if is_stop:
+                try:
+                    _check_memory_credit(payload)
+                except Exception as exc:
+                    hook_log("memory_credit_failed", {"error": str(exc)[:200]})
                 asyncio.run(_store_assistant_stop(payload))
                 # End-of-turn code-graph freshness: independent of whether an
                 # assistant message was stored (edits happen either way).

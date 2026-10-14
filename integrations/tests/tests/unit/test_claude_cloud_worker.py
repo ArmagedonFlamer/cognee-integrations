@@ -240,3 +240,308 @@ def test_worker_rotates_and_reopens_both_inherited_log_handles(worker, monkeypat
     worker._refresh_console_log()
     assert handles == [1, 2]
     assert path.read_text() == "" and path.with_name(path.name + ".1").exists()
+
+
+class _HTTPFailure(Exception):
+    def __init__(self, code):
+        super().__init__(f"HTTP {code}")
+        self.code = code
+
+
+def test_permanently_rejected_capture_never_blocks_the_queue(worker):
+    bad = worker.enqueue("ds", "sid-a", {"type": "qa", "answer": "too big"}, "answer")
+    good = worker.enqueue("ds", "sid-b", {"type": "qa", "answer": "fine"}, "answer")
+    sent = []
+
+    def send(item):
+        if item["entry"]["answer"] == "too big":
+            raise _HTTPFailure(413)
+        sent.append(item["entry"]["answer"])
+        return {"entry_id": "saved"}
+
+    assert worker.drain(send) == 1
+    assert sent == ["fine"]
+    assert not bad.exists() and (bad.parent / "expired" / bad.name).exists()
+    assert not good.exists()
+
+
+def test_a_session_waiting_on_retry_holds_only_its_own_events(worker):
+    first = worker.enqueue("ds", "sid-a", {"type": "qa", "answer": "a1"}, "answer")
+    later = worker.enqueue("ds", "sid-a", {"type": "qa", "answer": "a2"}, "answer")
+    other = worker.enqueue("ds", "sid-b", {"type": "qa", "answer": "b1"}, "answer")
+    sent = []
+
+    def send(item):
+        if item["entry"]["answer"] == "a1":
+            raise _HTTPFailure(404)
+        sent.append(item["entry"]["answer"])
+        return {"entry_id": "saved"}
+
+    now = worker.read(first)["created_at"]
+    assert worker.drain(send, now=now) == 1
+    assert sent == ["b1"]  # a2 stays behind a1, b1 is not held up
+    assert first.exists() and later.exists() and not other.exists()
+    # While a1 waits for its retry, the rest of sid-a waits with it.
+    assert worker.drain(lambda _: pytest.fail("sent out of order"), now=now + 1) == 0
+    assert worker.drain(lambda _: {"entry_id": "saved"}, now=now + 3600) == 2
+
+
+def test_server_wide_failure_ends_the_pass(worker):
+    worker.enqueue("ds", "sid-a", {"type": "qa", "answer": "a"}, "answer")
+    worker.enqueue("ds", "sid-b", {"type": "qa", "answer": "b"}, "answer")
+    calls = []
+
+    def send(item):
+        calls.append(item["session_id"])
+        raise _HTTPFailure(503)
+
+    assert worker.drain(send) == 0
+    assert calls == ["sid-a"]
+
+
+def test_queue_still_ages_out_while_capture_is_off(worker, monkeypatch):
+    old = worker.enqueue("ds", "sid", {"type": "qa", "answer": "old"}, "answer")
+    fresh = worker.enqueue("ds", "sid", {"type": "qa", "answer": "fresh"}, "answer")
+    item = worker.read(old)
+    item["created_at"] -= 7 * 86400 + 1
+    worker.atomic_json(old, item)
+    monkeypatch.setenv("COGNEE_CAPTURE", "false")
+    assert worker.drain(lambda _: pytest.fail("capture is off")) == 0
+    assert not old.exists() and (old.parent / "expired" / old.name).exists()
+    assert fresh.exists()
+
+
+def test_worker_idles_out_only_without_work_or_recent_sessions(worker):
+    assert not worker.has_pending_work()
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "x"}, "answer")
+    assert worker.has_pending_work()
+    path.unlink()
+    launch = worker.session_dir("host-a") / "worker.json"
+    worker.atomic_json(launch, {"activity_at": 1_000})
+    assert worker.has_pending_work(now=1_000 + 60)
+    assert not worker.has_pending_work(now=1_000 + worker.IDLE_EXIT_SECONDS + 1)
+
+
+COMPLETED = {"stages": [{"status": "completed"}]}
+
+
+def test_automatic_improves_share_the_local_cooldown_and_new_entry_gate(worker, monkeypatch):
+    import _plugin_common as common
+
+    calls = []
+
+    def improve(item):
+        calls.append(item["reason"])
+        return COMPLETED
+
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "idle")
+    assert worker.process_improves(improve) == 1
+    # Another turn lands inside the 90-minute cooldown: no second billed improve.
+    common.bump_turn_counter("sid")
+    path = worker.request_improve("ds", "sid", "idle")
+    assert worker.process_improves(improve) == 0
+    assert worker.read(path)["next_attempt"] > worker.time.time() + 3600
+    # Explicit requests (session end, manual sync, switch) are never throttled.
+    worker.request_improve("ds", "sid", "final")
+    assert worker.process_improves(improve) == 1
+    # After the cooldown, nothing new since the last improve: drop the request.
+    monkeypatch.setenv("COGNEE_IMPROVE_COOLDOWN", "0")
+    path = worker.request_improve("ds", "sid", "idle")
+    assert worker.process_improves(improve) == 0 and not path.exists()
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "idle")
+    assert worker.process_improves(improve) == 1
+    assert calls == ["idle", "final", "idle"]
+
+
+def test_timed_out_improve_is_not_resubmitted_soon_and_is_capped(worker, monkeypatch):
+    monkeypatch.delenv("COGNEE_IMPROVE_SUBMIT_TIMEOUT", raising=False)
+    assert worker.improve_submit_timeout() == 420.0
+    path = worker.request_improve("ds", "sid", "manual")
+    calls = []
+
+    def slow(item):
+        calls.append(item)
+        raise TimeoutError("The read operation timed out")
+
+    now = worker.time.time()
+    for attempt in range(1, worker.MAX_IMPROVE_FAILURES):
+        assert worker.process_improves(slow, now=now) == 0
+        due = worker.read(path)["next_attempt"]
+        assert due >= now + 5400
+        assert worker.process_improves(slow, now=due - 1) == 0  # nothing resubmitted early
+        now = due
+    assert worker.process_improves(slow, now=now) == 0
+    assert len(calls) == worker.MAX_IMPROVE_FAILURES
+    assert not path.exists() and (path.parent / "expired" / path.name).exists()
+
+
+def test_delivered_capture_is_never_written_back_when_bookkeeping_fails(worker, monkeypatch):
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "once"}, "answer")
+
+    def busy(*a, **kw):
+        raise OSError("improve request busy")
+
+    monkeypatch.setattr(worker, "request_improve", busy)
+    sent = []
+    assert worker.drain(lambda item: sent.append(item) or {"entry_id": "saved"}) == 1
+    assert not path.exists() and not list((worker.root() / "spool").glob("*.json"))
+    assert worker.drain(lambda item: sent.append(item) or {"entry_id": "saved"}) == 0
+    assert len(sent) == 1
+    stats = json.loads((worker.session_dir("host-a") / "stats.json").read_text())
+    assert stats["saves"] == 1
+
+
+def test_one_improve_per_pass_with_explicit_requests_first(worker):
+    worker.request_improve("ds", "idle-session", "idle")
+    worker.request_improve("ds", "switching", "switch")
+    seen = []
+
+    def improve(item):
+        seen.append(item["session_id"])
+        return COMPLETED
+
+    assert worker.process_improves(improve) == 1
+    assert seen == ["switching"]
+    assert worker.process_improves(improve) == 1
+    assert seen == ["switching", "idle-session"]
+
+
+def test_cloud_improve_triggers_every_n_delivered_entries_like_local(worker, monkeypatch):
+    # SDK-1072/1074: no improve after every turn or quiet pause; one every
+    # COGNEE_AUTO_IMPROVE_EVERY stored entries, within the cooldown.
+    monkeypatch.setenv("COGNEE_AUTO_IMPROVE_EVERY", "3")
+    wanted = worker.root() / "improve-wanted"
+    for i in range(2):
+        worker.enqueue("ds", "sid", {"type": "qa", "answer": str(i)}, "answer")
+    worker.drain(lambda item: {"entry_id": "saved"})
+    assert not list(wanted.glob("*.json"))
+    worker.enqueue("ds", "sid", {"type": "qa", "answer": "third"}, "answer")
+    worker.drain(lambda item: {"entry_id": "saved"})
+    (marker,) = wanted.glob("*.json")
+    assert worker.read(marker)["reason"] == "turn_3"
+    # Not explicit, and nothing is queued for the session: it runs without a quiet wait.
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+
+
+@pytest.mark.parametrize("reason", ["final", "precompact"])
+def test_final_and_precompact_skip_when_nothing_new_was_stored(worker, reason):
+    import _plugin_common as common
+
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "precompact")
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+    # Compacted, then ended with nothing stored in between: no second improve.
+    path = worker.request_improve("ds", "sid", reason)
+    assert worker.process_improves(lambda _: pytest.fail("nothing new to improve")) == 0
+    assert not path.exists()
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", reason)
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+
+
+@pytest.mark.parametrize("reason", ["manual", "switch"])
+def test_manual_and_switch_always_run(worker, reason):
+    import _plugin_common as common
+
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "final")
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+    worker.request_improve("ds", "sid", reason)
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+
+
+def test_improve_runs_in_its_own_pass_so_the_main_loop_never_blocks(worker):
+    started = []
+    # Nothing due: no child process is started.
+    assert not worker.start_improve_pass(spawn=lambda: started.append(1))
+    worker.request_improve("ds", "sid", "manual")
+    assert worker.start_improve_pass(spawn=lambda: started.append(1)) and started == [1]
+    # While a pass holds the lock, the loop starts no second one and a second
+    # pass process exits without submitting.
+    with worker.file_lock(worker.root() / "improve-pass.lock") as held:
+        assert held
+        assert not worker.start_improve_pass(spawn=lambda: started.append(2))
+        assert worker.improve_pass(lambda _: pytest.fail("pass already running")) == 0
+    assert started == [1]
+    assert worker.improve_pass(lambda _: COMPLETED) == 1
+
+
+def test_main_loop_never_submits_an_improve_itself():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[3] / "claude-code/scripts/_cloud_worker.py"
+    ).read_text()
+    loop = source[source.index("def run() -> None:") :]
+    assert "process_improves(" not in loop and "start_improve_pass()" in loop
+
+
+def test_request_arriving_during_an_improve_is_throttled_not_resubmitted(worker):
+    import _plugin_common as common
+
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "turn_150")
+    calls = []
+
+    def improve(item):
+        calls.append(item["reason"])
+        # The session keeps working while the improve blocks for minutes.
+        common.bump_turn_counter("sid")
+        worker.request_improve("ds", "sid", "turn_300")
+        return COMPLETED
+
+    assert worker.process_improves(improve) == 1
+    assert common.read_improve_state("sid")["last_improved_at"] > 0
+    # The newer automatic request waits for the cooldown instead of paying again.
+    assert worker.process_improves(improve) == 0
+    assert calls == ["turn_150"]
+    # Entries stored during the improve are still new for the session-end one.
+    worker.request_improve("ds", "sid", "final")
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"stages": [{"status": "errored"}]},
+        {"stages": [{"status": "mystery"}, {"status": "completed"}]},
+        {"ok": True},
+    ],
+)
+def test_billable_failures_are_capped(worker, result):
+    path = worker.request_improve("ds", "sid", "manual")
+    now = worker.time.time()
+    calls = []
+    for _ in range(worker.MAX_IMPROVE_FAILURES):
+        worker.process_improves(lambda _: calls.append(1) or result, now=now)
+        if path.exists():
+            now = worker.read(path)["next_attempt"] + 1
+    assert len(calls) == worker.MAX_IMPROVE_FAILURES
+    assert not path.exists() and (path.parent / "expired" / path.name).exists()
+    assert worker.process_improves(lambda _: pytest.fail("archived")) == 0
+
+
+def test_skipped_improve_is_terminal(worker):
+    path = worker.request_improve("ds", "sid", "manual")
+    skipped = {"stages": [{"status": "skipped", "reason": "nothing_to_do"}]}
+    assert worker.process_improves(lambda _: skipped) == 0
+    assert not path.exists() and (path.parent / "expired" / path.name).exists()
+
+
+def test_unreachable_server_is_retried_without_using_up_attempts(worker):
+    import urllib.error
+
+    path = worker.request_improve("ds", "sid", "final")
+    now = worker.time.time()
+
+    def offline(_):
+        raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+    for _ in range(worker.MAX_IMPROVE_FAILURES + 2):
+        worker.process_improves(offline, now=now)
+        item = worker.read(path)
+        assert item["last_error"] == "unreachable" and item.get("failures", 0) == 0
+        now = item["next_attempt"] + 1
+    assert worker.process_improves(lambda _: COMPLETED, now=now) == 1

@@ -44,6 +44,13 @@ The 9,000-character context cap and passage trimming are reused from the plugin.
 The supplied HTTP adapter measures retrieval and answer claims, not coding-agent
 tool use, warm digest behavior or multi-turn learning.
 
+Live citation metrics are provisional. Evidence is recognised by an `EVIDENCE:<id>`
+marker carried in the seeded entry, and `improve` may distil entries into lessons
+that drop the marker, which reads as "not retrieved". Until a recorded real recall
+response backs the adapter's tests, treat live citation numbers as a lower bound.
+Use a separate evaluation account or server: trials create `eval_*` datasets in the
+account the inherited `COGNEE_API_KEY` belongs to.
+
 For coding tasks, provide an agent adapter using the same JSON protocol. It reads
 one request on stdin and writes one JSON response on stdout. The request contains
 the task prompt, workspace, isolated state directory, session/dataset, variant

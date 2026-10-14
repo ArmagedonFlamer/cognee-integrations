@@ -74,7 +74,11 @@ def _watcher_alive() -> bool:
 
 
 def _ensure_idle_watcher(session_id: str, dataset: str, user_id: str, config: dict) -> None:
-    """Start the idle watcher on a new prompt if the prior one exited after bridging."""
+    """Start the idle watcher on a new prompt if none is running.
+
+    In cloud mode the per-user cloud worker replaces it; the prompt only marks
+    the session active for that worker.
+    """
     if cloud_enabled():
         from _cloud_worker import touch_session
 

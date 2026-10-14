@@ -234,6 +234,52 @@ def test_malformed_json_list_is_reported_with_its_variable_name(policy, monkeypa
 
 
 @pytest.mark.parametrize(
+    "command",
+    [
+        "cat ~/.aws/credentials",
+        "less $HOME/.ssh/id_rsa",
+        'head "${HOME}/.npmrc"',
+        "source .env.local",
+        "grep KEY .env",
+        "wc -l < .env",
+    ],
+)
+def test_shell_reads_of_secret_files_are_not_captured(policy, command):
+    assert not policy.allow_tool("Bash", {"command": command})
+    assert policy.allow_tool("Bash", {"command": "cat README.md"})
+
+
+def test_aws_and_npm_credential_files_are_scrubbed(policy):
+    aws = (
+        "[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\n"
+        "aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n"
+    )
+    npmrc = "//registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123456789\n"
+    scrubbed = policy.redact(aws + npmrc)
+    for secret in ("AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI", "npm_abcdef"):
+        assert secret not in scrubbed
+
+
+def test_a_glob_python_cannot_compile_is_a_pattern_error_not_a_crash(policy, monkeypatch):
+    # Python 3.9's fnmatch passes a reversed range such as ``[C-A]`` to ``re``,
+    # which raises re.error; 3.10+ make it match nothing. Simulate the 3.9 error
+    # so every interpreter checks it surfaces as the usual pattern error, for tool
+    # patterns and for deny-path globs alike.
+    import re
+
+    def broken(name, pattern):
+        raise re.error("bad character range C-A at position 5")
+
+    monkeypatch.setattr(policy.fnmatch, "fnmatchcase", broken)
+    monkeypatch.setenv("COGNEE_CAPTURE_TOOLS", '["[C-A]*"]')
+    with pytest.raises(policy.CapturePatternError, match="not a valid glob"):
+        policy.allow_tool("Bash", {"command": "ls"})
+    monkeypatch.delenv("COGNEE_CAPTURE_TOOLS")
+    with pytest.raises(policy.CapturePatternError, match="not a valid glob"):
+        policy.allow_tool("Read", {"file_path": "/project/main.py"})
+
+
+@pytest.mark.parametrize(
     "command,reason",
     [
         (
@@ -250,6 +296,23 @@ def test_malformed_json_list_is_reported_with_its_variable_name(policy, monkeypa
         ("rg cognee-search.sh src/", ""),
         ("cat ~/.cognee-plugin/config.json", ""),
         ('echo "cognee-cli recall"', ""),
+        # Codex and Antigravity skills run the plugin from their own roots.
+        ('"${CODEX_PLUGIN_ROOT}/scripts/cognee-cli.sh" recall "q"', "plugin_script"),
+        ('python3 "${CODEX_PLUGIN_ROOT}/scripts/doctor.py"', "plugin_path"),
+        ('python3 "${CODEX_PLUGIN_ROOT}/scripts/sync-session-to-graph.py"', "plugin_script"),
+        ('"$CODEX_PLUGIN_ROOT/scripts/cognee-recap.py"', "plugin_script"),
+        (
+            '"${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}'
+            '/scripts/cognee-cli.sh" remember "x"',
+            "plugin_script",
+        ),
+        (
+            'python3 "${COGNEE_ANTIGRAVITY_PLUGIN_ROOT:-$HOME/.gemini/config/plugins/cognee}'
+            '/scripts/doctor.py"',
+            "plugin_path",
+        ),
+        ("python3 ~/.gemini/config/plugins/cognee/scripts/doctor.py", "plugin_path"),
+        ("python3 doctor.py", ""),
     ],
 )
 def test_plugin_invocation_matches_command_positions(policy, command, reason):
@@ -324,6 +387,38 @@ def test_bash_work_is_retained_across_hosts(
     )
     assert len(writes) == 1
     assert writes[0]["status"] == expected
+
+
+@pytest.mark.parametrize(
+    "response,captured",
+    [
+        ({"stdout": "", "stderr": "", "interrupted": False, "isImage": False}, False),
+        ({"stdout": "", "stderr": "", "interrupted": False, "noOutputExpected": True}, False),
+        ({"stdout": "built 3 targets", "stderr": "", "interrupted": False}, True),
+        ({"stdout": "", "stderr": "", "interrupted": True}, True),
+    ],
+)
+def test_cloud_skips_silent_bash_success(suite, hook_module, monkeypatch, response, captured):
+    # Real Claude Code Bash responses carry isImage/noOutputExpected flags; a
+    # mutation that printed nothing adds no evidence to cloud memory.
+    if suite.name != "claude-code":
+        pytest.skip("Claude Code cloud capture")
+    store = hook_module(suite, "store-to-session.py")
+    monkeypatch.setattr(store, "cloud_enabled", lambda *a: True)
+
+    class Captured(Exception):
+        pass
+
+    # Loading the session is the first step after the skip decision.
+    monkeypatch.setattr(store, "_load_session", Mock(side_effect=Captured))
+    call = {"tool_name": "Bash", "tool_input": {"command": "mkdir build"}}
+    call["tool_response"] = response
+    try:
+        asyncio.run(store._store_tool_call(call))
+        reached = False
+    except Captured:
+        reached = True
+    assert reached is captured
 
 
 @pytest.mark.parametrize(

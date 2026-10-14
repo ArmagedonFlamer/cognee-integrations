@@ -55,6 +55,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:auto_improve_throttled` | `auto.improve_throttled` |
 | `hook:base_url_changed_mid_session` | `endpoint.base_url_changed_mid_session` |
 | `hook:base_url_notice_failed` | `endpoint.base_url_notice_failed` |
+| `hook:final_sync_once_released` | `sync.sync_once_released` |
 | `hook:hook_notice_failed` | `notice.failed` |
 | `hook:boot_refused_server_present` | `boot.refused_server_present` |
 | `hook:bootstrap_complete` | `bootstrap.complete` |
@@ -160,6 +161,9 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:managed_endpoint_boot_refused` | `boot.refused_managed_endpoint` |
 | `hook:managed_endpoint_down` | `endpoint.managed_down` |
 | `hook:map_create_failed` | `map.create_failed` |
+| `hook:memory_credit` | `memory.credit` |
+| `hook:memory_credit_failed` | `memory.credit_failed` |
+| `hook:memory_tags_write_failed` | `memory.tags_write_failed` |
 | `hook:missing_payload_session_id` | `missing.payload_session_id` |
 | `hook:mode_decision` | `runtime.decision` |
 | `hook:no_session_id` | `session.session_id` |
@@ -203,6 +207,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_auth_rejected` | `recall.auth_rejected` |
 | `hook:recall_breaker_open` | `recall.breaker_open` |
 | `hook:recall_budget_exceeded` | `recall.budget_exceeded` |
+| `hook:recall_budget_reduced` | `recall.budget_reduced` |
 | `hook:recall_dataset_hint` | `recall.dataset_hint` |
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
@@ -235,6 +240,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:session_marker_write_failed` | `session.marker_write_failed` |
 | `hook:session_resolved` | `session.resolved` |
 | `hook:session_start_exception` | `session.start_exception` |
+| `hook:session_stats_failed` | `session.stats_failed` |
 | `hook:shared_memory_agent_select_tenant_failed` | `shared_memory.agent_select_tenant_failed` |
 | `hook:shared_memory_grant_denied` | `shared_memory.grant_denied` |
 | `hook:shared_memory_leave_role_failed` | `shared_memory.leave_role_failed` |
@@ -257,6 +263,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:store_buffered_warming` | `store.buffered_warming` |
 | `hook:store_missing_session_key` | `store.missing_session_key` |
 | `hook:store_session_key` | `store.session_key` |
+| `hook:stored_seq_write_failed` | `save.stored_seq_write_failed` |
 | `hook:switch_aborted_handle_cleanup` | `switch.aborted_handle_cleanup` |
 | `hook:switch_aborted_handle_cleanup_failed` | `switch.aborted_handle_cleanup_failed` |
 | `hook:switch_crashed` | `switch.crashed` |
@@ -276,6 +283,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:sync_failed` | `sync.failed` |
 | `hook:sync_missing_session_key` | `sync.missing_session_key` |
 | `hook:sync_no_target_sessions` | `sync.no_target_sessions` |
+| `hook:sync_notice_failed` | `sync.notice_failed` |
+| `hook:sync_notice_shown` | `sync.notice_shown` |
 | `hook:sync_payload` | `sync.payload` |
 | `hook:sync_retry_scheduled` | `sync.retry_scheduled` |
 | `hook:sync_session_key` | `sync.session_key` |
@@ -354,6 +363,12 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.cloud_work_retry`: cloud work retry.
 - `cloud.cloud_capture_delivered`: cloud capture delivered.
 - `cloud.cloud_worker_error`: cloud worker error.
+- `cloud.cloud_capture_rejected`: the server permanently rejected a queued capture (400/413/422); it was expired so the queue keeps moving.
+- `cloud.cloud_worker_idle_exit`: the worker exited with no queued work and no session active for 30 minutes; the next hook restarts it.
+- `cloud.cloud_delivery_bookkeeping_failed`: a capture was delivered but updating counters or queuing the follow-up improve failed; the event is not re-sent.
+- `cloud.context_digest_inject_failed`: startup digest skipped because its cache could not be read.
+- `cloud.context_cache_refresh_failed`: a digest refresh failed; it is retried with exponential backoff and the last good digest stays in use.
+- `cloud.context_cache_refresh_dropped`: a pending digest refresh was removed (another account, older than the cache TTL, or too many failed attempts).
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
 

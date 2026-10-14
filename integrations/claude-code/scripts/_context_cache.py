@@ -10,11 +10,14 @@ from pathlib import Path
 
 from _cloud_worker import read, root, target
 from _injection_budget import fit_sections
-from _injection_ledger import atomic_json, entry_hash, seed
+from _injection_ledger import atomic_json, entry_hash, is_guidance_section, seed
 
 ENTRY_FORMAT = "bare-records-v1"
 TTL = 24 * 3600
 REFRESH_INTERVAL = 30 * 60
+#: A refresh that keeps failing is dropped; the next improve or active session
+#: asks again, and the last good digest stays in place meanwhile.
+MAX_REFRESH_ATTEMPTS = 5
 QUERY = "project decisions conventions pitfalls user preferences and open tasks"
 RAW_HISTORY = re.compile(
     r"Previous conversation|Session ID:|(?:^|\n)(?:Question:|Answer:|Q:|A:)", re.I
@@ -33,10 +36,14 @@ def cache_path(dataset: str) -> Path:
     return root() / "context-cache" / (safe + ".json")
 
 
-def request_refresh(dataset: str, session_id: str = "", host_key: str = "") -> None:
+def request_refresh(
+    dataset: str, session_id: str = "", host_key: str = "", *, record_usage: bool = False
+) -> None:
     from _plugin_common import get_session_key
 
     path = cache_path(dataset).with_suffix(".wanted.json")
+    # A pending usage stamp survives a later plain refresh request.
+    record_usage = record_usage or bool(read(path).get("record_usage"))
     atomic_json(
         path,
         {
@@ -45,6 +52,7 @@ def request_refresh(dataset: str, session_id: str = "", host_key: str = "") -> N
             "host_key": host_key or get_session_key(),
             "target": target(),
             "requested_at": time.time(),
+            "record_usage": record_usage,
         },
     )
 
@@ -78,6 +86,10 @@ def inject(dataset: str, session_key: str, *, source: str = "") -> str:
     from _session_stats import update
 
     update(session_key, digest_items_used=len(data.get("entry_hashes", [])))
+    if data.get("guidance_hashes"):
+        # Guidance reached a session: let the worker's next refresh stamp it as
+        # used. Background rebuilds alone never count as use.
+        request_refresh(dataset, data.get("source_session_id", ""), session_key, record_usage=True)
     return rendered
 
 
@@ -107,7 +119,9 @@ def _sections(rows: list, session_id: str) -> list:
     return renderer._injection_sections(buckets)
 
 
-def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict:
+def build(
+    dataset: str, session_id: str, host_key: str, *, request=None, record_usage: bool = False
+) -> dict:
     from _plugin_common import _json_http_request, dataset_id_for, read_connection_state
     from _session_stats import previous, summary
     from _session_stats import read as read_stats
@@ -159,7 +173,7 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
                 "scope": ["session_context"],
                 "session_id": session_id,
                 "context_profile": "agent",
-                "record_context_usage": "context_usage_v1" in capabilities,
+                "record_context_usage": record_usage and "context_usage_v1" in capabilities,
             },
             timeout=8,
         )
@@ -202,7 +216,7 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
         "guidance_hashes": [
             entry_hash(entry)
             for section in sections
-            if section.get("priority") == 30
+            if is_guidance_section(section)
             for entry in section["entries"]
             if entry in kept
         ],
@@ -217,25 +231,61 @@ def build(dataset: str, session_id: str, host_key: str, *, request=None) -> dict
 
 
 def refresh_pending() -> None:
-    """Called only by the worker; failed reads preserve the last good cache."""
+    """Called only by the worker; failed reads preserve the last good cache.
+
+    Failures are logged and back off exponentially. A request for another
+    account, older than the cache TTL, or past MAX_REFRESH_ATTEMPTS is removed,
+    so it cannot keep the worker from idling out.
+    """
+    from _cloud_worker import log
     from _plugin_common import set_session_key
 
+    now = time.time()
     for path in (root() / "context-cache").glob("*.wanted.json"):
         item = read(path)
-        if item.get("target") != target() or time.time() < item.get("next_attempt", 0):
+        if not item or item.get("target") != target():
+            _drop(path, "other_target")
+            continue
+        if now - item.get("requested_at", 0) > TTL:
+            _drop(path, "expired")
+            continue
+        if now < item.get("next_attempt", 0):
             continue
         set_session_key(item.get("host_key", ""))
         try:
             cached = load(item["dataset"])
             sid = item.get("session_id") or cached.get("source_session_id", "")
-            build(item["dataset"], sid, item.get("host_key", ""))
+            build(
+                item["dataset"],
+                sid,
+                item.get("host_key", ""),
+                record_usage=bool(item.get("record_usage")),
+            )
             # A request arriving during refresh must survive.
             if read(path).get("requested_at") == item.get("requested_at"):
                 path.unlink()
-        except Exception:
-            item["next_attempt"] = time.time() + 60
-            if read(path).get("requested_at") == item.get("requested_at"):
-                atomic_json(path, item)
+        except Exception as exc:
+            attempts = int(item.get("attempts", 0)) + 1
+            log(
+                "context_cache_refresh_failed",
+                dataset=item.get("dataset", ""),
+                attempts=attempts,
+                error=type(exc).__name__,
+            )
+            if read(path).get("requested_at") != item.get("requested_at"):
+                continue
+            if attempts >= MAX_REFRESH_ATTEMPTS:
+                _drop(path, "attempts")
+                continue
+            item.update(attempts=attempts, next_attempt=now + min(3600, 60 * 2 ** (attempts - 1)))
+            atomic_json(path, item)
+
+
+def _drop(path: Path, reason: str) -> None:
+    from _cloud_worker import log
+
+    path.unlink(missing_ok=True)
+    log("context_cache_refresh_dropped", file=path.name, reason=reason)
 
 
 def schedule_active_refreshes() -> None:

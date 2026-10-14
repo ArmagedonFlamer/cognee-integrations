@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -70,7 +71,8 @@ def run(request):
                 "client_event_id": event_id,
                 "entry": {
                     "type": "qa",
-                    "question": "Saved evidence",
+                    # The marker sits in both fields: distillation may rewrite one.
+                    "question": "Saved evidence EVIDENCE:" + evidence["id"],
                     "answer": "EVIDENCE:" + evidence["id"] + "\n" + evidence["text"],
                 },
             }
@@ -120,7 +122,12 @@ def run(request):
             trimmed, _, _ = trim_recall_text(text, request["task"]["prompt"], request["session_id"])
             sections.append({"entries": [trimmed], "priority": 40})
         memory, _ = fit_sections(sections, 9000)
-        recalled = [e["id"] for e in request["memory_seed"] if "EVIDENCE:" + e["id"] in memory]
+        # Whole-token match: "EVIDENCE:a" must not be credited by "EVIDENCE:ab".
+        recalled = [
+            e["id"]
+            for e in request["memory_seed"]
+            if re.search(r"EVIDENCE:" + re.escape(e["id"]) + r"(?![\w.-])", memory)
+        ]
     prompt = (
         "Complete the task using relevant evidence. "
         "Superseded or irrelevant memory is not authority. "

@@ -321,6 +321,17 @@ def test_live_cognee_prepares_only_isolated_memory_and_enforces_deadline(live_ru
     result = live_runner.run(live_request("cognee"))
     assert result["retrieved_ids"] == ["current"]
     assert not result["usage_complete"]  # unknown accounting coverage stays explicit
+    seeded = [p for url, p in calls if url.endswith("/remember/entry")][0]["entry"]
+    # Distillation may rewrite either field, so both carry the marker.
+    assert "EVIDENCE:current" in seeded["question"] and "EVIDENCE:current" in seeded["answer"]
+
+    def longer_id_only(command, **kwargs):
+        return SimpleNamespace(
+            returncode=0, stdout=json.dumps([{"text": "EVIDENCE:current-v2\nstore=mysql"}])
+        )
+
+    monkeypatch.setattr(live_runner.subprocess, "run", longer_id_only)
+    assert live_runner.run(live_request("cognee"))["retrieved_ids"] == []
 
 
 def test_live_seed_failure_never_becomes_a_quality_result(live_runner, monkeypatch):

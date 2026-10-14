@@ -65,9 +65,8 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
     """Fire-and-forget session improve; failures are logged but never raised.
 
     The server bridges the session itself from its session cache (improve);
-    see run_session_improve. Shares the cooldown / no-new-entries gate with the
-    idle watcher; the session-end sync ignores it and covers whatever a skip
-    here leaves behind.
+    see run_session_improve. Honours the cooldown / no-new-entries gate; the
+    session-end sync ignores it and covers whatever a skip here leaves behind.
     """
     throttled = improve_throttle_reason(session_id)
     if throttled:

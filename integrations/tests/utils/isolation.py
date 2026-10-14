@@ -57,8 +57,8 @@ ISOLATED_MODULES = (
     "_observer",
     "cognee_plugin",
     "cognee_statusline_render",
-    "_statusline_config",
     "doctor",
+    "_auto_memory",
 )
 
 #: Env vars that make hook subprocesses deterministic in tests:

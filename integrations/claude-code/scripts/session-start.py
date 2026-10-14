@@ -18,6 +18,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -145,7 +146,7 @@ _HOST_PYTHON_CANDIDATES = (
 # refusal reaches the user as a systemMessage (the worker that hits it runs
 # detached, with nothing it prints visible). Cleared once a venv is ready.
 _HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
-_PINNED_COGNEE_VERSION = "1.6.1"
+_PINNED_COGNEE_VERSION = "1.6.3"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Maps a configured backend provider env var to the cognee package "extra" that
@@ -350,7 +351,7 @@ def _venv_cognee_version() -> str:
 
 
 # One distribution per extra whose presence in the venv proves that extra's
-# drivers are installed (verified against cognee 1.6.1's optional-dependencies:
+# drivers are installed (verified against cognee 1.6.3's optional-dependencies:
 # fastembed and codegraph are empty extras there, their packages being core).
 # Probing the venv is deliberately preferred over recording installed extras in
 # venv-ready.json: that marker is shared with plugins that don't know about
@@ -2086,9 +2087,85 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
 
 
 def _ensure_statusline_configured() -> None:
-    from _statusline_config import ensure_statusline_configured
+    """Write the statusLine entry to ~/.claude/settings.json when safe.
 
-    ensure_statusline_configured(log=hook_log)
+    Claude Code hot-reloads settings.json, so the status line becomes active on
+    the next status refresh without requiring a restart.
+    """
+    if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
+        hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
+        return
+
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if plugin_root:
+        statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
+    else:
+        statusline_sh = Path(__file__).resolve().parent / "cognee-statusline.sh"
+
+    if not statusline_sh.exists():
+        hook_log(
+            "statusline_setup_skipped", {"reason": "script_not_found", "path": str(statusline_sh)}
+        )
+        return
+
+    settings_path = Path.home() / ".claude" / "settings.json"
+    # Guard on the script's existence at run time. Claude Code does not remove
+    # this statusLine entry when the plugin is uninstalled, and the command runs
+    # through a shell — so if the plugin's files are later purged from the cache,
+    # a bare path would fail on every refresh. The `[ -x ] && exec … || true`
+    # guard degrades to a clean, empty status line instead. (When the files
+    # linger but the plugin is disabled, the renderer self-evicts this entry.)
+    guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
+    desired = {"type": "command", "command": guarded_command}
+    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
+    # to Claude's event-driven updates, so the connection glyph reflects a change
+    # (e.g. a bad key detected at SessionStart, or the server dying) while the
+    # session is idle — event triggers go quiet when idle, and settings changes
+    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
+    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
+    try:
+        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
+    except ValueError:
+        _interval = 2
+    if _interval >= 1:
+        desired["refreshInterval"] = _interval
+
+    try:
+        settings: dict = {}
+        if settings_path.exists():
+            text = settings_path.read_text(encoding="utf-8").strip()
+            if text:
+                settings = json.loads(text)
+
+        existing = settings.get("statusLine")
+        if existing == desired:
+            return
+
+        existing_command = existing.get("command") if isinstance(existing, dict) else None
+        is_cognee_owned = (
+            isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command
+        )
+        if existing and not is_cognee_owned:
+            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
+            return
+
+        settings["statusLine"] = desired
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(settings, f, indent=2)
+                f.write("\n")
+            os.replace(tmp, settings_path)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        hook_log("statusline_configured", {"path": str(statusline_sh)})
+    except Exception as exc:
+        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
 
 
 _MEMORY_PREFERENCE_STEER = (
@@ -2244,8 +2321,18 @@ async def _start(payload: dict | None = None) -> dict:
     os.environ["COGNEE_SESSION_KEY"] = session_key
     if payload.get("source") in {"clear", "compact"}:
         from _injection_ledger import reset as reset_injection_ledger
+        from _injection_ledger import session_dir as ledger_dir
 
-        reset_injection_ledger(session_key)
+        try:
+            reset_injection_ledger(session_key)
+        except Exception as exc:
+            # Never block startup on the ledger. A stale ledger would claim the
+            # forgotten context is still present, so drop it instead.
+            hook_log("injection_ledger_failed", {"op": "reset", "error": str(exc)[:200]})
+            try:
+                (ledger_dir(session_key) / "injected.json").unlink()
+            except (OSError, ValueError):
+                pass
 
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
@@ -2426,9 +2513,8 @@ async def _start(payload: dict | None = None) -> dict:
     # an immediate improve on startup.
     touch_activity()
 
-    # Launch the idle watcher (syncs session memory to graph after the agent
-    # goes idle). Runs in both local-server and cloud modes — the watcher picks
-    # the HTTP or local sync path itself. COGNEE_IDLE_DISABLED opts out.
+    # Launch the idle watcher (update and LLM-key checks, periodic shared-memory
+    # refresh). COGNEE_IDLE_DISABLED opts out.
     if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() not in (
         "1",
         "true",
@@ -2454,6 +2540,50 @@ async def _start(payload: dict | None = None) -> dict:
 
     ready = server_live or server_ready_hint(str(config.get("base_url", "") or ""))
     return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
+
+
+def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
+    """Say, on reopening a chat, whether it reached long-term memory (SDK-1071).
+
+    The session-end sync runs after the chat is gone, so its outcome is shown
+    when the same chat is resumed: resume keeps the session id, and the
+    session's improve record says when it was last sent or why the send
+    failed. Shown once per sync, in the terminal and to the agent, and only on
+    resume: a compaction keeps the session too, but lands mid-task, where an
+    idle or auto sync's notice would only interrupt. Off with
+    ``COGNEE_PLUGIN_CITE_MEMORY=off``.
+    """
+    if str((payload or {}).get("source") or "") != "resume":
+        return output
+    try:
+        import _plugin_common
+        from _recall_text import credit_enabled, mark_notice_shown, notice_due, sync_notice
+        from config import get_session_id
+
+        if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
+            return output
+        session_id = get_session_id(load_config())
+        message, sync_ts = sync_notice(_plugin_common.read_improve_state(session_id))
+        if not message or not notice_due(_plugin_common._PLUGIN_DIR, session_id, sync_ts):
+            return output
+        mark_notice_shown(_plugin_common._PLUGIN_DIR, session_id, sync_ts)
+    except Exception as exc:
+        hook_log("sync_notice_failed", {"error": str(exc)[:200]})
+        return output
+    hook_log("sync_notice_shown", {"session": session_id, "sync_ts": sync_ts})
+
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    for field in ("systemMessage", "additionalContext"):
+        existing = str(hso.get(field) or "").strip()
+        hso[field] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    # The user sees only the top-level systemMessage: Claude Code documents it
+    # there (inside hookSpecificOutput it reached the agent but was never shown).
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{message}" if top else message
+    return result
 
 
 def main():
@@ -2495,51 +2625,70 @@ def main():
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
     try:
-        from _auto_memory import configure as configure_auto_memory
+        from _auto_memory import sync as sync_auto_memory
         from _cloud_worker import enabled as cloud_enabled
 
-        if cloud_enabled():
-            notice = configure_auto_memory()
-            if notice:
-                hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
-                hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + notice).strip()
-                output["systemMessage"] = hso["systemMessage"]
-    except (OSError, ValueError) as exc:
-        hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
-    if payload.get("source") != "resume":
-        from _session_stats import previous, summary
-        from _session_stats import update as update_stats
-
-        config = load_config()
-        key = get_session_key()
-        last_line = summary(previous(key, get_dataset(config), str(config.get("base_url") or "")))
-        update_stats(
-            key,
-            metadata={
-                "dataset": get_dataset(config),
-                "server_url": str(config.get("base_url") or ""),
-            },
-        )
-        if last_line:
+        # Native memory is only taken over in cloud mode; anywhere else, give back
+        # a setting we changed earlier.
+        notice = sync_auto_memory(cloud_enabled())
+        if notice:
             hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
-            hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + last_line).strip()
-            hso["additionalContext"] = (
-                str(hso.get("additionalContext") or "") + "\n" + last_line
-            ).strip()
+            hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + notice).strip()
             output["systemMessage"] = hso["systemMessage"]
-    output = _apply_memory_preference(output)
-    if cloud_enabled() and payload.get("source") != "resume":
-        from _context_cache import inject as inject_digest
+    except Exception as exc:
+        hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
+    try:
+        if payload.get("source") != "resume":
+            from _session_stats import previous, summary
+            from _session_stats import update as update_stats
 
+            config = load_config()
+            key = get_session_key()
+            last_line = summary(
+                previous(key, get_dataset(config), str(config.get("base_url") or ""))
+            )
+            update_stats(
+                key,
+                metadata={
+                    "dataset": get_dataset(config),
+                    "server_url": str(config.get("base_url") or ""),
+                },
+            )
+            if last_line:
+                hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+                hso["systemMessage"] = (
+                    str(hso.get("systemMessage") or "") + "\n" + last_line
+                ).strip()
+                hso["additionalContext"] = (
+                    str(hso.get("additionalContext") or "") + "\n" + last_line
+                ).strip()
+                output["systemMessage"] = hso["systemMessage"]
+    except Exception as exc:
+        # The recap is a courtesy; it must never cost the startup output.
+        hook_log("session_stats_failed", {"op": "recap", "error": str(exc)[:200]})
+    output = _apply_memory_preference(output)
+    if payload.get("source") != "resume":
         try:
-            digest = inject_digest(
-                get_dataset(load_config()), get_session_key(), source=payload.get("source", "")
+            from _cloud_worker import enabled as cloud_enabled
+            from _context_cache import inject as inject_digest
+
+            digest = (
+                inject_digest(
+                    get_dataset(load_config()), get_session_key(), source=payload.get("source", "")
+                )
+                if cloud_enabled()
+                else ""
             )
             if digest:
+                # Lead with the digest, keeping what is already there (the
+                # last-session line, and the steer when the user has not opted out).
                 hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
-                hso["additionalContext"] = digest + "\n\n" + _MEMORY_PREFERENCE_STEER
-        except (OSError, ValueError):
-            pass  # Missing/busy cache must never delay startup.
+                existing = str(hso.get("additionalContext") or "").strip()
+                hso["additionalContext"] = f"{digest}\n\n{existing}" if existing else digest
+        except Exception as exc:
+            # A missing, busy or malformed cache must never cost the startup output.
+            hook_log("context_digest_inject_failed", {"error": str(exc)[:200]})
+    output = _apply_sync_notice(output, payload)
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     print(json.dumps(output or {}))

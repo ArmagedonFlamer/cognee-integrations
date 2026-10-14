@@ -14,6 +14,15 @@ def ledger(suite, isolated_modules):
     return isolated_modules(suite, "_injection_ledger")
 
 
+def guidance(*entries):
+    return {
+        "entries": list(entries),
+        "priority": 30,
+        "source": "session_context",
+        "entry_ids": {entry: 0 for entry in entries},
+    }
+
+
 def test_repeat_then_compact_reinjects(ledger):
     sections = [
         {"entries": ["Project uses Postgres.", "Release requires approval."], "priority": 40}
@@ -30,12 +39,26 @@ def test_repeat_then_compact_reinjects(ledger):
 
 def test_guidance_injected_only_when_changed_including_reversion(ledger):
     def render(value):
-        return ledger.render("session-a", "header", [{"entries": [value], "priority": 30}], 9000)[1]
+        return ledger.render("session-a", "header", [guidance(value)], 9000)[1]
 
     assert render("Use SQLite")["entries_kept"] == 1
     assert render("Use SQLite")["entries_kept"] == 0
     assert render("Use Postgres")["entries_kept"] == 1
     assert render("Use SQLite")["entries_kept"] == 1
+
+
+def test_partial_guidance_change_settles_after_one_injection(ledger):
+    # Large guidance is split into several entries; changing one of them must
+    # not make the unchanged ones look new on every later prompt.
+    def render(*values):
+        return ledger.render("session-a", "header", [guidance(*values)], 9000)[1]
+
+    assert render("G1", "G2")["entries_kept"] == 2
+    changed = render("G1", "G2b")
+    assert (changed["entries_kept"], changed["entries_deduped"]) == (1, 1)
+    settled = render("G1", "G2b")
+    assert (settled["entries_kept"], settled["entries_deduped"]) == (0, 2)
+    assert render("G1", "G2")["entries_kept"] == 1
 
 
 def test_only_fitted_entries_are_recorded(ledger):
@@ -114,3 +137,15 @@ def test_savings_account_for_replacement_context(ledger):
     baseline, _ = ledger.fit_sections([{"entries": ["header"], "required": True}] + sections, 300)
     assert stats["dedup_chars_saved"] == max(0, len(baseline) - len(actual))
     assert stats["dedup_chars_saved"] < len(duplicate)
+
+
+def test_guidance_is_identified_by_source_not_priority(ledger):
+    # A non-guidance section that happens to share guidance's priority is
+    # deduplicated per entry; guidance at any priority is tracked as guidance.
+    other = [{**guidance("fact"), "source": "graph_context"}]
+    ledger.render("session-a", "header", other, 9000)
+    data = json.loads((ledger.session_dir("session-a") / "injected.json").read_text())
+    assert not data.get("guidance_hashes") and data["entry_hashes"] == [ledger.entry_hash("fact")]
+    ledger.render("session-a", "header", [{**guidance("Use SQLite"), "priority": 35}], 9000)
+    data = json.loads((ledger.session_dir("session-a") / "injected.json").read_text())
+    assert data["guidance_hashes"] == [ledger.entry_hash("Use SQLite")]
