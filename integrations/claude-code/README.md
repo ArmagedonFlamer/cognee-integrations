@@ -339,7 +339,9 @@ dataset, relevant or not — so the block is worded for it to act on only when m
 If you are asking Claude to recall something and the active dataset did not have it, it offers those datasets as a picker; pick one and Claude runs a **one-off, graph-only search** on
 it and tells you which dataset the answer came from. Nothing else moves: the active dataset,
 the Cognee session and where writes go stay as they were — this is for looking something up
-elsewhere, not for working there (that is what the switch above is for).
+elsewhere, not for working there (that is what the switch above is for). The block tells
+Claude not to switch datasets on its own. If you ask for a switch, it runs
+`/cognee-memory:cognee-switch-datasets`.
 
 The same flow is available on demand through the `cognee-search` skill when an explicit search comes
 back empty. Under the hood:
@@ -448,14 +450,30 @@ Final sync on session end is triggered by the `SessionEnd` detached worker, with
 
 ## Skills
 
-- `/cognee-memory:cognee-remember`
-- `/cognee-memory:cognee-search`
-- `/cognee-memory:cognee-sync`
-- `/cognee-memory:cognee-code`
-- `/cognee-memory:cognee-forget`
-- `/cognee-memory:cognee-switch-datasets`
-- `/cognee-memory:cognee-standup`, `/cognee-memory:cognee-digest`,
-  `/cognee-memory:cognee-timeline` — recaps over recorded sessions (below)
+Claude chooses a skill from your request in plain words. It matches against each skill's
+`description` and its `when_to_use` example requests. You can also run any skill as a slash
+command, such as `/cognee-memory:cognee-search <query>`.
+
+| Skill | Example requests |
+|---|---|
+| `cognee-remember` | "remember that I prefer pytest over unittest", "save this to memory" |
+| `cognee-search` | "search Cognee for the retry policy", "check research for vector indexes" (once, without switching) |
+| `cognee-sync` | "sync this session to Cognee", "make what we just did searchable" |
+| `cognee-handoff` | "write a handoff", "I'm done for today, save progress" |
+| `cognee-forget` | "forget what we talked about tennis", "I pasted a secret, wipe it" |
+| `cognee-switch-datasets` | "switch to research", "use project-alpha from now on" |
+| `cognee-code` | "index this repo", "what calls or uses process_payment?" |
+| `cognee-architecture` | "explain the architecture of this repo", "where are the hotspots?" |
+| `cognee-standup` | "prep my standup", "what did I work on yesterday?" |
+| `cognee-digest` | "recap my week", "what did we ship and decide this week?" |
+| `cognee-timeline` | "how did the retry policy evolve?", "when did we first discuss dataset switching?" |
+| `cognee-report` | "evaluate Cognee", "is Cognee worth it?" |
+| `cognee-how-it-works` | "what does this plugin send to the cloud?", "how do I turn off capture?" |
+
+The standup, digest and timeline recaps are covered in
+[Recaps](#recaps-standup-digest-timeline) below. [`evals/`](evals/README.md) holds a
+`claude plugin eval` suite that checks this routing: two requests per skill, plus four
+look-alike requests that should reach no Cognee skill.
 
 ## Recaps: standup, digest, timeline
 

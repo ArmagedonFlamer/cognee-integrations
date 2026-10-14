@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.33]
+
+### Changed
+- Give every skill `when_to_use` trigger phrases and "Not for" redirects between overlapping skills, so a plain request such as switching the Cognee dataset reaches the right skill. The recall dataset hint now forbids only unrequested switches and points a requested one to `/cognee-memory:cognee-switch-datasets`. With the longer skill listing, the always-on cost that `claude plugin details` estimates grows from about 1,352 to 2,899 tokens per session. Add a `claude plugin eval` routing suite under `evals/`.
+
 ## [1.6.32]
 
 - Highlight the plain `cognee` label between two purple squares, consistently across recall outcomes.

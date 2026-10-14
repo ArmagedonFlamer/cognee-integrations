@@ -1,6 +1,15 @@
 ---
 name: cognee-how-it-works
-description: Explain what the Cognee Claude Code plugin captures, recalls, stores, and sends, and how to inspect or disable those behaviors.
+description: >-
+  Explain what the Cognee plugin captures, recalls, stores and sends, where its data and
+  logs live, and how to inspect or turn off each behavior; check its local or cloud
+  connection and settings.
+when_to_use: >-
+  E.g. "how does Cognee work?", "what does this plugin send to the cloud?", "does it
+  capture secrets?", "how do I turn off capture?", "is Cognee connected?", "why was auto
+  memory disabled?", "why is memory added to my prompts?". Not for performance or why
+  one memory was injected (cognee-report), deleting memory (cognee-forget), or editing
+  settings.json, hooks or the status line.
 ---
 
 # Explain the installed plugin
