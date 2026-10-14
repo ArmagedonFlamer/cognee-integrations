@@ -46,6 +46,8 @@ from _plugin_common import (
     notify,
     other_readable_datasets,
     outage_header,
+    phase_begin,
+    phase_end,
     probe_health,
     quiet_hook_output,
     read_and_reset_save_counter,
@@ -244,6 +246,7 @@ def _has_entry_content(entry: dict) -> bool:
 
 async def _run(prompt: str, cwd: str = "") -> dict | None:
     config = load_config()
+    phase_begin("recalling")
     runtime = resolve_runtime_mode()
     hook_log(
         "mode_decision",
@@ -758,6 +761,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     except Exception as exc:
         hook_log("last_recall_write_failed", {"error": str(exc)[:200]})
 
+    phase_end("recalling", count=total)
     # Build a one-line visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
@@ -921,6 +925,7 @@ def main():
             output = asyncio.run(_run(prompt, cwd))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
+        phase_end("recalling", count=0, ok=False)
     output = with_base_url_notice(output, "UserPromptSubmit")
     if output:
         print(json.dumps(output))

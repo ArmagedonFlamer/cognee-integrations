@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -35,8 +36,13 @@ _UPDATE_CHECK_PATH = _SHARED_ROOT / "claude-code" / "update-check.json"
 # only signal that clears the update nudge mid-session (see _update_segment).
 _INSTALLED_PLUGINS_PATH = Path.home() / ".claude" / "plugins" / "installed_plugins.json"
 _LLM_STATE_PATH = _SHARED_ROOT / "claude-code" / "llm-state.json"
-_RECALL_PATH = _SHARED_ROOT / "claude-code" / "last_recall.json"
-_RECALL_DIR = _SHARED_ROOT / "claude-code" / "recall"
+# Live activity (see _plugin_common.phase_begin): what memory is doing now and
+# the last thing it finished, per host session.
+_PHASE_DIR = _SHARED_ROOT / "claude-code" / "phase"
+# Written by the plugin's hooks module for a session whose status row it draws
+# above the prompt (the band); this renderer then prints nothing for that
+# session, so the row is never shown twice. Keyed by host session id.
+_BAND_DIR = _SHARED_ROOT / "claude-code" / "band"
 _CREDITS_PATH = _SHARED_ROOT / "claude-code" / "credits.json"
 # Per-session copies (see _plugin_common._write_session_marker): the shared files
 # above are coordination state, these are what THIS terminal observed.
@@ -621,99 +627,181 @@ def _llm_prefix(session_id: str = "") -> str:
     return ""
 
 
-def _recall_marker(session_id: str) -> dict:
-    """This session's recall marker, or {} when nothing attributable exists.
+# An ``active`` phase older than this is a hook that died mid-flight (or a
+# marker a previous session left); it must not keep the bar "recalling…" forever.
+_PHASE_STALE_SECONDS = 90.0
+# A finished result stays on the bar until the next phase begins, faint once it
+# is this old so "recalled 3 memories" reads as recent versus left over.
+_RESULT_DIM_AFTER_SECONDS = 60.0
+_ACTIVE_STYLE = "\033[33m"  # yellow: something is happening right now (local mode is cyan)
+_DIM = "\033[2m"
 
-    Per session: ``recall/<session_key>.json`` is this session's own copy, so with
-    several terminals open each bar shows its own numbers. The machine-wide
-    ``last_recall.json`` (written for ``cognee_plugin.py``) is the fallback for hooks
-    that predate the per-session copy, and is only trusted when it is unattributed or
-    stamped with our session — a neighbour's counts must never appear here. The
-    fallback carries no ``session_totals``: a cumulative number is only meaningful
-    from the session that accumulated it.
+# One user-facing phrase per phase, present tense while it runs. The vocabulary
+# is deliberately plain: "memories" is the only noun, and the idle improve pass
+# is "learning from this session", which is what it does.
+_ACTIVE_LABELS = {
+    "connecting": "connecting…",
+    "setting_up": "setting up memory",
+    "recalling": "recalling…",
+    "saving": "saving…",
+    "consolidating": "learning from this session…",
+    "indexing": "indexing repository…",
+    "anchoring": "preserving context…",
+    "syncing": "saving session…",
+}
+
+
+def _band_draws_row(session_id: str) -> bool:
+    """True when the hooks module draws this session's row above the prompt.
+
+    Only this session's marker counts: a terminal without the module (an older
+    Claude Code, ``--safe-mode``, a managed org) keeps its status line.
     """
-    marker = _read_json(_RECALL_DIR / f"{session_id}.json") if _path_safe(session_id) else {}
-    if isinstance(marker.get("hits"), dict):
-        return marker
-    marker = _read_json(_RECALL_PATH)
-    marked_key = str(marker.get("session_key") or "")
-    if session_id and marked_key and session_id != marked_key:
+    if not session_id or not _path_safe(session_id):
+        return False
+    return (_BAND_DIR / f"{session_id}.json").is_file()
+
+
+def _phase_marker(session_id: str) -> dict:
+    """This session's activity marker, or {} when there is none to attribute.
+
+    Keyed by the host session id from stdin, so with several terminals open each
+    bar shows what *its* session is doing. Never read another session's file.
+    """
+    if not session_id or not _path_safe(session_id):
         return {}
-    marker.pop("session_totals", None)
-    return marker
-
-
-def _int(mapping, key) -> int:
-    try:
-        return int(mapping.get(key, 0) or 0)
-    except (TypeError, ValueError):
-        return 0
+    return _read_json(_PHASE_DIR / f"{session_id}.json")
 
 
 def _plural(n: int, word: str) -> str:
-    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+    if n == 1:
+        return f"{n} {word}"
+    plural = word[:-1] + "ies" if word.endswith("y") else word + "s"
+    return f"{n} {plural}"
 
 
-def _recall_segment(session_id: str) -> str:
-    """What memory did — this turn and over the session — or '' when unknown.
+def _active_label(active: dict) -> str:
+    phase = str(active.get("phase") or "")
+    label = _ACTIVE_LABELS.get(phase, "")
+    detail = str(active.get("detail") or "").strip()
+    if phase == "setting_up":
+        return f"{label} · {detail}…" if detail else f"{label}…"
+    return label
 
-    ``session-context-lookup`` writes the recall marker on every prompt (hits per
-    scope, what the previous turn persisted, and a per-session running total)
-    precisely so the status line can show it without any network call.
 
-    Default rendering, per turn at normal weight and the session total faint::
+def _result_label(kind: str, entry: dict) -> str:
+    """Past tense, with the number only once there is one."""
+    ok = entry.get("ok", True) is not False
+    count = entry.get("count")
+    try:
+        count = int(count) if count is not None else None
+    except (TypeError, ValueError):
+        count = None
+    if kind == "recalled":
+        if not ok:
+            return "recall failed"
+        if not count:
+            return "nothing relevant yet"
+        return f"recalled {_plural(count, 'memory')}"
+    if kind == "saved":
+        if not ok and not count:
+            return "save failed"
+        return f"saved {_plural(count or 0, 'memory')}"
+    if kind == "ready":
+        return "memory ready" if ok else "memory unavailable"
+    if kind == "consolidated":
+        return "memory updated" if ok else "memory update failed"
+    if kind == "indexed":
+        return "repository indexed" if ok else "indexing failed"
+    if kind == "anchored":
+        return "context preserved"
+    if kind == "synced":
+        return "session saved"
+    return ""
 
-        · 5 memory hits · 12/40 turns had hits this session
 
-    A session that has not had a single hit yet says so instead of showing a
-    bare ``0/7`` (the graph is usually still filling up)::
+def _activity(session_id: str) -> dict:
+    """What to show: ``{"kind": "active"|"result", "text": ..., "age": s}`` or {}.
 
-        · 0 memory hits · memory warming up (7 turns)
-
-    The per-turn number is the sum over every scope that returned something and
-    was injected (session turns, traces, graph context, agent guidance, code).
-    The per-scope diagnostic strip ``recall 4s/5t/0g/1a · saved 2p/41t/2a`` is
-    still available with ``COGNEE_STATUSLINE_COUNTS=full``; ``false`` hides the
-    segment entirely.
+    An active phase wins; otherwise the most recent result. A stale active phase
+    (a hook that died) is ignored rather than shown forever.
     """
-    mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
-    if mode in ("0", "false", "no", "off"):
+    marker = _phase_marker(session_id)
+    if not marker:
+        return {}
+    now = time.time()
+    active = marker.get("active")
+    if isinstance(active, dict) and active.get("phase"):
+        try:
+            age = now - float(active.get("updated_at") or 0)
+        except (TypeError, ValueError):
+            age = _PHASE_STALE_SECONDS
+        if age < _PHASE_STALE_SECONDS:
+            text = _active_label(active)
+            if text:
+                return {
+                    "kind": "active",
+                    "phase": str(active.get("phase")),
+                    "text": text,
+                    "age": age,
+                }
+    results = marker.get("results")
+    if not isinstance(results, dict):
+        return {}
+    latest_kind, latest, latest_at = "", {}, -1.0
+    for kind, entry in results.items():
+        if not isinstance(entry, dict):
+            continue
+        try:
+            at = float(entry.get("at") or 0)
+        except (TypeError, ValueError):
+            continue
+        if at > latest_at:
+            latest_kind, latest, latest_at = str(kind), entry, at
+    text = _result_label(latest_kind, latest) if latest_kind else ""
+    if not text:
+        return {}
+    return {
+        "kind": "result",
+        "phase": latest_kind,
+        "text": text,
+        "age": max(0.0, now - latest_at),
+        "ok": latest.get("ok", True) is not False,
+    }
+
+
+def _activity_segment(session_id: str) -> str:
+    """`` · recalling…`` while memory works, `` · recalled 3 memories`` after.
+
+    Reads the per-session activity marker the hooks write (no network). Active
+    phases render in the accent colour; a finished result renders plain, then
+    faint once it is a minute old. ``COGNEE_STATUSLINE_ACTIVITY=false`` hides it.
+    """
+    if os.environ.get("COGNEE_STATUSLINE_ACTIVITY", "").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
         return ""
-    marker = _recall_marker(session_id)
-    hits = marker.get("hits")
-    if not isinstance(hits, dict):
+    shown = _activity(session_id)
+    if not shown:
         return ""
-    if mode == "full":
-        return _recall_diagnostic_segment(marker, hits)
-
-    total = sum(_int(hits, key) for key in hits)
-    out = f" · {_plural(total, 'memory hit')}"
-    totals = marker.get("session_totals")
-    if isinstance(totals, dict):
-        turns = _int(totals, "turns")
-        with_hits = _int(totals, "turns_with_hits")
-        if turns > 0:
-            if with_hits > 0:
-                cumulative = f"{with_hits}/{turns} turns had hits this session"
-            else:
-                cumulative = f"memory warming up ({_plural(turns, 'turn')})"
-            out += f" \033[2m· {cumulative}\033[0m"
-    return out
+    if shown["kind"] == "active":
+        return f" · {_ACTIVE_STYLE}{shown['text']}{_RESET}"
+    if shown.get("age", 0.0) >= _RESULT_DIM_AFTER_SECONDS:
+        return f" {_DIM}· {shown['text']}{_RESET}"
+    return f" · {shown['text']}"
 
 
-def _recall_diagnostic_segment(marker: dict, hits: dict) -> str:
-    """The per-scope strip (``COGNEE_STATUSLINE_COUNTS=full``): hits per scope and
-    what the previous turn persisted, faint so it sits below the health glyph and
-    dataset in the visual hierarchy; the reset prevents color bleed."""
-    recall = (
-        f"{_int(hits, 'session')}s/{_int(hits, 'trace')}t/"
-        f"{_int(hits, 'graph_context')}g/{_int(hits, 'session_context')}a"
-    )
-    saves = marker.get("saves_last_turn")
-    if isinstance(saves, dict):
-        saved = f"{_int(saves, 'prompt')}p/{_int(saves, 'trace')}t/{_int(saves, 'answer')}a"
-        return f" \033[2m· recall {recall} · saved {saved}\033[0m"
-    return f" \033[2m· recall {recall}\033[0m"
+def _icon() -> str:
+    """An optional brain in front of the name (``COGNEE_STATUSLINE_ICON=brain``).
+
+    Off by default in the terminal: the emoji is double-width and some terminal
+    fonts misrender it, and the green dot already carries "connected".
+    """
+    choice = os.environ.get("COGNEE_STATUSLINE_ICON", "").strip().lower()
+    return "🧠 " if choice == "brain" else ""
 
 
 def _credits_segment() -> str:
@@ -857,7 +945,51 @@ def _status_prefix(session_id: str = "") -> str:
     return _llm_prefix(session_id) or server
 
 
+_ANSI_RE = re.compile(r"\033\[[0-9;]*m")
+
+
+def _plain(text: str) -> str:
+    return _ANSI_RE.sub("", text)
+
+
+def _snapshot(session_id: str, enabled: bool) -> dict:
+    """The bar as structured data (``--json``), for the Claude Code mod.
+
+    The mod draws the same row on the desktop band, where the settings-file
+    status line does not render, so one renderer feeds both surfaces and the two
+    never drift. Same inputs as the text bar, no network, no eviction.
+    """
+    prefix = _plain(_status_prefix(session_id)).strip()
+    if "✕" in prefix:
+        state, reason = "fail", prefix[prefix.find("(") + 1 : prefix.rfind(")")]
+    elif "●" in prefix:
+        state, reason = "ok", ""
+    else:
+        state, reason = "", ""
+    activity = _activity(session_id)
+    credits = _plain(_credits_segment()).strip(" ·")
+    update = _plain(_update_segment()).strip(" ·")
+    dataset = _active_dataset(session_id)
+    mode = _active_mode()
+    line = f"cognee: {dataset} · {mode}"
+    for segment in (credits, activity.get("text", ""), update):
+        if segment:
+            line += f" · {segment}"
+    return {
+        "enabled": enabled,
+        "state": state,
+        "reason": reason,
+        "dataset": dataset,
+        "mode": mode,
+        "credits": credits,
+        "activity": activity,
+        "update": update,
+        "text": line,
+    }
+
+
 def main() -> None:
+    as_json = "--json" in sys.argv[1:]
     # Windows defaults stdio to the locale code page (e.g. cp1252), which cannot
     # encode the status glyphs (●, ✕, ⬆) — the write raises UnicodeEncodeError,
     # the renderer exits non-zero, and Claude Code drops the whole status line
@@ -887,21 +1019,32 @@ def main() -> None:
         or ""
     )
     if not _plugin_enabled(cwd):
+        if as_json:
+            # The mod asks on behalf of a session that IS running the plugin;
+            # report rather than evict (the settings entry is the bar's, not ours).
+            sys.stdout.write(json.dumps(_snapshot(str(ctx.get("session_id") or ""), enabled=False)))
+            return
         # Plugin uninstalled/disabled but files linger: drop our own statusLine
         # entry and render nothing so the line disappears.
         _evict_own_statusline()
         return
 
     # Host session id: markers are per-integration, not per-session, so both the
-    # LLM-key verdict and the recall counts are attributed before being shown.
+    # LLM-key verdict and the activity are attributed before being shown.
     _session_id = str(ctx.get("session_id") or "")
-    # The recall counts belong to the cognee core info, so they sit right after the
-    # mode; the update nudge stays last because it is a transient banner, not part
-    # of the steady-state line.
+    if as_json:
+        sys.stdout.write(json.dumps(_snapshot(_session_id, enabled=True)))
+        return
+    if _band_draws_row(_session_id):
+        # The module draws this session's row above the prompt: stay quiet.
+        return
+    # The activity belongs to the cognee core info, so it sits right after the
+    # mode (and credits); the update nudge stays last because it is a transient
+    # banner, not part of the steady-state line.
     sys.stdout.write(
-        f"{_status_prefix(_session_id)}"
+        f"{_status_prefix(_session_id)}{_icon()}"
         f"cognee: {_active_dataset(_session_id)} · {_mode_label()}"
-        f"{_credits_segment()}{_recall_segment(_session_id)}{_update_segment()}"
+        f"{_credits_segment()}{_activity_segment(_session_id)}{_update_segment()}"
     )
 
 

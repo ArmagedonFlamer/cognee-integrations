@@ -50,6 +50,8 @@ from _plugin_common import (
     hook_log,
     is_observer_child,
     managed_endpoint_enabled,
+    phase_begin,
+    phase_end,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
@@ -1849,6 +1851,7 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                 hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
         if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
             hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
+            phase_end("setting_up", session_key=session_key, ok=False)
             return
 
     # 2. Register this agent/session. Runs for every agent — NOT gated by the
@@ -1866,8 +1869,10 @@ async def _run_bootstrap(bootstrap: dict) -> None:
             boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
         )
         hook_log("bootstrap_complete", {"session_id": session_id})
+        phase_end("setting_up", session_key=session_key)
     except Exception as exc:
         hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+        phase_end("setting_up", session_key=session_key, ok=False)
 
 
 def _running_server_observer(target_url: str) -> tuple[bool, bool | None]:
@@ -2086,71 +2091,29 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
     }
 
 
-def _ensure_statusline_configured() -> None:
-    """Write the statusLine entry to ~/.claude/settings.json when safe.
+def _retire_statusline_entry() -> None:
+    """Remove the ``statusLine`` entry earlier plugin versions wrote to
+    ``~/.claude/settings.json`` (one-time migration, best-effort).
 
-    Claude Code hot-reloads settings.json, so the status line becomes active on
-    the next status refresh without requiring a restart.
+    The status row is drawn above the prompt by the plugin's hooks module now;
+    the settings-file line below the prompt is no longer installed. Only an
+    entry that is recognisably ours (its command runs ``cognee-statusline.sh``)
+    is removed: a status line the user set themselves is never touched, and a
+    settings file that does not parse is left as it is.
     """
-    if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
-        hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
-        return
-
-    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
-    if plugin_root:
-        statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
-    else:
-        statusline_sh = Path(__file__).resolve().parent / "cognee-statusline.sh"
-
-    if not statusline_sh.exists():
-        hook_log(
-            "statusline_setup_skipped", {"reason": "script_not_found", "path": str(statusline_sh)}
-        )
-        return
-
     settings_path = Path.home() / ".claude" / "settings.json"
-    # Guard on the script's existence at run time. Claude Code does not remove
-    # this statusLine entry when the plugin is uninstalled, and the command runs
-    # through a shell — so if the plugin's files are later purged from the cache,
-    # a bare path would fail on every refresh. The `[ -x ] && exec … || true`
-    # guard degrades to a clean, empty status line instead. (When the files
-    # linger but the plugin is disabled, the renderer self-evicts this entry.)
-    guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
-    desired = {"type": "command", "command": guarded_command}
-    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
-    # to Claude's event-driven updates, so the connection glyph reflects a change
-    # (e.g. a bad key detected at SessionStart, or the server dying) while the
-    # session is idle — event triggers go quiet when idle, and settings changes
-    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
-    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
     try:
-        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
-    except ValueError:
-        _interval = 2
-    if _interval >= 1:
-        desired["refreshInterval"] = _interval
-
-    try:
-        settings: dict = {}
-        if settings_path.exists():
-            text = settings_path.read_text(encoding="utf-8").strip()
-            if text:
-                settings = json.loads(text)
-
+        if not settings_path.exists():
+            return
+        text = settings_path.read_text(encoding="utf-8").strip()
+        settings = json.loads(text) if text else {}
+        if not isinstance(settings, dict):
+            return
         existing = settings.get("statusLine")
-        if existing == desired:
+        command = existing.get("command") if isinstance(existing, dict) else None
+        if not (isinstance(command, str) and "cognee-statusline.sh" in command):
             return
-
-        existing_command = existing.get("command") if isinstance(existing, dict) else None
-        is_cognee_owned = (
-            isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command
-        )
-        if existing and not is_cognee_owned:
-            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
-            return
-
-        settings["statusLine"] = desired
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        settings.pop("statusLine", None)
         fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -2163,9 +2126,9 @@ def _ensure_statusline_configured() -> None:
             except OSError:
                 pass
             raise
-        hook_log("statusline_configured", {"path": str(statusline_sh)})
+        hook_log("statusline_retired", {"path": str(settings_path)})
     except Exception as exc:
-        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
+        hook_log("statusline_retire_failed", {"error": str(exc)[:200]})
 
 
 _MEMORY_PREFERENCE_STEER = (
@@ -2252,7 +2215,7 @@ def _apply_update_nudge(output: dict) -> dict:
 
 
 async def _start(payload: dict | None = None) -> dict:
-    _ensure_statusline_configured()
+    _retire_statusline_entry()
     config = load_config()
     payload = payload or {}
     cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
@@ -2375,6 +2338,7 @@ async def _start(payload: dict | None = None) -> dict:
     # are never booted. will_boot means "enter the local bootstrap path" — the
     # actual install/boot license is enforced inside _ensure_local_server_running,
     # so a busy server still gets a worker that waits for it instead of a boot.
+    phase_begin("connecting", session_key=session_key)
     presence_verdict, presence_evidence = "", {}
     if target_url and _is_local_url(target_url):
         presence_verdict, presence_evidence = server_presence(target_url, confirm_absent=False)
@@ -2413,6 +2377,7 @@ async def _start(payload: dict | None = None) -> dict:
         # The status line and the recall gate read the shared marker, not this
         # output: without this they would keep the previous session's verdict.
         write_connection_state("unreachable", target_url)
+        phase_end("connecting", session_key=session_key, ok=False)
         offline_message = (
             "## ⚠ Cognee Memory OFFLINE\n"
             f"The managed Cognee endpoint {target_url} is unreachable. "
@@ -2437,6 +2402,9 @@ async def _start(payload: dict | None = None) -> dict:
             },
         }
     if will_boot and _LAZY_BOOTSTRAP:
+        # The detached worker ends this phase once the server answers and the
+        # session is registered; the status surfaces show it meanwhile.
+        phase_begin("setting_up", "starting memory server", session_key=session_key)
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
         user_id = os.environ.get("COGNEE_USER_ID", "")
     else:
@@ -2453,8 +2421,10 @@ async def _start(payload: dict | None = None) -> dict:
         if not ok:
             if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url) and not managed_locked:
                 # Inline attempt failed; retry the heavy path out of band.
+                phase_begin("setting_up", "starting memory server", session_key=session_key)
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:
+                phase_end("connecting", session_key=session_key, ok=False)
                 return {}
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
@@ -2497,6 +2467,7 @@ async def _start(payload: dict | None = None) -> dict:
     )
 
     ready = server_live or server_ready_hint(str(config.get("base_url", "") or ""))
+    phase_end("connecting", session_key=session_key, ok=bool(ready))
     return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
 
 

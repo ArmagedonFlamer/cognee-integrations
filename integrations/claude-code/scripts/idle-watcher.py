@@ -110,6 +110,8 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
     try:
         from _plugin_common import (  # type: ignore
             http_api_ready,
+            phase_begin,
+            phase_end,
             run_session_improve_detailed,
             set_session_key,
         )
@@ -120,7 +122,11 @@ async def _improve_once(session_id: str, dataset: str, config: dict) -> bool:
         if not http_api_ready():
             _log("bridge_skipped_no_auth", session=session_id, dataset=dataset)
             return False
-        outcome = run_session_improve_detailed(dataset, session_id, trigger="idle")
+        phase_begin("consolidating")
+        try:
+            outcome = run_session_improve_detailed(dataset, session_id, trigger="idle")
+        finally:
+            phase_end("consolidating", ok=bool(locals().get("outcome", {}).get("ok")))
         _log(
             "session_bridge_done",
             session=session_id,

@@ -12,6 +12,73 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Live activity in the status line.** The bar now says what memory is doing while
+  it happens (`recalling…`, `saving…`, `learning from this session…`, `setting up memory ·
+  starting memory server…`, `preserving context…`, `saving session…`) and, once
+  done, what it did (`recalled 3 memories`, `saved 5 memories`, `memory
+  updated`, `memory ready`). A finished result stays until the next
+  operation begins and turns faint after a minute. The hooks write one activity
+  marker per session (`~/.cognee-plugin/claude-code/phase/<session>.json`) at the
+  start and end of every operation; the renderer reads it, so the bar stays
+  network-free. `COGNEE_STATUSLINE_ACTIVITY=false` hides the segment;
+  `COGNEE_STATUSLINE_ICON=brain` puts a 🧠 in front of the name.
+- **The status row above the prompt, through a hooks module (a Claude Code mod).**
+  `hooks/register.ts` draws the row in the band above the prompt, in the Code tab
+  of the Desktop app (where a settings-file `statusLine` does not render) and in
+  a terminal alike, with a braille spinner while an operation runs. In a terminal
+  the module marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`)
+  and the renderer, run as a settings-file status line, prints nothing for a
+  marked session, so the row is not shown twice. It also adds what memory is doing after the spinner
+  while Claude works (on the desktop for every phase; in a terminal only for the
+  async phases, whose hooks show no status message of their own) and one line
+  under each answer with how many memories it was answered with (quiet when
+  none). The module never calls the Cognee server and runs nothing on a timer
+  while idle: it reads the activity marker on the hooks' own events, polls it once
+  a second only while an operation runs, and runs the plugin's own renderer
+  (`cognee_statusline_render.py --json`, local, no network) on those events to
+  get the dataset, mode, connection state and credits. Four `/config` rows
+  (`icon`, `band`, `spinner`, `answerLine`) switch each piece off. Needs Claude
+  Code 2.1.287 (terminal) or 2.1.286 (Desktop); on older versions and wherever
+  mods are disabled the settings hooks keep running unchanged.
+- **The dataset name in the status row is a picker.** It lists the datasets you
+  can write to, plus `+ new dataset…`, which turns the picker into a text field
+  for a dataset that does not exist yet (one listing when the band is first drawn, unawaited, and after
+  each switch) and switches the session on pick with no model turn (the plugin's
+  `switch-dataset.py`, the session it leaves synced first); the row says
+  `switching dataset…` meanwhile and a toast reports the outcome, errors
+  included. Plain text until the listing lands or when it fails.
+  `/cognee-dataset <name>` switches from the prompt the same way, on every
+  surface; `/cognee-dataset` alone lists the datasets.
+- **Two tools Claude calls directly.** The hooks module registers
+  `mcp__cognee-memory__search` (`query`, `top_k`, `scope` graph|code,
+  `dataset_id`) and `mcp__cognee-memory__remember` (`content` or `file`,
+  `category` user|project|agent), served by `cognee-search.sh` and
+  `cognee-remember.sh` with typed arguments: no skill file to read and no Bash
+  row; a graph hit is trimmed to its retrieved context (`recall-trim.py`) the
+  way the prompt hook trims it. Both sit behind tool search. An unreachable server is an error result,
+  never an empty answer; an empty list from a reachable one is authoritative.
+  The spinner says `searching memory…` / `remembering…` while they run. A fifth
+  `/config` row, `tools`, turns the registration off; the skills are unchanged
+  and remain the path for every Claude Code that does not load mods.
+
+### Changed
+- **The plugin no longer installs a settings-file status line.** The status row
+  is the hooks module's, above the prompt, in a terminal and in the Desktop app
+  alike. The first session start on this version removes the `statusLine` entry
+  earlier versions wrote to `~/.claude/settings.json` (only one whose command
+  runs the plugin's own `cognee-statusline.sh`; a status line you set yourself
+  is never touched). `COGNEE_STATUSLINE` and `COGNEE_STATUSLINE_REFRESH_INTERVAL`
+  no longer do anything. The renderer is still a complete `statusLine` command
+  for anyone who adds the entry by hand (the README shows it), and it prints
+  nothing in a session where the module draws the row, so the two never show
+  together. On a Claude Code that does not load mods no row is drawn unless you
+  add that entry.
+- **The memory-hit counters left the status line.** `· 5 memory hits · 12/40 turns
+  had hits this session` (and the `COGNEE_STATUSLINE_COUNTS` per-scope strip) are
+  replaced by the activity segment above. The per-session recall counts are still
+  written for `cognee-plugin metrics`.
+
 ### Fixed
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
   capture skipped `.env`, SSH keys, `~/.aws/credentials`, `.npmrc` and the other

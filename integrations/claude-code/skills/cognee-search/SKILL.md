@@ -7,6 +7,14 @@ description: Search Cognee memory. Session memory is automatically searched on e
 
 Search both session memory and the permanent knowledge graph, optionally filtered by data category.
 
+## The `search` tool, when it is listed
+
+Where Claude Code loads the plugin's hooks module, `mcp__cognee-memory__search`
+(`query`, `top_k`, `scope` graph|code, `dataset_id`) runs the same wrapper as
+this skill with typed arguments and no Bash call. Prefer it when it is among your
+tools (load its schema through tool search); this skill is the path everywhere
+else, and its notes below on reading results and on other datasets apply to both.
+
 ## Automatic session search
 
 Session memory is searched **automatically on every user prompt** via the `UserPromptSubmit` hook. You do not need to run this skill to access current-session context.

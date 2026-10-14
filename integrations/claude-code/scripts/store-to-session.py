@@ -36,6 +36,8 @@ from _plugin_common import (
     is_observer_child,
     load_resolved,
     notify,
+    phase_begin,
+    phase_end,
     pop_pending_prompt,
     quiet_hook_output,
     record_payment_required,
@@ -232,9 +234,11 @@ async def _store_tool_call(payload: dict) -> None:
         hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
         return
 
+    phase_begin("saving")
     try:
         result = remember_entry_via_http(dataset, session_id, entry)
     except Exception as exc:
+        phase_end("saving", count=0)
         # Same reasoning as the Stop path: the server_usable() guard above only
         # catches an outage already known about, so a server that dies inside the
         # ready marker's 30s TTL lands here with a real, failed write. Buffer the
@@ -270,6 +274,7 @@ async def _store_tool_call(payload: dict) -> None:
             notify(f"trace store failed ({exc})")
         return
 
+    phase_end("saving", count=1 if result else 0)
     if result:
         clear_payment_required()
         trace_id = (
@@ -347,9 +352,11 @@ async def _store_assistant_stop(payload: dict) -> None:
         hook_log("store_buffered_warming", {"hook": "stop"})
         return
 
+    phase_begin("saving")
     try:
         result = remember_entry_via_http(dataset, session_id, entry)
     except Exception as exc:
+        phase_end("saving", count=0)
         # A write that FAILED must still be buffered, or the turn is simply lost.
         # The `server_usable()` guard above only catches an outage the plugin
         # already knows about: the ready marker has a 30s TTL, so a server that
@@ -386,6 +393,7 @@ async def _store_assistant_stop(payload: dict) -> None:
             notify(f"stop store failed ({exc})")
         return
 
+    phase_end("saving", count=1 if result else 0)
     if result:
         clear_payment_required()
         qa_id = (

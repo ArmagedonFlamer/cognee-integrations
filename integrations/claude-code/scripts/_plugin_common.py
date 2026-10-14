@@ -1984,6 +1984,146 @@ def touch_activity() -> None:
         hook_log("activity_touch_failed", {"path": str(_ACTIVITY_FILE), "error": str(exc)[:200]})
 
 
+# ── Live activity marker ─────────────────────────────────────────────────────
+# What memory is doing right now, and the last thing it finished, for the status
+# surfaces (the terminal status line and the Claude Code mod's desktop band)
+# to show without any network call. One file per host session under
+# ``phase/<session_key>.json``; machine-wide work (the idle watcher, the detached
+# final sync) writes under its own session key too, so every bar attributes what
+# it shows.
+#
+# Shape::
+#
+#     {"session_key": "...",
+#      "active": {"phase": "recalling", "detail": "", "started_at": t, "updated_at": t},
+#      "results": {"recalled": {"count": 3, "at": t}, "saved": {"count": 5, "at": t}},
+#      "saved_this_turn": 5}
+#
+# ``active`` is null between operations. ``results`` keeps the latest outcome of
+# each kind; the renderer shows the most recent one. The saved count accumulates
+# per turn (every trace entry and the QA pair) and resets when the next recall
+# begins, so "saved 5 memories" means this turn.
+#
+# Phases overlap (a tool-call save lands while the next prompt's recall runs):
+# a begin never displaces a fresher, higher-priority phase, and an end only
+# clears the phase it began. Best-effort throughout — the marker must never
+# break a hook.
+_PHASE_DIR = _PLUGIN_DIR / "phase"
+_PHASE_STALE_SECONDS = 90.0
+# Lower number wins the single ``active`` slot while both are fresh.
+_PHASE_PRIORITY = {
+    "setting_up": 0,
+    "connecting": 1,
+    "recalling": 2,
+    "anchoring": 3,
+    "syncing": 4,
+    "saving": 5,
+    "indexing": 6,
+    "consolidating": 7,
+}
+_PHASE_RESULT_KIND = {
+    "setting_up": "ready",
+    "connecting": "ready",
+    "recalling": "recalled",
+    "anchoring": "anchored",
+    "syncing": "synced",
+    "saving": "saved",
+    "indexing": "indexed",
+    "consolidating": "consolidated",
+}
+
+
+def _phase_key(session_key: Optional[str]) -> str:
+    key = str(session_key or get_session_key() or "").strip()
+    if not key:
+        key = "_machine"
+    # The key comes from a hook payload; never build a path from it unchecked.
+    return "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in key)[:200]
+
+
+def _phase_path(session_key: Optional[str]) -> Path:
+    return _PHASE_DIR / f"{_phase_key(session_key)}.json"
+
+
+def _read_phase(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def phase_begin(phase: str, detail: str = "", session_key: Optional[str] = None) -> None:
+    """Record that ``phase`` (recalling, saving, consolidating, ...) is running."""
+    try:
+        path = _phase_path(session_key)
+        state = _read_phase(path)
+        now = time.time()
+        current = state.get("active") if isinstance(state.get("active"), dict) else None
+        if current:
+            fresh = now - float(current.get("updated_at") or 0) < _PHASE_STALE_SECONDS
+            keeps_slot = _PHASE_PRIORITY.get(str(current.get("phase")), 99) < _PHASE_PRIORITY.get(
+                phase, 99
+            )
+            if fresh and keeps_slot and current.get("phase") != phase:
+                # A more important phase owns the slot; leave it. Our own end
+                # still records its result below.
+                return
+        state["session_key"] = _phase_key(session_key)
+        state["active"] = {
+            "phase": phase,
+            "detail": str(detail or "")[:120],
+            "started_at": now,
+            "updated_at": now,
+        }
+        if phase == "recalling":
+            # A new turn: the per-turn save counter starts over.
+            state["saved_this_turn"] = 0
+        _write_json_file(path, state)
+    except Exception as exc:
+        hook_log("phase_begin_failed", {"phase": phase, "error": str(exc)[:200]})
+
+
+def phase_end(
+    phase: str,
+    count: Optional[int] = None,
+    session_key: Optional[str] = None,
+    ok: bool = True,
+) -> None:
+    """Record that ``phase`` finished; ``count`` is what it recalled or saved."""
+    try:
+        path = _phase_path(session_key)
+        state = _read_phase(path)
+        now = time.time()
+        state["session_key"] = _phase_key(session_key)
+        current = state.get("active") if isinstance(state.get("active"), dict) else None
+        if current and current.get("phase") == phase:
+            state["active"] = None
+        results = state.get("results") if isinstance(state.get("results"), dict) else {}
+        kind = _PHASE_RESULT_KIND.get(phase, phase)
+        entry: dict = {"at": now, "ok": bool(ok)}
+        if phase == "saving":
+            total = int(state.get("saved_this_turn") or 0) + int(count or 0)
+            state["saved_this_turn"] = total
+            entry["count"] = total
+        elif count is not None:
+            entry["count"] = int(count)
+        results[kind] = entry
+        state["results"] = results
+        _write_json_file(path, state)
+    except Exception as exc:
+        hook_log("phase_end_failed", {"phase": phase, "error": str(exc)[:200]})
+
+
+def phase_snapshot(session_key: Optional[str] = None) -> dict:
+    """The marker as the status surfaces read it (stale ``active`` cleared)."""
+    state = _read_phase(_phase_path(session_key))
+    current = state.get("active") if isinstance(state.get("active"), dict) else None
+    if current and time.time() - float(current.get("updated_at") or 0) >= _PHASE_STALE_SECONDS:
+        state["active"] = None
+    return state
+
+
 def _local_api_url_with_source() -> tuple[str, str]:
     local_env = str(os.environ.get("COGNEE_LOCAL_API_URL", "") or "").strip()
     if local_env:

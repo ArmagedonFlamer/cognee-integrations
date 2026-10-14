@@ -29,6 +29,8 @@ from _plugin_common import (
     http_api_ready,
     is_observer_child,
     load_resolved,
+    phase_begin,
+    phase_end,
     resolve_session_key_from_payload,
     resolved_http_endpoint_auth,
     run_session_improve_detailed,
@@ -294,6 +296,7 @@ async def _sync(
         _load_resolved()
     )
     targets = _sync_targets(session_id, dataset, session_key, include_touched)
+    phase_begin("syncing", session_key=session_key)
     hook_log(
         "sync_start",
         {
@@ -365,6 +368,7 @@ async def _sync(
             # in this list on purpose.
             raise RuntimeError(f"final session sync incomplete for: {', '.join(incomplete)}")
     finally:
+        phase_end("syncing", session_key=session_key)
         if unregister_on_finish:
             if not (was_registered or has_api_key):
                 hook_log(
