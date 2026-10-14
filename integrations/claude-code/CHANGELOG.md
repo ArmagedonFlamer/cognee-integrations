@@ -10,7 +10,7 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.7.0]
 
 ### Added
 - **Live activity in the status line.** The bar now says what memory is doing while
@@ -98,6 +98,33 @@ project adheres to [Semantic Versioning](https://semver.org/).
   submit runs in the background and a server-side skip on a held lock looks the same
   until COG-6828 (SDK-1071).
 
+- **Per-session injection ledger.** Cloud recall remembers which memory entries are
+  already in Claude's context and sends only new ones (`N new, M already in context`).
+  The ledger resets on `/clear` and compaction.
+- **Native auto-memory management in cloud mode.** The plugin turns off Claude's own
+  file memory while cloud memory is active and restores it when cloud mode is off. It
+  never overrides an explicit user choice; `/cognee-doctor` shows the setting.
+- **Distilled-memory digest at cloud session start.** A bounded, tenant-scoped digest is
+  appended to the startup context and seeds the ledger, so the same facts are not sent
+  again on the first prompt. The worker refreshes it.
+- **Durable cloud capture worker.** Hooks write a per-user queue that a background worker
+  drains in order, with retries, cached health and truthful improve results.
+- **Per-session value counters and a last-session recap.** The status line shows the
+  cumulative recalled count.
+- **Skills:** performance report (`cognee-report`), project handoff, plugin behavior
+  explanations and version-gated architecture skills.
+- **Idempotent capture.** Each event gets a stable id. Frozen requests are replayed
+  against server-side receipts, so a retry never stores a duplicate.
+- **Memory outcome trials** (opt-in eval tooling): repeated isolated trials with citation
+  scoring and usage accounting. Live citation metrics are a lower bound; see `OUTCOMES.md`.
+- **Citable evidence.** Recall can include compact evidence indexes with source and
+  version references, batch citation expansion, and body-free per-item injection
+  receipts. Older servers keep the previous recall format.
+- **New status line style.** One purple line with bold dataset and location, the
+  cumulative recalled count (repeats count again), a single hit-rate bar, light/dark
+  themes and a short shimmer when memory is recalled. `COGNEE_STATUSLINE_STYLE=classic`
+  restores the previous line byte-for-byte.
+
 ### Changed
 - **The plugin no longer installs a settings-file status line.** The status row
   is the hooks module's, above the prompt, in a terminal and in the Desktop app
@@ -133,55 +160,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   always-on cost that `claude plugin details` estimates from about 1,352 to 2,899
   tokens per session. A `claude plugin eval` routing suite lives under `evals/`.
 
-### Fixed
-- **The "Cognee Memory Connected" message said `Mode: cloud` for local sessions.**
-  Its mode word was "is a URL set", checked after the bootstrap had filled the
-  localhost default into the configured URL, so every local session, a
-  `COGNEE_BACKEND=local` terminal included, was announced as cloud while the
-  status line (correctly) said local. The message now decides the way the status
-  line does: the backend switch first, then whether the target host is loopback.
-- **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
-  on the session alone and kept for an hour, so a chat that was resumed and left again
-  within the hour was skipped as already synced. The marker is now keyed on the session
-  plus its running stored-item count (buffered writes included): the two workers of one
-  exit still sync once, an exit after new turns syncs again, and an exit with nothing
-  new is skipped. The count is an append-only file per session, so parallel store hooks
-  never lose or reset it. A final sync whose every attempt failed releases its marker,
-  so the next exit retries (SDK-1071).
-- The memory tags, credit state and stored count live in the session's
-  `sessions/<session>/` folder, which the state sweep removes after a week idle.
-
-## [1.7.0]
-
-### Added
-- **Per-session injection ledger.** Cloud recall remembers which memory entries are
-  already in Claude's context and sends only new ones (`N new, M already in context`).
-  The ledger resets on `/clear` and compaction.
-- **Native auto-memory management in cloud mode.** The plugin turns off Claude's own
-  file memory while cloud memory is active and restores it when cloud mode is off. It
-  never overrides an explicit user choice; `/cognee-doctor` shows the setting.
-- **Distilled-memory digest at cloud session start.** A bounded, tenant-scoped digest is
-  appended to the startup context and seeds the ledger, so the same facts are not sent
-  again on the first prompt. The worker refreshes it.
-- **Durable cloud capture worker.** Hooks write a per-user queue that a background worker
-  drains in order, with retries, cached health and truthful improve results.
-- **Per-session value counters and a last-session recap.** The status line shows the
-  cumulative recalled count.
-- **Skills:** performance report (`cognee-report`), project handoff, plugin behavior
-  explanations and version-gated architecture skills.
-- **Idempotent capture.** Each event gets a stable id. Frozen requests are replayed
-  against server-side receipts, so a retry never stores a duplicate.
-- **Memory outcome trials** (opt-in eval tooling): repeated isolated trials with citation
-  scoring and usage accounting. Live citation metrics are a lower bound; see `OUTCOMES.md`.
-- **Citable evidence.** Recall can include compact evidence indexes with source and
-  version references, batch citation expansion, and body-free per-item injection
-  receipts. Older servers keep the previous recall format.
-- **New status line style.** One purple line with bold dataset and location, the
-  cumulative recalled count (repeats count again), a single hit-rate bar, light/dark
-  themes and a short shimmer when memory is recalled. `COGNEE_STATUSLINE_STYLE=classic`
-  restores the previous line byte-for-byte.
-
-### Changed
 - Hook injections are capped at 9,000 characters overall. Whole entries are dropped in
   priority order; the header is always kept and kept/dropped counts are logged. Graph
   entities and facts are kept ahead of passages. Tiny configured budgets are clamped to
@@ -213,6 +191,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
   full-length re-test that times out again doubles that window, up to an hour.
 
 ### Fixed
+- **The "Cognee Memory Connected" message said `Mode: cloud` for local sessions.**
+  Its mode word was "is a URL set", checked after the bootstrap had filled the
+  localhost default into the configured URL, so every local session, a
+  `COGNEE_BACKEND=local` terminal included, was announced as cloud while the
+  status line (correctly) said local. The message now decides the way the status
+  line does: the backend switch first, then whether the target host is loopback.
+- **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
+  on the session alone and kept for an hour, so a chat that was resumed and left again
+  within the hour was skipped as already synced. The marker is now keyed on the session
+  plus its running stored-item count (buffered writes included): the two workers of one
+  exit still sync once, an exit after new turns syncs again, and an exit with nothing
+  new is skipped. The count is an append-only file per session, so parallel store hooks
+  never lose or reset it. A final sync whose every attempt failed releases its marker,
+  so the next exit retries (SDK-1071).
+- The memory tags, credit state and stored count live in the session's
+  `sessions/<session>/` folder, which the state sweep removes after a week idle.
+
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
   capture skipped `.env`, SSH keys, `~/.aws/credentials`, `.npmrc` and the other
   secret-file globs only when the file arrived as a structured path (`Read`,
