@@ -19,6 +19,8 @@ EVENT_NAMES = {
     "hook:cloud_worker_idle_exit": "cloud.cloud_worker_idle_exit",
     "hook:cloud_delivery_bookkeeping_failed": "cloud.cloud_delivery_bookkeeping_failed",
     "hook:context_digest_inject_failed": "cloud.context_digest_inject_failed",
+    "hook:context_cache_refresh_failed": "cloud.context_cache_refresh_failed",
+    "hook:context_cache_refresh_dropped": "cloud.context_cache_refresh_dropped",
     "claude-observer:completion": "observer.completion",
     "claude-observer:completion_failed": "observer.completion_failed",
     "claude-observer:handler_exception": "observer.handler_exception",

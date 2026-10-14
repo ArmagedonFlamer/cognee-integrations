@@ -164,3 +164,51 @@ def test_old_rendering_hashes_request_a_fresh_digest(cache):
     assert cache.load("ds") == {}
     assert cache.inject("ds", "new-host") == ""
     assert cache.cache_path("ds").with_suffix(".wanted.json").exists()
+
+
+def test_failing_refresh_backs_off_logs_and_is_eventually_dropped(cache, monkeypatch):
+    import _cloud_worker
+
+    events = []
+    monkeypatch.setattr(_cloud_worker, "log", lambda event, **kw: events.append(event))
+
+    def broken(*a, **kw):
+        raise OSError("cloud unreachable")
+
+    monkeypatch.setattr(cache, "build", broken)
+    cache.request_refresh("ds", "old", "new-host")
+    wanted = cache.cache_path("ds").with_suffix(".wanted.json")
+    clock = cache.time.time()
+    delays = []
+    for _ in range(cache.MAX_REFRESH_ATTEMPTS - 1):
+        monkeypatch.setattr(cache.time, "time", lambda: clock)
+        cache.refresh_pending()
+        delays.append(cache.read(wanted)["next_attempt"] - clock)
+        clock += delays[-1]
+    assert delays == [60, 120, 240, 480]
+    monkeypatch.setattr(cache.time, "time", lambda: clock)
+    cache.refresh_pending()
+    assert not wanted.exists()
+    assert events.count("context_cache_refresh_failed") == cache.MAX_REFRESH_ATTEMPTS
+    assert events[-1] == "context_cache_refresh_dropped"
+    assert not _cloud_worker.has_pending_work(now=clock)
+
+
+@pytest.mark.parametrize("change", ["other_target", "expired"])
+def test_orphaned_refresh_requests_do_not_keep_the_worker_alive(cache, monkeypatch, change):
+    import _cloud_worker
+
+    monkeypatch.setattr(_cloud_worker, "log", lambda *a, **kw: None)
+    monkeypatch.setattr(cache, "build", lambda *a, **kw: pytest.fail("must not refresh"))
+    cache.request_refresh("ds", "old", "new-host")
+    wanted = cache.cache_path("ds").with_suffix(".wanted.json")
+    if change == "other_target":
+        other = {"base_url": "https://cloud", "principal": "b"}
+        monkeypatch.setattr(cache, "target", lambda: other)
+    else:
+        item = cache.read(wanted)
+        item["requested_at"] -= cache.TTL + 1
+        cache.atomic_json(wanted, item)
+    cache.refresh_pending()
+    assert not wanted.exists()
+    assert not _cloud_worker.has_pending_work()

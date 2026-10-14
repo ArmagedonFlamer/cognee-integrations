@@ -359,6 +359,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.cloud_worker_idle_exit`: the worker exited with no queued work and no session active for 30 minutes; the next hook restarts it.
 - `cloud.cloud_delivery_bookkeeping_failed`: a capture was delivered but updating counters or queuing the follow-up improve failed; the event is not re-sent.
 - `cloud.context_digest_inject_failed`: startup digest skipped because its cache could not be read.
+- `cloud.context_cache_refresh_failed`: a digest refresh failed; it is retried with exponential backoff and the last good digest stays in use.
+- `cloud.context_cache_refresh_dropped`: a pending digest refresh was removed (another account, older than the cache TTL, or too many failed attempts).
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
 

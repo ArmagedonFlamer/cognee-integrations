@@ -15,6 +15,9 @@ from _injection_ledger import atomic_json, entry_hash, seed
 ENTRY_FORMAT = "bare-records-v1"
 TTL = 24 * 3600
 REFRESH_INTERVAL = 30 * 60
+#: A refresh that keeps failing is dropped; the next improve or active session
+#: asks again, and the last good digest stays in place meanwhile.
+MAX_REFRESH_ATTEMPTS = 5
 QUERY = "project decisions conventions pitfalls user preferences and open tasks"
 RAW_HISTORY = re.compile(
     r"Previous conversation|Session ID:|(?:^|\n)(?:Question:|Answer:|Q:|A:)", re.I
@@ -228,12 +231,25 @@ def build(
 
 
 def refresh_pending() -> None:
-    """Called only by the worker; failed reads preserve the last good cache."""
+    """Called only by the worker; failed reads preserve the last good cache.
+
+    Failures are logged and back off exponentially. A request for another
+    account, older than the cache TTL, or past MAX_REFRESH_ATTEMPTS is removed,
+    so it cannot keep the worker from idling out.
+    """
+    from _cloud_worker import log
     from _plugin_common import set_session_key
 
+    now = time.time()
     for path in (root() / "context-cache").glob("*.wanted.json"):
         item = read(path)
-        if item.get("target") != target() or time.time() < item.get("next_attempt", 0):
+        if not item or item.get("target") != target():
+            _drop(path, "other_target")
+            continue
+        if now - item.get("requested_at", 0) > TTL:
+            _drop(path, "expired")
+            continue
+        if now < item.get("next_attempt", 0):
             continue
         set_session_key(item.get("host_key", ""))
         try:
@@ -248,10 +264,28 @@ def refresh_pending() -> None:
             # A request arriving during refresh must survive.
             if read(path).get("requested_at") == item.get("requested_at"):
                 path.unlink()
-        except Exception:
-            item["next_attempt"] = time.time() + 60
-            if read(path).get("requested_at") == item.get("requested_at"):
-                atomic_json(path, item)
+        except Exception as exc:
+            attempts = int(item.get("attempts", 0)) + 1
+            log(
+                "context_cache_refresh_failed",
+                dataset=item.get("dataset", ""),
+                attempts=attempts,
+                error=type(exc).__name__,
+            )
+            if read(path).get("requested_at") != item.get("requested_at"):
+                continue
+            if attempts >= MAX_REFRESH_ATTEMPTS:
+                _drop(path, "attempts")
+                continue
+            item.update(attempts=attempts, next_attempt=now + min(3600, 60 * 2 ** (attempts - 1)))
+            atomic_json(path, item)
+
+
+def _drop(path: Path, reason: str) -> None:
+    from _cloud_worker import log
+
+    path.unlink(missing_ok=True)
+    log("context_cache_refresh_dropped", file=path.name, reason=reason)
 
 
 def schedule_active_refreshes() -> None:
