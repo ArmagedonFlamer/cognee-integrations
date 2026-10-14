@@ -1898,7 +1898,9 @@ def read_improve_state(session_id: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
+def record_improve_success(
+    session_id: str, dataset: str, trigger: str, turn_count: int | None = None
+) -> None:
     """Persist that an improve of ``session_id`` just landed.
 
     Called by ``run_session_improve_detailed`` itself on a confirmed 2xx submit,
@@ -1906,6 +1908,8 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
     a success. Replaces the whole state, which also clears any failure backoff.
     The auto trigger reads this back through ``improve_throttle_reason``.
     Best-effort: a write failure is logged and never fails the improve.
+    ``turn_count`` is the count when the improve was submitted, when known:
+    entries stored while it ran are then still new for the next one.
     """
     if not session_id:
         return
@@ -1916,7 +1920,9 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
                 "session_id": session_id,
                 "dataset": dataset,
                 "last_improved_at": time.time(),
-                "turn_count_at_improve": read_turn_count(session_id),
+                "turn_count_at_improve": (
+                    read_turn_count(session_id) if turn_count is None else turn_count
+                ),
                 "trigger": trigger,
             },
         )

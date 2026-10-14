@@ -29,9 +29,10 @@ SERVER_WIDE_FAILURES = {401, 402, 403, 408, 429}
 #: The worker exits after this long with no queued work and no active session;
 #: every hook calls ensure_worker(), so the next prompt starts it again.
 IDLE_EXIT_SECONDS = 30 * 60
-#: A submit that timed out client-side is still running on the server; after this
-#: many, the request is archived instead of paying for the same improve again.
-MAX_IMPROVE_TIMEOUTS = 3
+#: Failed improves that may already have spent LLM tokens (timeouts, errored or
+#: unexpected results, HTTP errors) are archived after this many attempts.
+#: Busy/running answers and an unreachable server cost nothing and are not counted.
+MAX_IMPROVE_FAILURES = 3
 
 
 def enabled(runtime: dict = None) -> bool:
@@ -228,6 +229,7 @@ def request_improve(dataset: str, session_id: str, reason: str = "stop") -> Path
                 "generation": uuid.uuid4().hex,
                 "created_at": now if explicit else old.get("created_at", now),
                 "attempts": 0 if explicit else old.get("attempts", 0),
+                "failures": 0 if explicit else old.get("failures", 0),
                 "next_attempt": 0 if explicit else old.get("next_attempt", 0),
                 "last_error": old.get("last_error", ""),
                 "requested_at": now,
@@ -542,69 +544,87 @@ def process_improves(improve, *, now: float = None) -> int:
     if not due:
         return 0
     path, item = due[0]
+    from _plugin_common import read_turn_count
+
+    turns_at_submit = read_turn_count(item["session_id"])
     try:
         outcome = improve_outcome(improve(item))
     except Exception as exc:
-        outcome = {
-            "ok": False,
-            "reason": "timed out" if _timed_out(exc) else type(exc).__name__,
-        }
+        outcome = {"ok": False, "reason": _failure_reason(exc)}
+    reason = "completed" if outcome.get("ok") else outcome.get("reason", "unconfirmed")
+    # Record what the server did whatever happened to the request file meanwhile:
+    # a request written while this ran must not look un-throttled and re-submit.
+    if outcome.get("ok"):
+        from _session_stats import update
+
+        update(
+            item["host_key"],
+            improves_landed=1,
+            distillation_entries=outcome.get("distillation_entries", 0),
+        )
+        record_improve_success(
+            item["session_id"], item["dataset"], item["reason"], turn_count=turns_at_submit
+        )
+        # "at" is the submit time, so a sync requested after it never counts as done.
+        atomic_json(
+            session_dir(item["host_key"]) / "last-improve.json",
+            {**outcome, "at": now, "session_id": item["session_id"]},
+        )
+        from _context_cache import request_refresh
+
+        request_refresh(item["dataset"], item["session_id"], item["host_key"])
+    else:
+        record_improve_failure(item["session_id"], item["dataset"], item["reason"], reason)
+    log(
+        "improve_fired",
+        session=item["session_id"],
+        dataset=item["dataset"],
+        trigger=item["reason"],
+        ok=bool(outcome.get("ok")),
+        reason=reason,
+    )
     with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
         if not acquired:
-            return 0
+            return int(bool(outcome.get("ok")))
         current = read(path)
         if current.get("generation") != item.get("generation"):
-            return 0  # a newer request must not be acknowledged or overwritten
+            # A newer request decides on its own pass, against the state above.
+            return int(bool(outcome.get("ok")))
         if outcome.get("ok"):
-            from _session_stats import update
-
-            update(
-                item["host_key"],
-                improves_landed=1,
-                distillation_entries=outcome.get("distillation_entries", 0),
-            )
-            record_improve_success(item["session_id"], item["dataset"], item["reason"])
             path.unlink()
-            atomic_json(
-                session_dir(item["host_key"]) / "last-improve.json",
-                {**outcome, "at": now, "session_id": item["session_id"]},
-            )
-            log(
-                "improve_fired",
-                session=item["session_id"],
-                dataset=item["dataset"],
-                trigger=item["reason"],
-                ok=True,
-                reason="completed",
-            )
-            from _context_cache import request_refresh
-
-            request_refresh(item["dataset"], item["session_id"], item["host_key"])
             return 1
-        reason = outcome.get("reason", "unconfirmed")
-        record_improve_failure(item["session_id"], item["dataset"], item["reason"], reason)
-        log(
-            "improve_fired",
-            session=item["session_id"],
-            dataset=item["dataset"],
-            trigger=item["reason"],
-            ok=False,
-            reason=reason,
-        )
+        if reason == "skipped":
+            _expire(path, "improve_skipped")  # the server had nothing to do
+            return 0
+        if reason not in {"busy", "running", "unreachable"}:
+            item["failures"] = int(item.get("failures", 0)) + 1
+            if item["failures"] >= MAX_IMPROVE_FAILURES:
+                _expire(path, "improve_failed")
+                return 0
         if reason == "timed out":
             # The server is most likely still running this improve. Resubmitting
-            # soon pays for it twice; wait out the cooldown, then give up.
+            # soon pays for it twice; wait out the cooldown.
             from _plugin_common import improve_cooldown_seconds
 
-            item["timeouts"] = int(item.get("timeouts", 0)) + 1
-            if item["timeouts"] >= MAX_IMPROVE_TIMEOUTS:
-                _expire(path, "improve_timed_out")
-                return 0
             retry_after = max(improve_cooldown_seconds(), improve_submit_timeout())
         else:
             retry_after = 5 if reason in {"busy", "running"} else None
         _retry(path, item, now, reason, retry_after=retry_after)
     return 0
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """A short reason; "unreachable" when the request never reached the server."""
+    import urllib.error
+
+    if _timed_out(exc):
+        return "timed out"
+    code = getattr(exc, "code", None)
+    if isinstance(exc, urllib.error.HTTPError):
+        return "unreachable" if code in {429, 503} else f"http_{code}"
+    if isinstance(exc, (urllib.error.URLError, ConnectionError)):
+        return "unreachable"
+    return type(exc).__name__
 
 
 def submit_improve(item: dict):

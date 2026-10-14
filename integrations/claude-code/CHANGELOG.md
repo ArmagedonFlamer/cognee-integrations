@@ -106,8 +106,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `COGNEE_AUTO_IMPROVE_EVERY` delivered entries, within the same cooldown, failure
   backoff and "nothing new" check, instead of one after every turn. Session end,
   pre-compact, manual sync and dataset switch still run at once. The worker submits one improve at a time
-  (explicit ones first) with the 420-second submit timeout, does not resubmit a
-  timed-out improve before the cooldown, and gives up after three timeouts.
+  (explicit ones first) with the 420-second submit timeout, and does not resubmit a
+  timed-out improve before the cooldown. An improve that fails in a way that may have
+  cost tokens (timeout, error, unexpected result) is given up after three attempts,
+  and one the server skipped is not retried; an unreachable server is retried at no
+  cost. A result is always recorded, even when a new request arrived while it ran, so
+  that request is throttled instead of submitted again at once.
 - The cloud worker runs each improve in a separate short-lived process, so captures,
   new-session registration and digest refreshes keep flowing while an improve runs
   for minutes. Session-end and pre-compact improves are skipped when nothing was

@@ -366,14 +366,14 @@ def test_timed_out_improve_is_not_resubmitted_soon_and_is_capped(worker, monkeyp
         raise TimeoutError("The read operation timed out")
 
     now = worker.time.time()
-    for attempt in range(1, worker.MAX_IMPROVE_TIMEOUTS):
+    for attempt in range(1, worker.MAX_IMPROVE_FAILURES):
         assert worker.process_improves(slow, now=now) == 0
         due = worker.read(path)["next_attempt"]
         assert due >= now + 5400
         assert worker.process_improves(slow, now=due - 1) == 0  # nothing resubmitted early
         now = due
     assert worker.process_improves(slow, now=now) == 0
-    assert len(calls) == worker.MAX_IMPROVE_TIMEOUTS
+    assert len(calls) == worker.MAX_IMPROVE_FAILURES
     assert not path.exists() and (path.parent / "expired" / path.name).exists()
 
 
@@ -476,3 +476,72 @@ def test_main_loop_never_submits_an_improve_itself():
     ).read_text()
     loop = source[source.index("def run() -> None:") :]
     assert "process_improves(" not in loop and "start_improve_pass()" in loop
+
+
+def test_request_arriving_during_an_improve_is_throttled_not_resubmitted(worker):
+    import _plugin_common as common
+
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "turn_150")
+    calls = []
+
+    def improve(item):
+        calls.append(item["reason"])
+        # The session keeps working while the improve blocks for minutes.
+        common.bump_turn_counter("sid")
+        worker.request_improve("ds", "sid", "turn_300")
+        return COMPLETED
+
+    assert worker.process_improves(improve) == 1
+    assert common.read_improve_state("sid")["last_improved_at"] > 0
+    # The newer automatic request waits for the cooldown instead of paying again.
+    assert worker.process_improves(improve) == 0
+    assert calls == ["turn_150"]
+    # Entries stored during the improve are still new for the session-end one.
+    worker.request_improve("ds", "sid", "final")
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"stages": [{"status": "errored"}]},
+        {"stages": [{"status": "mystery"}, {"status": "completed"}]},
+        {"ok": True},
+    ],
+)
+def test_billable_failures_are_capped(worker, result):
+    path = worker.request_improve("ds", "sid", "manual")
+    now = worker.time.time()
+    calls = []
+    for _ in range(worker.MAX_IMPROVE_FAILURES):
+        worker.process_improves(lambda _: calls.append(1) or result, now=now)
+        if path.exists():
+            now = worker.read(path)["next_attempt"] + 1
+    assert len(calls) == worker.MAX_IMPROVE_FAILURES
+    assert not path.exists() and (path.parent / "expired" / path.name).exists()
+    assert worker.process_improves(lambda _: pytest.fail("archived")) == 0
+
+
+def test_skipped_improve_is_terminal(worker):
+    path = worker.request_improve("ds", "sid", "manual")
+    skipped = {"stages": [{"status": "skipped", "reason": "nothing_to_do"}]}
+    assert worker.process_improves(lambda _: skipped) == 0
+    assert not path.exists() and (path.parent / "expired" / path.name).exists()
+
+
+def test_unreachable_server_is_retried_without_using_up_attempts(worker):
+    import urllib.error
+
+    path = worker.request_improve("ds", "sid", "final")
+    now = worker.time.time()
+
+    def offline(_):
+        raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+    for _ in range(worker.MAX_IMPROVE_FAILURES + 2):
+        worker.process_improves(offline, now=now)
+        item = worker.read(path)
+        assert item["last_error"] == "unreachable" and item.get("failures", 0) == 0
+        now = item["next_attempt"] + 1
+    assert worker.process_improves(lambda _: COMPLETED, now=now) == 1
