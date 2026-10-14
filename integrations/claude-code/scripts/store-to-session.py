@@ -61,10 +61,10 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
     """Fire-and-forget session improve; failures are logged but never raised.
 
     The server bridges the session itself from its session cache (improve);
-    see run_session_improve_detailed. Shares the cooldown / backoff gate with the
-    idle watcher; the session-end sync ignores it and covers whatever a skip
-    here leaves behind. Without server auth there is nothing to submit to —
-    the session-end sync picks the session up once a key is available.
+    see run_session_improve_detailed. Honours the cooldown / backoff gate; the
+    session-end sync ignores it and covers whatever a skip here leaves behind.
+    Without server auth there is nothing to submit to — the session-end sync
+    picks the session up once a key is available.
     """
     if cloud_enabled():
         from _cloud_worker import request_improve
@@ -421,10 +421,10 @@ async def _store_assistant_stop(payload: dict) -> None:
     }
 
     if cloud_enabled(runtime):
-        from _cloud_worker import enqueue, request_improve
+        from _cloud_worker import enqueue
 
+        # The worker counts delivered entries toward the every-N improve trigger.
         enqueue(dataset, session_id, entry, "answer")
-        request_improve(dataset, session_id, "stop")
         bump_save_counter(session_id, "answer", buffered=True)
         return
 

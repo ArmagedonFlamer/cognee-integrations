@@ -2512,9 +2512,8 @@ async def _start(payload: dict | None = None) -> dict:
     # an immediate improve on startup.
     touch_activity()
 
-    # Launch the idle watcher (syncs session memory to graph after the agent
-    # goes idle). Runs in both local-server and cloud modes — the watcher picks
-    # the HTTP or local sync path itself. COGNEE_IDLE_DISABLED opts out.
+    # Launch the idle watcher (update and LLM-key checks, periodic shared-memory
+    # refresh). COGNEE_IDLE_DISABLED opts out.
     if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() not in (
         "1",
         "true",

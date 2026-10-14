@@ -49,6 +49,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   own heading and dropped first when the budget is tight, across every read dataset,
   so session learnings and remembered documents survive.
 - Only hits that were actually injected are reported, with explicit drop counts.
+- Automatic improve runs at most once a day per session: `COGNEE_IMPROVE_COOLDOWN`
+  now defaults to 24 hours, and a failed attempt backs off for the same window
+  (SDK-1072). Session end, manual sync and dataset switch still always run.
+- The idle watcher no longer runs improve after 60 quiet seconds, and
+  `COGNEE_IDLE_THRESHOLD` is gone (SDK-1074). Improve runs every
+  `COGNEE_AUTO_IMPROVE_EVERY` stored entries (within the cooldown), at session end,
+  from the exit watcher, on a dataset switch and on a manual sync.
 - Low-signal cloud traces are skipped and counted. Structured session summaries are used
   only when the server advertises support.
 - Bash results with meaningful output (test results, errors, diffs) are captured;
@@ -94,9 +101,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - `cognee-report` no longer crashes on Windows consoles that are not UTF-8.
 - The status line no longer hides credit or update notices when Claude Code does not
   report a terminal width, and Windows terminals get the real glyphs instead of ASCII.
-- Cloud improves after ordinary turns follow the same 90-minute cooldown, failure
-  backoff and "nothing new" check as local mode; session end, pre-compact, manual sync
-  and dataset switch still run at once. The worker submits one improve at a time
+- Cloud mode follows the local automatic improve policy: one improve every
+  `COGNEE_AUTO_IMPROVE_EVERY` delivered entries, within the same cooldown, failure
+  backoff and "nothing new" check, instead of one after every turn. Session end,
+  pre-compact, manual sync and dataset switch still run at once. The worker submits one improve at a time
   (explicit ones first) with the 420-second submit timeout, does not resubmit a
   timed-out improve before the cooldown, and gives up after three timeouts.
 - A delivered capture is never sent back to the queue when queuing its follow-up

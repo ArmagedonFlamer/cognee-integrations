@@ -364,14 +364,17 @@ def _after_delivery(item: dict, verified: bool) -> None:
         from _session_stats import update
 
         update(item["host_key"], saves=1, metadata={"session_id": item["session_id"]})
-        bump_turn_counter(item["session_id"])
+        count, every_n = bump_turn_counter(item["session_id"])
         clear_payment_required()
         log(
             "trace_stored" if item["kind"] == "trace" else "stop_stored",
             session=item["session_id"],
             via="cloud_spool",
         )
-        request_improve(item["dataset"], item["session_id"], "idle")
+        if every_n:
+            # Same automatic trigger as local mode: every COGNEE_AUTO_IMPROVE_EVERY
+            # stored entries, within the per-session cooldown (SDK-1072/1074).
+            request_improve(item["dataset"], item["session_id"], f"turn_{count}")
         log(
             "cloud_capture_delivered",
             session=item["session_id"],
@@ -492,10 +495,8 @@ def process_improves(improve, *, now: float = None) -> int:
         if item["session_id"] in pending_sessions:
             continue
         explicit = item["reason"] in EXPLICIT_IMPROVES
-        if not explicit:
-            state = read(session_dir(item["host_key"]) / "worker.json")
-            if now - state.get("activity_at", 0) < 60 or _throttle(path, item, now):
-                continue
+        if not explicit and _throttle(path, item, now):
+            continue
         due.append((not explicit, item.get("requested_at", 0), path.name, path, item))
     if not due:
         return 0
@@ -637,9 +638,7 @@ def maintain_sessions() -> None:
         set_session_key(key)
         record = _read_map_record(key)
         sid, dataset = state["session_id"], state["dataset"]
-        drained, _ = drain_warmup_entries(dataset, sid, budget_seconds=4)
-        if drained:
-            request_improve(dataset, sid, "idle")
+        drain_warmup_entries(dataset, sid, budget_seconds=4)
         ended = read_stats(key).get("ended_at")
         pid = record.get("host_pid", 0)
         if not ended and pid and not pid_alive(pid):

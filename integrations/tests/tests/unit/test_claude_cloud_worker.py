@@ -406,3 +406,20 @@ def test_one_improve_per_pass_with_explicit_requests_first(worker):
     assert seen == ["switching"]
     assert worker.process_improves(improve) == 1
     assert seen == ["switching", "idle-session"]
+
+
+def test_cloud_improve_triggers_every_n_delivered_entries_like_local(worker, monkeypatch):
+    # SDK-1072/1074: no improve after every turn or quiet pause; one every
+    # COGNEE_AUTO_IMPROVE_EVERY stored entries, within the cooldown.
+    monkeypatch.setenv("COGNEE_AUTO_IMPROVE_EVERY", "3")
+    wanted = worker.root() / "improve-wanted"
+    for i in range(2):
+        worker.enqueue("ds", "sid", {"type": "qa", "answer": str(i)}, "answer")
+    worker.drain(lambda item: {"entry_id": "saved"})
+    assert not list(wanted.glob("*.json"))
+    worker.enqueue("ds", "sid", {"type": "qa", "answer": "third"}, "answer")
+    worker.drain(lambda item: {"entry_id": "saved"})
+    (marker,) = wanted.glob("*.json")
+    assert worker.read(marker)["reason"] == "turn_3"
+    # Not explicit, and nothing is queued for the session: it runs without a quiet wait.
+    assert worker.process_improves(lambda _: COMPLETED) == 1
