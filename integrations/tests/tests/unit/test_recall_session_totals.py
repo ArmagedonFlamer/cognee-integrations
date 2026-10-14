@@ -194,7 +194,8 @@ def codex(suite):
 def test_codex_header_reads_in_plain_words(codex, lookup, monkeypatch, state):
     drive_recall(lookup, monkeypatch, recall=_graph("x", "y", "z"))
     assert _codex_header(state) == (
-        "Cognee memory: recall 3 memory; saved last turn 0 prompt / 0 trace / 0 answer; 3 new, 0 already in context"
+        "Cognee memory: recall 3 memory; saved last turn 0 prompt / 0 trace / 0 answer; "
+        "3 new, 0 already in context"
     )
 
 
