@@ -5835,10 +5835,18 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             for directory in sessions.iterdir():
                 if not directory.is_dir() or directory.is_symlink():
                     continue
-                newest = max((p.stat().st_mtime for p in directory.iterdir()), default=0)
-                if now - newest > _SWEEP_SESSION_FILE_MAX_AGE_SECONDS:
-                    shutil.rmtree(directory)
-                    counts["sessions"] = counts.get("sessions", 0) + 1
+                # One session directory must not stop the rest of the sweep
+                # (log rotation included): a temp file can vanish between
+                # iterdir() and stat(), and a directory may not be removable.
+                try:
+                    newest = max((p.stat().st_mtime for p in directory.iterdir()), default=0)
+                    if now - newest > _SWEEP_SESSION_FILE_MAX_AGE_SECONDS:
+                        shutil.rmtree(directory)
+                        counts["sessions"] = counts.get("sessions", 0) + 1
+                except OSError as exc:
+                    counts.setdefault("errors", []).append(
+                        f"sessions/{directory.name}: {str(exc)[:80]}"
+                    )
         _sweep_pending_husks(counts)
         _sweep_launch_records(now, counts)
         for name in _SWEEP_LEGACY_FILES:
