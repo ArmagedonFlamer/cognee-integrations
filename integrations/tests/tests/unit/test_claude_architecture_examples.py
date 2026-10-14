@@ -8,7 +8,6 @@ import json
 import re
 from pathlib import Path
 
-
 SKILLS = Path(__file__).resolve().parents[3] / "claude-code/skills"
 
 

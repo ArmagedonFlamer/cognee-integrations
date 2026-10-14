@@ -27,9 +27,15 @@ _DENY_PATHS = (
     "secrets.*",
     "credentials.*",
 )
-_SECRET_KEY = re.compile(
-    r"(?i)^(?:authorization|x-api-key|(?:.*[_-])?(?:secret|token|password|passwd|api[_-]?key))$"
+# The last word of a secret-bearing name. ``secret`` may carry a ``_key`` /
+# ``_access_key`` suffix (``SECRET_KEY``, ``aws_secret_access_key``), and the
+# AWS / npm names a plain suffix test misses are spelled out: ``access_key_id``,
+# camelCase ``SessionToken`` / ``SecretAccessKey`` / ``_authToken``.
+_SECRET_WORD = (
+    r"secret(?:[_-]?(?:access[_-]?)?key)?|token|password|passwd|api[_-]?key"
+    r"|access[_-]?key(?:[_-]?id)?|session[_-]?token|auth[_-]?token"
 )
+_SECRET_KEY = re.compile(rf"(?i)^(?:authorization|x-api-key|_auth|(?:.*[_-])?(?:{_SECRET_WORD}))$")
 _RULES = (
     (
         "private-key",
@@ -39,12 +45,17 @@ _RULES = (
     ("authorization", r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+"),
     (
         "credential",
-        r"(?i)[\"']?\b(?:[\w-]*[_-])?(?:secret|token|password|passwd|api[_-]?key|x-api-key)"
+        rf"(?i)[\"']?\b(?:(?:[\w-]*[_-])?(?:{_SECRET_WORD}|x-api-key)|_auth)"
         r"[\"']?\s*[:=]\s*(?:\"[^\"]*\"|'[^']*'|[^\s,;]+)",
     ),
     (
         "vendor-key",
-        r"\b(?:sk-(?:proj-|ant-)?|gh[pousr]_|github_pat_|xox[baprs]-|whsec_)[A-Za-z0-9_-]{16,}",
+        r"\b(?:sk-(?:proj-|ant-)?|gh[pousr]_|github_pat_|xox[baprs]-|whsec_)[A-Za-z0-9_-]{16,}"
+        r"|\bnpm_[A-Za-z0-9]{36}\b|\bpypi-[A-Za-z0-9_-]{50,}",
+    ),
+    (
+        "aws-key-id",
+        r"\b(?:A3T[A-Z0-9]|AKIA|ASIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|APKA|ABIA|ACCA)[A-Z0-9]{16}\b",
     ),
     ("bcrypt", r"\$2[aby]\$\d{2}\$[./A-Za-z0-9]{53}"),
 )
@@ -74,6 +85,22 @@ def _list_env(name: str, *, separator: str = ",") -> list[str]:
     return [part.strip() for part in raw.split(separator) if part.strip()]
 
 
+def _glob_match(name: str, pattern: str) -> bool:
+    """``fnmatch.fnmatchcase``, with an unusable glob reported as a pattern error.
+
+    Python 3.9's fnmatch hands some globs (a reversed range such as ``[C-A]``) to
+    ``re`` unchanged, which rejects them; 3.10+ turn them into "matches nothing".
+    Without this the 3.9 ``re.error`` escaped the hook as a crash instead of the
+    usual "pattern not understood" report.
+    """
+    try:
+        return fnmatch.fnmatchcase(name, pattern)
+    except re.error as exc:
+        raise CapturePatternError(
+            f"capture pattern {pattern!r} is not a valid glob: {exc}"
+        ) from exc
+
+
 def _sensitive_path(value) -> bool:
     if isinstance(value, (tuple, list)):
         return any(_sensitive_path(item) for item in value)
@@ -82,10 +109,44 @@ def _sensitive_path(value) -> bool:
     normalized = value.replace("\\", "/").lower()
     name = PurePosixPath(normalized).name
     return any(
-        fnmatch.fnmatchcase(name, pattern.lower())
-        or fnmatch.fnmatchcase("/" + normalized.lstrip("/"), pattern.lower())
+        _glob_match(name, pattern.lower())
+        or _glob_match("/" + normalized.lstrip("/"), pattern.lower())
         for pattern in (*_DENY_PATHS, *_list_env("COGNEE_CAPTURE_DENY_PATHS"))
     )
+
+
+# Shell control characters that end a word for the secret-file check:
+# ``cat .env|grep``, ``cat<.env``, ``$(cat .env)``, ``a;cat .env``.
+_SHELL_SPLIT = re.compile(r"[;|&()<>`]")
+_HOME_VAR = re.compile(r"^\$(?:HOME|\{HOME\})(?=/|\Z)")
+
+
+def _shell_words(command: str) -> list[str]:
+    """Split a shell command into words, POSIX-quoted; whitespace if it will not parse."""
+    try:
+        words = shlex.split(command)
+    except ValueError:  # unbalanced quote, trailing backslash
+        words = command.split()
+    pieces = []
+    for word in words:
+        for piece in _SHELL_SPLIT.split(word):
+            if piece:
+                pieces.append(_HOME_VAR.sub("~", piece))
+    return pieces
+
+
+def _command_reads_secret(params) -> bool:
+    """Whether a shell command names a deny-listed path as one of its words.
+
+    A word-level check, not a shell interpreter: ``cat ~/.aws/credentials``,
+    ``less "$HOME/.ssh/id_rsa"`` and ``source .env.local`` are caught, but a
+    path built at run time (``cat $AWS_DIR/credentials``, ``cat ~/.aws/cred*``)
+    is not, and neither is a file read by a program without naming it.
+    """
+    command = params.get("command") if isinstance(params, dict) else None
+    if not isinstance(command, str):
+        return False
+    return any(_sensitive_path(word) for word in _shell_words(command))
 
 
 def _has_sensitive_path(value) -> bool:
@@ -128,7 +189,7 @@ def _tool_patterns(env_name: str, default: list[str]) -> list[tuple[str, str | N
 
 
 def _matches(tool: str, prefix: str | None, name: str, params) -> bool:
-    if not fnmatch.fnmatchcase(name, tool):
+    if not _glob_match(name, tool):
         return False
     if prefix is None:
         return True
@@ -158,7 +219,7 @@ def allow_tool(name: str, params) -> bool:
         return False
     if any(_matches(tool, prefix, name, params) for tool, prefix in denied):
         return False
-    return not _has_sensitive_path(params)
+    return not (_has_sensitive_path(params) or _command_reads_secret(params))
 
 
 def capture_pattern_error() -> str:
@@ -204,7 +265,21 @@ def redact(value):
 _PLUGIN_SCRIPTS = set(
     "cognee-search.sh cognee-remember.sh cognee-doctor.sh "
     "cognee-index-repo.sh cognee-forget.sh cognee-statusline.sh switch-dataset.py "
-    "list-datasets.py plugin_eval.py cognee-recap.py hook_runner.py cognee-evidence.py".split()
+    "list-datasets.py plugin_eval.py cognee-recap.py hook_runner.py cognee-evidence.py "
+    "cognee-cli.sh sync-session-to-graph.py credits-refresh.py".split()
+)
+# Plugin roots of every host: generic script names such as ``doctor.py`` count
+# only when they run from one of these.
+_PLUGIN_PATH_MARKERS = (
+    "$CLAUDE_PLUGIN_ROOT/",
+    "${CLAUDE_PLUGIN_ROOT}/",
+    "/.claude/plugins/cache/cognee/",
+    "/.cognee-plugin/",
+    "$CODEX_PLUGIN_ROOT/",
+    "${CODEX_PLUGIN_ROOT}/",
+    "/.codex/plugins/cognee/",
+    "COGNEE_ANTIGRAVITY_PLUGIN_ROOT",
+    "/.gemini/config/plugins/cognee",
 )
 _READ_COMMANDS = set(
     "ls cat head tail grep rg sed awk echo find wc sort uniq cut tr jq "
@@ -271,12 +346,7 @@ def is_plugin_invocation(command: str) -> str:
             return "plugin_script"
         if base == "cognee-cli":
             return "cognee_cli"
-        if (
-            "$CLAUDE_PLUGIN_ROOT/" in executable
-            or "${CLAUDE_PLUGIN_ROOT}/" in executable
-            or "/.claude/plugins/cache/cognee/" in executable
-            or "/.cognee-plugin/" in executable
-        ):
+        if any(marker in executable for marker in _PLUGIN_PATH_MARKERS):
             return "plugin_path"
     return ""
 

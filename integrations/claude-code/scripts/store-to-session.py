@@ -61,10 +61,10 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
     """Fire-and-forget session improve; failures are logged but never raised.
 
     The server bridges the session itself from its session cache (improve);
-    see run_session_improve_detailed. Shares the cooldown / backoff gate with the
-    idle watcher; the session-end sync ignores it and covers whatever a skip
-    here leaves behind. Without server auth there is nothing to submit to —
-    the session-end sync picks the session up once a key is available.
+    see run_session_improve_detailed. Honours the cooldown / backoff gate; the
+    session-end sync ignores it and covers whatever a skip here leaves behind.
+    Without server auth there is nothing to submit to — the session-end sync
+    picks the session up once a key is available.
     """
     if cloud_enabled():
         from _cloud_worker import request_improve
@@ -165,10 +165,14 @@ def _low_signal_trace(tool: str, output, status: str) -> bool:
     if isinstance(output, dict):
         if output.get("exit_code", 0) or output.get("exitCode", 0) or output.get("interrupted"):
             return False
-        metadata = {"stdout", "stderr", "exit_code", "exitCode", "interrupted", "is_error"}
+        # Claude Code adds flags such as isImage/noOutputExpected; only the
+        # output streams decide. A result without either stream is unknown.
+        if "stdout" not in output and "stderr" not in output:
+            return False
+        if output.get("isImage") or output.get("is_error"):
+            return False
         return (
-            set(output) <= metadata
-            and not str(output.get("stdout") or "").strip()
+            not str(output.get("stdout") or "").strip()
             and not str(output.get("stderr") or "").strip()
         )
     return output is None or (isinstance(output, str) and not output.strip())
@@ -206,10 +210,9 @@ async def _store_tool_call(payload: dict) -> None:
     status, error_message = _infer_status(payload)
     reason = is_plugin_invocation(command) if tool_name == "Bash" else ""
     low_signal = tool_name == "Bash" and low_signal_bash(command, tool_output, status)
+    # Cloud mode also drops Read/Grep/Glob and Bash calls that succeeded with no output.
     low_signal = low_signal or (
-        cloud_enabled()
-        and tool_name != "Bash"
-        and _low_signal_trace(tool_name, tool_output, status)
+        cloud_enabled() and _low_signal_trace(tool_name, tool_output, status)
     )
     from _session_stats import update
 
@@ -418,10 +421,10 @@ async def _store_assistant_stop(payload: dict) -> None:
     }
 
     if cloud_enabled(runtime):
-        from _cloud_worker import enqueue, request_improve
+        from _cloud_worker import enqueue
 
+        # The worker counts delivered entries toward the every-N improve trigger.
         enqueue(dataset, session_id, entry, "answer")
-        request_improve(dataset, session_id, "stop")
         bump_save_counter(session_id, "answer", buffered=True)
         return
 

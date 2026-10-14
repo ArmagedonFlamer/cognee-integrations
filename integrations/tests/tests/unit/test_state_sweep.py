@@ -237,3 +237,22 @@ def test_sweep_never_touches_other_plugins_state(pc, suite, temp_home):
 def test_session_start_runs_the_sweep(suite):
     source = (suite.scripts_dir / "session-start.py").read_text(encoding="utf-8")
     assert "sweep_stale_state()" in source
+
+
+def test_an_unremovable_session_dir_does_not_stop_log_rotation(pc, monkeypatch, suite):
+    if suite.name != "claude-code":
+        pytest.skip("Claude cloud session directories")
+    import shutil
+
+    monkeypatch.setenv("COGNEE_PLUGIN_LOG_MAX_BYTES", "100")
+    _write(pc._PLUGIN_DIR / "sessions" / "old-host" / "stats.json", {}, 30 * DAY)
+    big = pc._PLUGIN_DIR / "cloud-worker.log"
+    big.write_bytes(b"x" * 500)
+
+    def denied(path, *a, **kw):
+        raise PermissionError("not allowed")
+
+    monkeypatch.setattr(shutil, "rmtree", denied)
+    counts = pc.sweep_stale_state()
+    assert any("sessions/old-host" in error for error in counts["errors"])
+    assert counts["logs_rotated"] == 1 and not big.exists()

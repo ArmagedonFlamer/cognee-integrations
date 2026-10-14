@@ -18,6 +18,21 @@ from _injection_ledger import atomic_json, session_dir
 
 MAX_AGE = 7 * 86400
 EXPLICIT_IMPROVES = {"final", "precompact", "manual", "switch"}
+#: Explicit, but nobody waits on them: skipped when nothing was stored since the
+#: last improve (a session that compacts and then ends pays for one improve).
+#: "manual" and "switch" always run; a dataset switch waits for their result.
+SKIP_WHEN_NOTHING_NEW = {"final", "precompact"}
+#: Answers that will never change for the same payload: expire, keep the queue moving.
+PERMANENT_REJECTIONS = {400, 413, 422}
+#: Answers that mean the server or account is unusable right now, for every item.
+SERVER_WIDE_FAILURES = {401, 402, 403, 408, 429}
+#: The worker exits after this long with no queued work and no active session;
+#: every hook calls ensure_worker(), so the next prompt starts it again.
+IDLE_EXIT_SECONDS = 30 * 60
+#: Failed improves that may already have spent LLM tokens (timeouts, errored or
+#: unexpected results, HTTP errors) are archived after this many attempts.
+#: Busy/running answers and an unreachable server cost nothing and are not counted.
+MAX_IMPROVE_FAILURES = 3
 
 
 def enabled(runtime: dict = None) -> bool:
@@ -214,6 +229,7 @@ def request_improve(dataset: str, session_id: str, reason: str = "stop") -> Path
                 "generation": uuid.uuid4().hex,
                 "created_at": now if explicit else old.get("created_at", now),
                 "attempts": 0 if explicit else old.get("attempts", 0),
+                "failures": 0 if explicit else old.get("failures", 0),
                 "next_attempt": 0 if explicit else old.get("next_attempt", 0),
                 "last_error": old.get("last_error", ""),
                 "requested_at": now,
@@ -252,15 +268,19 @@ def _retry(path: Path, item: dict, now: float, error: str, *, retry_after=None) 
 
 
 def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
-    """Ordered, bounded replay. Keep failures, quarantine malformed/expired events."""
+    """Ordered per session, bounded replay. Keep failures, quarantine malformed/expired events.
+
+    A session waiting on a retry holds back only its own later events; a server-wide
+    failure ends the pass; a payload the server will never accept is expired.
+    """
     from _capture_policy import allow_tool, capture_enabled, redact
 
-    if not capture_enabled():
-        return 0
     now = time.time() if now is None else now
+    capturing = capture_enabled()
     deadline = time.monotonic() + 20
     delivered = 0
     identity = target()
+    held = set()  # sessions whose earlier event is still pending
     for path in sorted((root() / "spool").glob("*.json")):
         if time.monotonic() >= deadline:
             break
@@ -268,10 +288,15 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
         if not item or now - item.get("created_at", 0) > MAX_AGE:
             _expire(path, "capture")
             continue
-        if item.get("target") != identity:
+        # With capture off nothing is sent, but old events still age out above.
+        if not capturing or item.get("target") != identity:
+            continue
+        session = item.get("session_id")
+        if session in held:
             continue
         if now < item.get("next_attempt", 0):
-            break
+            held.add(session)
+            continue
         try:
             if item.get("kind") == "trace" and not allow_tool(
                 item.get("entry", {}).get("origin_function", ""),
@@ -306,26 +331,9 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                     or not result.get("payload_hash")
                 ):
                     raise RuntimeError("capture response did not confirm the event receipt")
-            from _plugin_common import bump_turn_counter, clear_payment_required
-            from _session_stats import update
-
-            update(item["host_key"], saves=1, metadata={"session_id": item["session_id"]})
-            bump_turn_counter(item["session_id"])
-            clear_payment_required()
             path.unlink()
-            log(
-                "trace_stored" if item["kind"] == "trace" else "stop_stored",
-                session=item["session_id"],
-                via="cloud_spool",
-            )
             delivered += 1
-            request_improve(item["dataset"], item["session_id"], "idle")
-            log(
-                "cloud_capture_delivered",
-                session=item["session_id"],
-                kind=item["kind"],
-                verified=already_stored,
-            )
+            _after_delivery(item, already_stored)
         except Exception as exc:
             if getattr(exc, "code", None) == 409 and item.get("idempotent"):
                 try:
@@ -335,13 +343,70 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                 if conflict:
                     _expire(path, "capture_payload_conflict")
                     continue
-            if getattr(exc, "code", None) == 402:
+            code = getattr(exc, "code", None)
+            if code in PERMANENT_REJECTIONS:
+                log("cloud_capture_rejected", session=session, status=code)
+                _expire(path, "capture_rejected")
+                continue
+            if code == 402:
                 from _plugin_common import record_payment_required
 
                 record_payment_required("save")
             _retry(path, item, now, type(exc).__name__ + ": " + str(exc)[:160])
-            break
+            if not isinstance(code, int) or code >= 500 or code in SERVER_WIDE_FAILURES:
+                break
+            held.add(session)
     return delivered
+
+
+def _after_delivery(item: dict, verified: bool) -> None:
+    """Bookkeeping for an event the server already holds.
+
+    Runs after the spool file is gone and never raises: a failure here must
+    not send the event through the retry path, which would write it back.
+    """
+    try:
+        from _plugin_common import bump_turn_counter, clear_payment_required
+        from _session_stats import update
+
+        update(item["host_key"], saves=1, metadata={"session_id": item["session_id"]})
+        count, every_n = bump_turn_counter(item["session_id"])
+        clear_payment_required()
+        log(
+            "trace_stored" if item["kind"] == "trace" else "stop_stored",
+            session=item["session_id"],
+            via="cloud_spool",
+        )
+        if every_n:
+            # Same automatic trigger as local mode: every COGNEE_AUTO_IMPROVE_EVERY
+            # stored entries, within the per-session cooldown (SDK-1072/1074).
+            request_improve(item["dataset"], item["session_id"], f"turn_{count}")
+        log(
+            "cloud_capture_delivered",
+            session=item["session_id"],
+            kind=item["kind"],
+            verified=verified,
+        )
+    except Exception as exc:
+        log(
+            "cloud_delivery_bookkeeping_failed",
+            session=item.get("session_id", ""),
+            error=type(exc).__name__,
+        )
+
+
+def has_pending_work(*, now: float = None) -> bool:
+    """Queued captures/improves/digest refreshes, or a session active recently."""
+    now = time.time() if now is None else now
+    state = root()
+    if any((state / "spool").glob("*.json")) or any((state / "improve-wanted").glob("*.json")):
+        return True
+    if any((state / "context-cache").glob("*.wanted.json")):
+        return True
+    for launch in (state / "sessions").glob("*/worker.json"):
+        if now - read(launch).get("activity_at", 0) < IDLE_EXIT_SECONDS:
+            return True
+    return False
 
 
 def improve_outcome(result) -> dict:
@@ -370,12 +435,84 @@ def improve_outcome(result) -> dict:
     return {"ok": True, "reason": "completed", "distillation_entries": added}
 
 
-def process_improves(improve, *, now: float = None) -> int:
+def improve_submit_timeout() -> float:
+    from _plugin_common import IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS, _float_env
+
+    return _float_env("COGNEE_IMPROVE_SUBMIT_TIMEOUT", IMPROVE_SUBMIT_TIMEOUT_DEFAULT_SECONDS)
+
+
+def _timed_out(exc: BaseException) -> bool:
+    reason = getattr(exc, "reason", None)
+    return (
+        isinstance(exc, TimeoutError)
+        or isinstance(reason, TimeoutError)
+        or "timed out" in str(exc).lower()
+    )
+
+
+def _throttle(path: Path, item: dict, now: float) -> bool:
+    """Apply the local cooldown / backoff / no-new-entries gate to an automatic improve.
+
+    Returns True when the improve must not run now. Explicit requests (session end,
+    pre-compact, manual sync, dataset switch) never come here.
+    """
+    from _plugin_common import improve_cooldown_seconds, improve_throttle_reason, read_improve_state
+
+    why = improve_throttle_reason(item["session_id"])
+    if not why:
+        return False
+    with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
+        current = read(path) if acquired else {}
+        if current.get("generation") != item.get("generation"):
+            return True
+        if why == "no_new_entries":
+            path.unlink()
+        else:
+            state = read_improve_state(item["session_id"])
+            last = max(
+                float(state.get("last_improved_at", 0) or 0),
+                float(state.get("last_failed_at", 0) or 0),
+            )
+            current["next_attempt"] = max(now + 60, last + improve_cooldown_seconds())
+            atomic_json(path, current)
+    log("auto_improve_throttled", session=item["session_id"], reason=item["reason"], why=why)
+    return True
+
+
+def _nothing_new(path: Path, item: dict) -> bool:
+    """Drop a final/pre-compact improve when no entry landed since the last improve."""
+    from _plugin_common import read_improve_state, read_turn_count
+
+    try:
+        then = int(read_improve_state(item["session_id"]).get("turn_count_at_improve", -1))
+    except (TypeError, ValueError):
+        then = -1
+    if then < 0 or read_turn_count(item["session_id"]) > then:
+        return False
+    with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
+        if not acquired or read(path).get("generation") != item.get("generation"):
+            return True  # a newer request decides on the next pass
+        path.unlink()
+    log(
+        "auto_improve_throttled",
+        session=item["session_id"],
+        reason=item["reason"],
+        why="no_new_entries",
+    )
+    return True
+
+
+def due_improves(*, now: float = None) -> list:
+    """Improve requests ready to submit now, explicit ones first, then oldest.
+
+    Only file work: expires old requests and applies the throttles, so the main
+    worker loop can call it every pass without touching the network.
+    """
     now = time.time() if now is None else now
-    done = 0
     identity = target()
     pending_sessions = {read(p).get("session_id") for p in (root() / "spool").glob("*.json")}
-    for path in sorted((root() / "improve-wanted").glob("*.json")):
+    due = []
+    for path in (root() / "improve-wanted").glob("*.json"):
         item = read(path)
         if not item or now - item.get("created_at", 0) > MAX_AGE:
             _expire(path, "improve")
@@ -384,63 +521,164 @@ def process_improves(improve, *, now: float = None) -> int:
             continue
         if item["session_id"] in pending_sessions:
             continue
-        state = read(session_dir(item["host_key"]) / "worker.json")
-        idle = now - state.get("activity_at", 0)
-        if item["reason"] not in {"final", "precompact", "manual", "switch"} and idle < 60:
+        explicit = item["reason"] in EXPLICIT_IMPROVES
+        if not explicit and _throttle(path, item, now):
             continue
-        try:
-            outcome = improve_outcome(improve(item))
-        except Exception as exc:
-            outcome = {"ok": False, "reason": type(exc).__name__}
-        with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
-            if not acquired:
-                continue
-            current = read(path)
-            if current.get("generation") != item.get("generation"):
-                continue  # a newer request must not be acknowledged or overwritten
-            if outcome.get("ok"):
-                from _session_stats import update
+        if item["reason"] in SKIP_WHEN_NOTHING_NEW and _nothing_new(path, item):
+            continue
+        due.append((not explicit, item.get("requested_at", 0), path.name, path, item))
+    return [(path, item) for *_, path, item in sorted(due)]
 
-                update(
-                    item["host_key"],
-                    improves_landed=1,
-                    distillation_entries=outcome.get("distillation_entries", 0),
-                )
-                path.unlink()
-                atomic_json(
-                    session_dir(item["host_key"]) / "last-improve.json",
-                    {**outcome, "at": now, "session_id": item["session_id"]},
-                )
-                log(
-                    "improve_fired",
-                    session=item["session_id"],
-                    dataset=item["dataset"],
-                    trigger=item["reason"],
-                    ok=True,
-                    reason="completed",
-                )
-                done += 1
-                from _context_cache import request_refresh
 
-                request_refresh(item["dataset"], item["session_id"], item["host_key"])
-            else:
-                reason = outcome.get("reason", "unconfirmed")
-                _retry(
-                    path,
-                    item,
-                    now,
-                    reason,
-                    retry_after=5 if reason in {"busy", "running"} else None,
-                )
-                log(
-                    "improve_fired",
-                    session=item["session_id"],
-                    dataset=item["dataset"],
-                    trigger=item["reason"],
-                    ok=False,
-                    reason=outcome.get("reason"),
-                )
-    return done
+def process_improves(improve, *, now: float = None) -> int:
+    """Submit at most one improve per pass, explicit requests first.
+
+    A submit can block for the whole submit timeout, so the worker runs each pass
+    in a child process (``improve_pass``); one per pass lets a dataset switch go
+    ahead of queued automatic work.
+    """
+    from _plugin_common import record_improve_failure, record_improve_success
+
+    now = time.time() if now is None else now
+    due = due_improves(now=now)
+    if not due:
+        return 0
+    path, item = due[0]
+    from _plugin_common import read_turn_count
+
+    turns_at_submit = read_turn_count(item["session_id"])
+    try:
+        outcome = improve_outcome(improve(item))
+    except Exception as exc:
+        outcome = {"ok": False, "reason": _failure_reason(exc)}
+    reason = "completed" if outcome.get("ok") else outcome.get("reason", "unconfirmed")
+    # Record what the server did whatever happened to the request file meanwhile:
+    # a request written while this ran must not look un-throttled and re-submit.
+    if outcome.get("ok"):
+        from _session_stats import update
+
+        update(
+            item["host_key"],
+            improves_landed=1,
+            distillation_entries=outcome.get("distillation_entries", 0),
+        )
+        record_improve_success(
+            item["session_id"], item["dataset"], item["reason"], turn_count=turns_at_submit
+        )
+        # "at" is the submit time, so a sync requested after it never counts as done.
+        atomic_json(
+            session_dir(item["host_key"]) / "last-improve.json",
+            {**outcome, "at": now, "session_id": item["session_id"]},
+        )
+        from _context_cache import request_refresh
+
+        request_refresh(item["dataset"], item["session_id"], item["host_key"])
+    else:
+        record_improve_failure(item["session_id"], item["dataset"], item["reason"], reason)
+    log(
+        "improve_fired",
+        session=item["session_id"],
+        dataset=item["dataset"],
+        trigger=item["reason"],
+        ok=bool(outcome.get("ok")),
+        reason=reason,
+    )
+    with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
+        if not acquired:
+            return int(bool(outcome.get("ok")))
+        current = read(path)
+        if current.get("generation") != item.get("generation"):
+            # A newer request decides on its own pass, against the state above.
+            return int(bool(outcome.get("ok")))
+        if outcome.get("ok"):
+            path.unlink()
+            return 1
+        if reason == "skipped":
+            _expire(path, "improve_skipped")  # the server had nothing to do
+            return 0
+        if reason not in {"busy", "running", "unreachable"}:
+            item["failures"] = int(item.get("failures", 0)) + 1
+            if item["failures"] >= MAX_IMPROVE_FAILURES:
+                _expire(path, "improve_failed")
+                return 0
+        if reason == "timed out":
+            # The server is most likely still running this improve. Resubmitting
+            # soon pays for it twice; wait out the cooldown.
+            from _plugin_common import improve_cooldown_seconds
+
+            retry_after = max(improve_cooldown_seconds(), improve_submit_timeout())
+        else:
+            retry_after = 5 if reason in {"busy", "running"} else None
+        _retry(path, item, now, reason, retry_after=retry_after)
+    return 0
+
+
+def _failure_reason(exc: BaseException) -> str:
+    """A short reason; "unreachable" when the request never reached the server."""
+    import urllib.error
+
+    if _timed_out(exc):
+        return "timed out"
+    code = getattr(exc, "code", None)
+    if isinstance(exc, urllib.error.HTTPError):
+        return "unreachable" if code in {429, 503} else f"http_{code}"
+    if isinstance(exc, (urllib.error.URLError, ConnectionError)):
+        return "unreachable"
+    return type(exc).__name__
+
+
+def submit_improve(item: dict):
+    """POST one session improve; blocks until the server finishes or the timeout."""
+    from _plugin_common import _json_http_request, dataset_id_for, set_session_key, write_fields
+    from _project_memory import route
+
+    set_session_key(item["host_key"])
+    dataset = route(item["dataset"], item["session_id"])["write"]
+    fields = write_fields(dataset_id_for(dataset) or dataset)
+    return _json_http_request(
+        "/api/v1/improve",
+        {**fields, "session_ids": [item["session_id"]], "run_in_background": False},
+        timeout=improve_submit_timeout(),
+    )
+
+
+IMPROVE_PASS_ARG = "--improve-pass"
+
+
+def improve_pass(improve=submit_improve) -> int:
+    """One improve pass in its own process; the lock allows one pass at a time.
+
+    The OS releases the lock when the process exits, so a crashed pass never
+    blocks the next one.
+    """
+    with file_lock(root() / "improve-pass.lock") as acquired:
+        if not acquired:
+            return 0
+        return process_improves(improve)
+
+
+def start_improve_pass(*, spawn=None) -> bool:
+    """From the main loop: start a pass when work is due and none is running.
+
+    Captures, session registration and digest refreshes keep their 2 s cadence
+    while an improve blocks for minutes in the child.
+    """
+    with file_lock(root() / "improve-pass.lock") as idle:
+        if not idle or not due_improves():
+            return False
+    if spawn is None:
+        with (root() / "cloud-worker.log").open("a", encoding="utf-8") as stream:
+            subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), IMPROVE_PASS_ARG],
+                stdin=subprocess.DEVNULL,
+                stdout=stream,
+                stderr=stream,
+                start_new_session=True,
+                close_fds=True,
+            )
+    else:
+        spawn()
+    return True
 
 
 def _bootstrap_sessions() -> None:
@@ -515,9 +753,7 @@ def maintain_sessions() -> None:
         set_session_key(key)
         record = _read_map_record(key)
         sid, dataset = state["session_id"], state["dataset"]
-        drained, _ = drain_warmup_entries(dataset, sid, budget_seconds=4)
-        if drained:
-            request_improve(dataset, sid, "idle")
+        drain_warmup_entries(dataset, sid, budget_seconds=4)
         ended = read_stats(key).get("ended_at")
         pid = record.get("host_pid", 0)
         if not ended and pid and not pid_alive(pid):
@@ -543,7 +779,6 @@ def run() -> None:
         _json_http_request,
         _server_session_fingerprints,
         authed_liveness,
-        dataset_id_for,
         get_session_detail_via_http,
         mark_server_ready,
         prepare_remember_entry_payload,
@@ -551,7 +786,6 @@ def run() -> None:
         require_typed_dataset_id_support,
         set_session_key,
         write_connection_state,
-        write_fields,
     )
 
     state = root()
@@ -602,23 +836,12 @@ def run() -> None:
                 detail and _entry_fingerprint(item["entry"]) in _server_session_fingerprints(detail)
             )
 
-        def improve(item):
-            set_session_key(item["host_key"])
-            from _project_memory import route
-
-            dataset = route(item["dataset"], item["session_id"])["write"]
-            fields = write_fields(dataset_id_for(dataset) or dataset)
-            return _json_http_request(
-                "/api/v1/improve",
-                {
-                    **fields,
-                    "session_ids": [item["session_id"]],
-                    "run_in_background": False,
-                },
-                timeout=180,
-            )
-
         while True:
+            if not has_pending_work():
+                # Nothing queued and no session active for IDLE_EXIT_SECONDS.
+                log("cloud_worker_idle_exit")
+                (state / "cloud-worker-pid.json").unlink(missing_ok=True)
+                return
             desired = read(state / "cloud-worker-runtime.json")
             if desired.get("script") and desired["script"] != str(Path(__file__).resolve()):
                 os.execv(desired["python"], [desired["python"], desired["script"]])
@@ -645,7 +868,7 @@ def run() -> None:
                     refresh_credits()
                     maintain_sessions()
                 drain(send, verify=verify, prepare=prepare)
-                process_improves(improve)
+                start_improve_pass()
                 from _context_cache import refresh_pending, schedule_active_refreshes
 
                 schedule_active_refreshes()
@@ -656,4 +879,7 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    if IMPROVE_PASS_ARG in sys.argv:
+        improve_pass()
+    else:
+        run()

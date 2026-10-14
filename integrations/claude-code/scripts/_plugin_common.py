@@ -51,9 +51,9 @@ _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 # One state file per session (see record_improve_success / record_improve_failure):
 # when the last improve attempt ran, whether it landed, and how many turns the
-# session had at the last success. Every improve trigger records it; the idle
-# and auto triggers consult it so the cooldown (and the failure backoff) survive
-# the watcher's exit-after-bridge respawn cycle.
+# session had at the last success. Every improve trigger records it; the auto
+# trigger consults it so the cooldown (and the failure backoff) survive across
+# hook processes.
 _IMPROVE_STATE_DIR = _PLUGIN_DIR / "improve-state"
 # Per-agent-session buffer dirs. Each agent session (one Claude/Codex terminal)
 # owns its own file under these dirs, so two concurrent agents never
@@ -1872,11 +1872,11 @@ def read_turn_count(session_id: str) -> int:
         return 0
 
 
-IMPROVE_COOLDOWN_DEFAULT_SECONDS = 5400.0
+IMPROVE_COOLDOWN_DEFAULT_SECONDS = 24 * 60 * 60.0
 
 
 def improve_cooldown_seconds() -> float:
-    """Minimum seconds between idle/auto improves of one session (COGNEE_IMPROVE_COOLDOWN)."""
+    """Minimum seconds between auto improves of one session (COGNEE_IMPROVE_COOLDOWN)."""
     raw = os.environ.get("COGNEE_IMPROVE_COOLDOWN", "").strip()
     try:
         value = float(raw) if raw else IMPROVE_COOLDOWN_DEFAULT_SECONDS
@@ -1898,14 +1898,18 @@ def read_improve_state(session_id: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
+def record_improve_success(
+    session_id: str, dataset: str, trigger: str, turn_count: int | None = None
+) -> None:
     """Persist that an improve of ``session_id`` just landed.
 
     Called by ``run_session_improve_detailed`` itself on a confirmed 2xx submit,
     never by its callers, so a skipped or failed attempt can never be stamped as
     a success. Replaces the whole state, which also clears any failure backoff.
-    The idle/auto triggers read this back through ``improve_throttle_reason``.
+    The auto trigger reads this back through ``improve_throttle_reason``.
     Best-effort: a write failure is logged and never fails the improve.
+    ``turn_count`` is the count when the improve was submitted, when known:
+    entries stored while it ran are then still new for the next one.
     """
     if not session_id:
         return
@@ -1916,7 +1920,9 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
                 "session_id": session_id,
                 "dataset": dataset,
                 "last_improved_at": time.time(),
-                "turn_count_at_improve": read_turn_count(session_id),
+                "turn_count_at_improve": (
+                    read_turn_count(session_id) if turn_count is None else turn_count
+                ),
                 "trigger": trigger,
             },
         )
@@ -1953,15 +1959,15 @@ def record_improve_failure(session_id: str, dataset: str, trigger: str, reason: 
 
 
 def improve_throttle_reason(session_id: str) -> str:
-    """Why an idle/auto improve of ``session_id`` should be skipped right now.
+    """Why an auto improve of ``session_id`` should be skipped right now.
 
     ``"cooldown"`` while the last successful improve is younger than
     ``improve_cooldown_seconds()``; ``"backoff"`` while the last FAILED attempt
     (busy, timeout, unreachable...) is; ``"no_new_entries"`` when nothing was
     stored since the last success; ``""`` when an improve may run. A session that
-    never attempted an improve is never throttled. Only the automatic triggers
-    (idle watcher, every-N entries) honour this — the session-end, manual and
-    dataset-switch syncs always run.
+    never attempted an improve is never throttled. Only the automatic every-N
+    entries trigger honours this — the session-end, manual and dataset-switch
+    syncs always run.
     """
     state = read_improve_state(session_id)
     if not state:
@@ -3333,9 +3339,52 @@ def record_slow_probe(service_url: str) -> int:
     if now - last_at > _slow_streak_window_seconds():
         count = 0
     count += 1
-    state[url] = {"count": count, "last_at": now}
+    state[url] = {**entry, "count": count, "last_at": now}
     _write_slow_streaks(state)
     return count
+
+
+def recall_slow_until(service_url: str) -> float:
+    """When the shortened per-prompt recall budget ends (0 when it never applied).
+
+    A value in the past means recall was slow before: the next full-budget
+    timeout re-arms the short budget at once instead of after a new streak.
+    """
+    entry = _read_slow_streaks().get(_normalize_service_url(service_url))
+    try:
+        return float(entry.get("slow_until") or 0) if isinstance(entry, dict) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+_SLOW_RECALL_MAX_WINDOW_SECONDS = 3600.0
+
+
+def mark_recall_slow(service_url: str) -> float:
+    """Shorten per-prompt recall for a while after repeated timeouts.
+
+    ``clear_slow_streak`` (any recall that answers) ends it early. When the window
+    passes, one prompt runs with the full budget to re-test the server; each
+    re-test that times out again doubles the window (the streak window first,
+    capped at an hour), so a long hang costs a full wait about once an hour.
+    The re-test keeps the full budget on purpose: a server that is slow but
+    working would never pass a re-test under the short budget.
+    """
+    url = _normalize_service_url(service_url)
+    state = _read_slow_streaks()
+    entry = state.get(url) if isinstance(state.get(url), dict) else {}
+    try:
+        strikes = int(entry.get("slow_strikes") or 0) + 1
+    except (TypeError, ValueError):
+        strikes = 1
+    window = min(
+        _slow_streak_window_seconds() * 2 ** min(strikes - 1, 16),
+        max(_SLOW_RECALL_MAX_WINDOW_SECONDS, _slow_streak_window_seconds()),
+    )
+    until = datetime.now(timezone.utc).timestamp() + window
+    state[url] = {**entry, "slow_until": until, "slow_strikes": strikes}
+    _write_slow_streaks(state)
+    return until
 
 
 def clear_slow_streak(service_url: str) -> None:
@@ -4708,8 +4757,13 @@ def remember_entry_via_http(
     """
     if not dataset or not session_id:
         return None
+    from _project_memory import route
+
     payload = prepare_remember_entry_payload(dataset, session_id, entry, dataset_id=dataset_id)
-    if payload.get("dataset_id") and not client_event_id:
+    # Probe the server only for a UUID-shaped write target, as before: hooks are
+    # short-lived processes, so probing every shared-memory write would fetch
+    # /openapi.json on each PostToolUse and Stop.
+    if parse_dataset_id(route(dataset, session_id)["write"]) and not client_event_id:
         require_typed_dataset_id_support()
     if client_event_id:
         payload["client_event_id"] = client_event_id
@@ -4995,8 +5049,6 @@ def recall_via_http(
     }
     if evidence_mode:
         payload["evidence_mode"] = evidence_mode
-    elif "graph" in scope and only_context:
-        payload["evidence_mode"] = "context"
     # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
     # the scope includes "code": the server rejects code_query without it.
     if code_query:
@@ -5575,8 +5627,8 @@ def ensure_dataset_via_http(dataset: str) -> None:
 def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str = "final") -> dict:
     """API-mode session->graph sync: drain warmup entries, then ONE improve submit.
 
-    ``trigger`` names the caller (``idle``, ``auto``, ``final``, ``manual``,
-    ``switch``) and is recorded with the session's improve state. Returns
+    ``trigger`` names the caller (``auto``, ``final``, ``manual``, ``switch``)
+    and is recorded with the session's improve state. Returns
     ``{"ok": bool, "reason": str, "error": str}``: ``ok`` when the improve landed
     and the drain was complete; otherwise ``reason`` is ``busy`` (another improve
     of this session is in flight server-side), ``unreachable`` (backend down,
@@ -5596,7 +5648,7 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
         result: dict = {"ok": False, "error": "backend unreachable"}
         reason = "unreachable"
     else:
-        # Detached/idle context: nothing user-visible waits on this, so the drain
+        # Detached context: nothing user-visible waits on this, so the drain
         # gets a far larger budget than the per-prompt hook's default.
         final_budget = _float_env("COGNEE_DRAIN_BUDGET_FINAL", 120.0)
         _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
@@ -5804,10 +5856,18 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             for directory in sessions.iterdir():
                 if not directory.is_dir() or directory.is_symlink():
                     continue
-                newest = max((p.stat().st_mtime for p in directory.iterdir()), default=0)
-                if now - newest > _SWEEP_SESSION_FILE_MAX_AGE_SECONDS:
-                    shutil.rmtree(directory)
-                    counts["sessions"] = counts.get("sessions", 0) + 1
+                # One session directory must not stop the rest of the sweep
+                # (log rotation included): a temp file can vanish between
+                # iterdir() and stat(), and a directory may not be removable.
+                try:
+                    newest = max((p.stat().st_mtime for p in directory.iterdir()), default=0)
+                    if now - newest > _SWEEP_SESSION_FILE_MAX_AGE_SECONDS:
+                        shutil.rmtree(directory)
+                        counts["sessions"] = counts.get("sessions", 0) + 1
+                except OSError as exc:
+                    counts.setdefault("errors", []).append(
+                        f"sessions/{directory.name}: {str(exc)[:80]}"
+                    )
         _sweep_pending_husks(counts)
         _sweep_launch_records(now, counts)
         for name in _SWEEP_LEGACY_FILES:

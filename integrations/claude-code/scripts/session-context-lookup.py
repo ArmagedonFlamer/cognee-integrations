@@ -47,6 +47,7 @@ from _plugin_common import (
     hook_log,
     is_observer_child,
     load_resolved,
+    mark_recall_slow,
     mark_server_ready,
     notify,
     other_readable_datasets,
@@ -55,6 +56,7 @@ from _plugin_common import (
     quiet_hook_output,
     read_and_reset_save_counter,
     read_connection_state,
+    recall_slow_until,
     recall_via_http,
     record_payment_required,
     record_slow_probe,
@@ -75,6 +77,7 @@ from _recall_text import (
     PASSAGE_SEPARATOR,
     code_facts,
     format_code_facts,
+    is_session_transcript,
     split_passages,
     split_sections,
     trim_recall_text,
@@ -280,11 +283,9 @@ def _injection_sections(by_source: dict) -> list[dict]:
             items = evidence_items(entry)
             available = [(render_item(item), item) for item in items or []]
             available = [(text, item) for text, item in available if text]
-            if (
-                source == "graph_context"
-                and items
-                and any(item.get("status") not in {"unsupported", "error"} for item in items)
-            ):
+            # Evidence replaces the legacy text only when something can be shown;
+            # a result whose items are all unavailable keeps its plain text.
+            if source == "graph_context" and available:
                 for text, item in available:
                     add(source, "evidence", title, priority, [text], result_id)
                     grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
@@ -300,22 +301,35 @@ def _injection_sections(by_source: dict) -> list[dict]:
                         ("passages", "## Relevant passages", 40),
                     ):
                         if parts.get(kind):
-                            items = (
-                                split_passages(parts[kind])
-                                if kind == "passages"
-                                else _line_entries(parts[kind])
-                            )
                             label = f"=== Cognee memory: {kind} ===\n[cognee-memory]"
                             if heading:
                                 label += "\n" + heading
+                            if kind != "passages":
+                                entries = _line_entries(parts[kind])
+                                add(source, kind, label, rank, entries, result_id)
+                                continue
+                            passages = split_passages(parts[kind])
+                            # Raw turns bridged from other sessions are the bulk and
+                            # the least distilled: across every dataset they go before
+                            # session learnings and remembered documents.
                             add(
                                 source,
                                 kind,
                                 label,
                                 rank,
-                                items,
+                                [p for p in passages if not is_session_transcript(p)],
                                 result_id,
-                                PASSAGE_SEPARATOR if kind == "passages" else "\n\n",
+                                PASSAGE_SEPARATOR,
+                            )
+                            add(
+                                source,
+                                "transcripts",
+                                "=== Cognee memory: transcripts ===\n[cognee-memory]\n"
+                                "## Passages from other sessions",
+                                rank - 1,
+                                [p for p in passages if is_session_transcript(p)],
+                                result_id,
+                                PASSAGE_SEPARATOR,
                             )
                     continue
             formatted = _format_entry(entry)
@@ -439,7 +453,8 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     )
     if known_bad and cloud_enabled(runtime):
         hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
-        return _outage_output(prior_state)
+        # The notice is one-shot (already consumed by main); never drop it here.
+        return _outage_output(prior_state, notice)
     if known_bad:
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
         # auth_failed instead of being masked as "ready" by an unauthenticated
@@ -549,6 +564,14 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
     recall_budget = _float_env("COGNEE_RECALL_BUDGET", 45.0 if cloud_enabled(runtime) else 20.0)
+    # After slow_streak_threshold() timeout-only prompts the server is treated as
+    # slow: recall gets a few seconds until a recall answers or the window ends,
+    # so a hung server cannot cost the full budget on every prompt.
+    slow_until = recall_slow_until(service_url)
+    recall_slow = time.time() < slow_until
+    if recall_slow:
+        recall_budget = min(recall_budget, _float_env("COGNEE_RECALL_SLOW_BUDGET", 5.0))
+        hook_log("recall_budget_reduced", {"budget_s": recall_budget})
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
     # Respect the shared circuit breaker: when the server has been failing (tripped
@@ -635,6 +658,8 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                 dataset_ids=scope_dataset_ids,
                 code_query=scope_code_query,
                 timeout=scope_timeout,
+                # Only this hook renders evidence items; other graph callers skip the cost.
+                evidence_mode="context" if "graph" in scope_list else None,
             )
         except Exception as caught:
             exc = caught
@@ -773,11 +798,13 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                 _breaker_failure("http 5xx", service_url=service_url, reason="server_error")
             except Exception:
                 pass
-        elif scope_timeouts and not scopes_answered_err:
-            # Timeouts describe latency, not an outage. Keep streak diagnostics
-            # without writing a failure marker that would block later recalls.
+        elif scope_timeouts and not scopes_answered_err and not recall_slow:
+            # Timeouts describe latency, not an outage: recall is never skipped,
+            # only shortened (see recall_slow_until above). A timeout under the
+            # short budget proves nothing new and does not extend it.
             streak = record_slow_probe(service_url)
-            if streak >= slow_streak_threshold():
+            if streak >= slow_streak_threshold() or slow_until:
+                mark_recall_slow(service_url)
                 hook_log("slow_streak_escalated", {"base_url": service_url, "streak": streak})
     except Exception as exc:
         hook_log("recall_health_accounting_failed", {"error": str(exc)[:200]})

@@ -257,14 +257,11 @@ def test_segments_name_buffered_writes_and_the_backlog(pc):
 def test_outage_header_names_the_failure_and_uses_the_hosts_joiner(pc):
     saves = {"prompt": 1, "trace": 0, "answer": 0, "trace_buffered": 6, "answer_buffered": 1}
     backlog = {"pending": 7, "oldest_age_seconds": 20 * 86400}
-    assert (
-        pc.outage_header("unreachable", saves, backlog, "; ")
-        == (
-            "Cognee memory: recall skipped (server unreachable)"
-            "; saved last turn 1 prompt / 0 trace / 0 answer"
-            "; buffered last turn 6 trace / 1 answer (not saved yet)"
-            "; 7 awaiting replay, oldest 20d"
-        )
+    assert pc.outage_header("unreachable", saves, backlog, "; ") == (
+        "Cognee memory: recall skipped (server unreachable)"
+        "; saved last turn 1 prompt / 0 trace / 0 answer"
+        "; buffered last turn 6 trace / 1 answer (not saved yet)"
+        "; 7 awaiting replay, oldest 20d"
     )
     assert pc.outage_header("server_error", {}, None, " · ") == (
         "Cognee memory: recall skipped (server error)"

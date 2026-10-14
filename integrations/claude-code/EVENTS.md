@@ -203,6 +203,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_auth_rejected` | `recall.auth_rejected` |
 | `hook:recall_breaker_open` | `recall.breaker_open` |
 | `hook:recall_budget_exceeded` | `recall.budget_exceeded` |
+| `hook:recall_budget_reduced` | `recall.budget_reduced` |
 | `hook:recall_dataset_hint` | `recall.dataset_hint` |
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
@@ -235,6 +236,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:session_marker_write_failed` | `session.marker_write_failed` |
 | `hook:session_resolved` | `session.resolved` |
 | `hook:session_start_exception` | `session.start_exception` |
+| `hook:session_stats_failed` | `session.stats_failed` |
 | `hook:shared_memory_agent_select_tenant_failed` | `shared_memory.agent_select_tenant_failed` |
 | `hook:shared_memory_grant_denied` | `shared_memory.grant_denied` |
 | `hook:shared_memory_leave_role_failed` | `shared_memory.leave_role_failed` |
@@ -354,6 +356,12 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 - `cloud.cloud_work_retry`: cloud work retry.
 - `cloud.cloud_capture_delivered`: cloud capture delivered.
 - `cloud.cloud_worker_error`: cloud worker error.
+- `cloud.cloud_capture_rejected`: the server permanently rejected a queued capture (400/413/422); it was expired so the queue keeps moving.
+- `cloud.cloud_worker_idle_exit`: the worker exited with no queued work and no session active for 30 minutes; the next hook restarts it.
+- `cloud.cloud_delivery_bookkeeping_failed`: a capture was delivered but updating counters or queuing the follow-up improve failed; the event is not re-sent.
+- `cloud.context_digest_inject_failed`: startup digest skipped because its cache could not be read.
+- `cloud.context_cache_refresh_failed`: a digest refresh failed; it is retried with exponential backoff and the last good digest stays in use.
+- `cloud.context_cache_refresh_dropped`: a pending digest refresh was removed (another account, older than the cache TTL, or too many failed attempts).
 
 - `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
 

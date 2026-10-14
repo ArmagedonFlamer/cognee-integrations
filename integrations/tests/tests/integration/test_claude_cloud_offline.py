@@ -81,3 +81,50 @@ def test_offline_start_capture_and_end_are_local(suite, run_hook, temp_home):
         stdin={**payload, "session_id": "warm-0", "source": "resume"},
     )
     assert "transaction safety" not in resumed.stdout
+
+    # The digest leads the startup context without replacing it, and honours the opt-out.
+    steer = "use cognee-search for more context"
+    context = json.loads(warm.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("Cognee project memory") and steer in context
+    opted_out = run_hook(
+        suite,
+        "session-start.py",
+        service_url=url,
+        env={**env, "COGNEE_PREFER_MEMORY": "false"},
+        stdin={**payload, "session_id": "warm-opt-out"},
+    )
+    context = json.loads(opted_out.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "transaction safety" in context and steer not in context
+
+    # A malformed cache costs the digest, never the rest of the startup output.
+    cache.write_text(json.dumps({**json.loads(cache.read_text()), "built_at": "yesterday"}))
+    broken = run_hook(
+        suite,
+        "session-start.py",
+        service_url=url,
+        env=env,
+        stdin={**payload, "session_id": "warm-broken"},
+    )
+    assert broken.returncode == 0, broken.stderr
+    context = json.loads(broken.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "transaction safety" not in context and steer in context
+
+
+def test_busy_ledger_on_compact_never_blocks_startup(suite, run_hook, temp_home, isolated_modules):
+    if suite.name != "claude-code":
+        pytest.skip("Claude cloud hooks")
+    env = {"COGNEE_BACKEND": "cloud", "COGNEE_IDLE_DISABLED": "1"}
+    payload = {"session_id": "busy-ledger", "cwd": str(temp_home), "source": "compact"}
+    ledger = temp_home / ".cognee-plugin" / "claude-code" / "sessions" / "busy-ledger"
+    ledger.mkdir(parents=True)
+    (ledger / "injected.json").write_text(json.dumps({"entry_hashes": ["f" * 16]}))
+    file_lock = isolated_modules(suite, "_file_lock").file_lock
+    with file_lock(ledger / "injected.lock") as acquired:
+        assert acquired
+        result = run_hook(
+            suite, "session-start.py", stdin=payload, service_url="http://127.0.0.1:1", env=env
+        )
+    assert result.returncode == 0, result.stderr
+    assert "background" in result.stdout
+    # The context was compacted: no stale "already in context" claims survive.
+    assert not (ledger / "injected.json").exists()

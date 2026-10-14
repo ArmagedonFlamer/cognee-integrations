@@ -932,11 +932,12 @@ def _width(value: str) -> int:
     )
 
 
-def _columns() -> int:
+def _columns() -> int | None:
+    """The terminal width when the host reports one; None means do not fit."""
     try:
-        return max(1, min(120, int(os.environ.get("COLUMNS", "80"))))
-    except (TypeError, ValueError):
-        return 80
+        return max(1, int(os.environ["COLUMNS"]))
+    except (KeyError, TypeError, ValueError):
+        return None
 
 
 def _clip(value: str, width: int) -> str:
@@ -1037,10 +1038,18 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
         core + counts + decoration + credits + update,
         core + counts + credits + update,
         core + credits + update,
-        core,
-        health + f"{purple}\033[1m{dataset} · {_active_mode()}{_RESET} " + chip,
     ]
-    if columns <= 60:
+    # A credit warning or update notice is never dropped to save width: they are
+    # the segments a user has to act on.
+    if not credits and not update:
+        candidates += [
+            core,
+            health + f"{purple}\033[1m{dataset} · {_active_mode()}{_RESET} " + chip,
+        ]
+    else:
+        # Narrowest form with a notice: health plus the notices alone.
+        candidates.append(health + (credits + update).lstrip(" ·"))
+    if columns is not None and columns <= 60:
         candidates = candidates[1:]
     else:
         # Prefer breathing room, then compact spacing before dropping data.
@@ -1051,6 +1060,10 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
         ]
     if not unicode:
         candidates = [_ascii_line(candidate) for candidate in candidates]
+    # Claude Code does not normally export COLUMNS to the status line command;
+    # without a real width, show the full line as classic does.
+    if columns is None:
+        return candidates[0]
     for candidate in candidates:
         if _width(candidate) <= columns:
             return candidate
@@ -1060,9 +1073,9 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
 
 def main() -> None:
     classic = os.environ.get("COGNEE_STATUSLINE_STYLE", "").strip().lower() == "classic"
-    # Preserve legacy UTF-8 output in classic mode. The default deliberately
-    # honours non-UTF-8 stdout and uses ASCII instead of changing its encoding.
-    for stream in (sys.stdin, sys.stdout) if classic else (sys.stdin,):
+    # UTF-8 in both styles, as before 1.6.22 (Windows pipes default to cp1252).
+    # The default style falls back to ASCII only if stdout cannot be switched.
+    for stream in (sys.stdin, sys.stdout):
         try:
             stream.reconfigure(encoding="utf-8")
         except Exception:
