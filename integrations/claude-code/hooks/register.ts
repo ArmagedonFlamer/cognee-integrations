@@ -17,6 +17,9 @@
 //     dataset, or typing the name of a new one, switches the session there
 //     without a model turn (`/cognee-dataset <name>` does the same from the
 //     prompt);
+//   * a `see fix` button beside a red ✕ on the row: a dialog pane that says what
+//     is wrong in plain words and how to fix it, runs the plugin's doctor, and
+//     for a key or URL problem takes the value and writes it to ~/.cognee/.env;
 //   * a first-run tour: three dim hint lines under the row, each about the
 //     thing above it, shown once per machine (the plugin's store remembers)
 //     and again on `/cognee-tour`;
@@ -144,6 +147,92 @@ const TOUR_STEPS = [
 let tourOn = true
 let tourStep = -1
 let tourChecked = false
+
+// The fix dialog: what the row's reason means and what to do about it. Each
+// guide is plain words first, then steps; `field` names the env-file variable
+// the pane takes a value for, when one value is the fix.
+const FIX_PANE = 'cognee-fix'
+const DOCTOR_TIMEOUT_MS = 30_000
+type FixGuide = { title: string; what: string; steps: string[]; field?: { name: string; placeholder: string } }
+const FIX_GUIDES: Record<string, FixGuide> = {
+  incorrect_cognee_api_key: {
+    title: 'The memory server rejected the plugin\'s API key',
+    what: 'The key this plugin sends to the Cognee server (`COGNEE_API_KEY`) is missing, wrong or expired, so nothing can be recalled or saved.',
+    steps: [
+      '**Cloud:** paste the API key from your Cognee Cloud account below, or put `COGNEE_API_KEY=ck_…` in `~/.cognee/.env`. A key exported in your shell wins over the file.',
+      '**Local:** delete `~/.cognee-plugin/api_key.json` and start a new session; the plugin mints a fresh key from the local server.',
+      'With a plugin identity (`COGNEE_PLUGIN_IDENTITY`), **run doctor** below: it says whether the cached identity credential was the one rejected.',
+      'A new prompt tries the new key; a new session applies it everywhere.',
+    ],
+    field: { name: 'COGNEE_API_KEY', placeholder: 'ck_… (saved to ~/.cognee/.env)' },
+  },
+  incorrect_llm_api_key: {
+    title: 'The local server cannot reach its LLM',
+    what: 'The Cognee server on this machine builds memory with an LLM, and the key it uses (`LLM_API_KEY`) is missing or the provider rejected it. The server itself is fine.',
+    steps: [
+      'Paste a working provider key below, or put `LLM_API_KEY=…` (and `LLM_PROVIDER` if not OpenAI) in `~/.cognee/.env`.',
+      'Or use your Claude subscription instead: remove `LLM_API_KEY` from `~/.cognee/.env` and keep the `claude` CLI on PATH; the next session routes the server\'s LLM calls through it.',
+      'Start a new session: the server reads its key at start.',
+    ],
+    field: { name: 'LLM_API_KEY', placeholder: 'sk-… (saved to ~/.cognee/.env)' },
+  },
+  missing_cognee_base_url: {
+    title: 'Cloud mode is forced, but no server URL is configured',
+    what: '`COGNEE_BACKEND=cloud` is exported in this shell, and no `COGNEE_BASE_URL` is set anywhere, so there is no server to talk to.',
+    steps: [
+      'Paste your Cognee Cloud URL below (it is saved as `COGNEE_BASE_URL` in `~/.cognee/.env`), and make sure `COGNEE_API_KEY` is set too.',
+      'Or go local for this terminal: `unset COGNEE_BACKEND`, then start a new session.',
+    ],
+    field: { name: 'COGNEE_BASE_URL', placeholder: 'https://your-instance.cognee.ai' },
+  },
+  cognee_needs_python_3_10: {
+    title: 'Local mode needs a Python the server can run on',
+    what: 'The hooks run on any Python 3.9+, but the Cognee server itself needs Python 3.10 to 3.14, and none was found on this machine. The plugin never downloads one.',
+    steps: [
+      'Install one: `brew install python@3.12`, `uv python install 3.12`, pyenv, or python.org.',
+      'Start a new session: the plugin builds its runtime under `~/.cognee-plugin/venv` and starts the server.',
+      'Or use Cognee Cloud instead, which needs no local Python: set `COGNEE_BASE_URL` and `COGNEE_API_KEY` in `~/.cognee/.env`.',
+    ],
+  },
+  unreachable: {
+    title: 'The memory server cannot be reached',
+    what: 'Connections are refused or the host does not resolve. In local mode the server process is not running (it may have died); in cloud mode the URL is wrong or the network is in the way.',
+    steps: [
+      '**Local:** start a new session; the plugin starts the server again. If it keeps failing, `~/.cognee-plugin/claude-code/hook.log` says why.',
+      '**Cloud:** check `COGNEE_BASE_URL` in `~/.cognee/.env` (or your shell), then your network or VPN.',
+      '**Run doctor** below: it shows the URL in use, the mode and the health check.',
+      'The dot turns green again on the next successful recall.',
+    ],
+  },
+  server_error: {
+    title: 'The memory server is answering with errors',
+    what: 'The server is up but replied with a server error (HTTP 5xx) to the last requests. Memory is not read or written until it recovers.',
+    steps: [
+      '**Run doctor** below for the health check and the server version.',
+      '**Local:** start a new session to restart the server; `~/.cognee-plugin/claude-code/hook.log` holds the error.',
+      '**Cloud:** retry in a moment; if it persists, the error belongs to the Cognee team.',
+    ],
+  },
+  not_responding: {
+    title: 'The memory server is not answering in time',
+    what: 'The server accepts connections but several recalls in a row timed out. It is usually busy (a large memory build) rather than down.',
+    steps: [
+      'Wait a little and send another prompt; a single answer in time clears the mark.',
+      'On a slow or loaded server, raise the per-prompt budget: `COGNEE_READY_PROBE_TIMEOUT=6` in `~/.cognee/.env`.',
+      '**Run doctor** below to see whether the health check answers at all.',
+    ],
+  },
+}
+const FIX_FALLBACK: FixGuide = {
+  title: 'Memory reported a problem',
+  what: 'The row shows a reason the plugin recorded; the doctor report below has the details.',
+  steps: ['**Run doctor** below.', 'A new session re-checks everything.'],
+}
+let fixReason = ''
+let fixOpen = false
+let doctorOutput = ''
+let doctorRunning = false
+let fixNote: { text: string; isError: boolean } | null = null
 // One listing per session, refreshed after a switch or by the pane's refresh.
 let datasetsListed = false
 let datasetsListing = false
@@ -495,6 +584,62 @@ async function refreshSnapshot($: any): Promise<void> {
   rendererFailures += 1
 }
 
+// ── the fix dialog ──────────────────────────────────────────────────────────
+function fixGuide(reason: string): FixGuide {
+  return FIX_GUIDES[reason] ?? FIX_FALLBACK
+}
+
+async function openFix($: any, reason: string): Promise<void> {
+  fixReason = reason
+  fixOpen = true
+  fixNote = null
+  doctorOutput = ''
+  const opened = await $.ui.open({ id: FIX_PANE, title: 'Fix memory', focus: true, closeOnEscape: true, holdToasts: true, rows: 18 })
+  if (!opened.isPlaced) $.ui.toast(`${icon}fix: ${opened.reason}`)
+}
+
+async function runDoctor($: any): Promise<void> {
+  if (doctorRunning) return
+  doctorRunning = true
+  redraw($)
+  try {
+    const ran = await runWrapper($, 'cognee-doctor.sh', [], DOCTOR_TIMEOUT_MS)
+    doctorOutput = ran ? (ran.stdout.trim() || ran.stderr.trim() || '(no output)') : 'could not run the doctor: bash not found'
+  } finally {
+    doctorRunning = false
+    redraw($)
+  }
+}
+
+// Append one variable to ~/.cognee/.env (the last value of a key wins there,
+// so appending is also how a value is changed). Written by the module, so the
+// secret never goes through a shell history.
+async function saveEnvValue($: any, name: string, value: string): Promise<void> {
+  const trimmed = value.trim()
+  if (!trimmed) return
+  if (/[\r\n]/.test(trimmed)) {
+    fixNote = { text: 'one line only', isError: true }
+    redraw($)
+    return
+  }
+  const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
+  const path = `${home}/.cognee/.env`
+  let existing = ''
+  try {
+    existing = await $.fs.read(path)
+  } catch {
+    existing = ''
+  }
+  const head = existing && !existing.endsWith('\n') ? `${existing}\n` : existing
+  try {
+    await $.fs.write(path, `${head}${name}="${trimmed}"\n`)
+    fixNote = { text: `${name} saved to ${path}; a new session applies it`, isError: false }
+  } catch {
+    fixNote = { text: `could not write ${path}`, isError: true }
+  }
+  redraw($)
+}
+
 // ── the tour ────────────────────────────────────────────────────────────────
 // Once, at the first draw of the band (the person is looking at the row by
 // then; at session start the Desktop app has no surface yet).
@@ -807,6 +952,48 @@ export const register: Register = (on, options) => {
     return { ...ran, text: `${icon}recalled ${plural(recalledThisTurn, 'memory')}` }
   })
 
+  on('ui.close', { id: FIX_PANE }, ($, e, next) => {
+    fixOpen = false
+    return next(e)
+  }).catch(($, e, next) => next(e))
+
+  // The fix dialog: the reason in plain words, the steps, the doctor's report
+  // on request, and a field for the one value that fixes a key or URL problem.
+  on('ui.render', { component: 'Pane', requestId: FIX_PANE }, async ($, e) => {
+    const { Box, Text, Markdown, Button, Input, Code } = $.ui.resolve(e) as any
+    const guide = fixGuide(fixReason)
+    const rows: RenderElement[] = []
+    rows.push(Text({ bold: true, color: 'red', children: [`✕ ${guide.title}`] }))
+    rows.push(Text({ dimColor: true, children: [`reason: ${fixReason || 'unknown'}`] }))
+    rows.push(Markdown({ text: `${guide.what}\n\n${guide.steps.map((step, i) => `${i + 1}. ${step}`).join('\n')}` }))
+    if (guide.field && Input) {
+      rows.push(Text({ children: [''] }))
+      rows.push(
+        Input({
+          key: 'secret',
+          label: `${guide.field.name} `,
+          placeholder: guide.field.placeholder,
+          submitLabel: 'save',
+          onSubmit: (value: string) => void saveEnvValue($, guide.field!.name, value),
+        }),
+      )
+    }
+    if (fixNote) rows.push(Text({ color: fixNote.isError ? 'red' : 'green', children: [fixNote.text] }))
+    rows.push(Text({ children: [''] }))
+    rows.push(
+      Box({
+        flexDirection: 'row',
+        children: [
+          Button({ key: 'doctor', label: doctorRunning ? 'running doctor…' : 'run doctor', variant: 'primary', onPress: () => void runDoctor($) }),
+          Text({ children: ['   '] }),
+          Button({ key: 'closeFix', label: 'close', plain: true, dimColor: true, onPress: () => void $.ui.close({ id: FIX_PANE }) }),
+        ],
+      }),
+    )
+    if (doctorOutput) rows.push(Code({ source: doctorOutput }))
+    return Box({ flexDirection: 'column', children: rows })
+  })
+
   // The status row, above the prompt on the desktop and in a terminal (where
   // the settings-file status line is told to stay quiet for this session), the
   // dataset name a picker. Focus the band with its focus chord (ctrl+x tab) or
@@ -872,7 +1059,15 @@ export const register: Register = (on, options) => {
     if (active) {
       parts.push(Text({ color: 'yellow', children: [FRAMES[frame % FRAMES.length] ?? '⠋'] }))
     } else if (snap?.state === 'fail') {
+      // The verdict itself is the button: pressing ✕ (reason) opens the fix
+      // dialog. Plain, so a terminal draws just the red text; the desktop
+      // draws its native button around it.
+      // The verdict stays red text: a button's text takes the surface's own
+      // colour on the desktop, whatever is put inside it. The small button
+      // right after it is the press that opens the fix dialog.
       parts.push(Text({ color: 'red', bold: true, children: [`✕ (${snap.reason})`] }))
+      parts.push(Text({ children: [' '] }))
+      parts.push(Button({ key: 'fix', label: 'see fix', variant: 'secondary', onPress: () => void openFix($, snap.reason) }))
     } else if (snap?.state === 'ok') {
       parts.push(Text({ color: 'green', bold: true, children: ['●'] }))
     } else {

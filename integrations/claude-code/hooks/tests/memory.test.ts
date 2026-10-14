@@ -492,6 +492,91 @@ test('with the tour off a first session gets no hints', { options: { tour: false
   await ui.unmount()
 })
 
+const FAIL_SNAPSHOT = { ...SNAPSHOT, state: 'fail', reason: 'incorrect_cognee_api_key', text: '✕ (incorrect_cognee_api_key) cognee: agent_sessions · local' }
+const FIX_PROPS = { title: 'Fix memory', isFocused: true, bodyColumns: 100, placement: 'inline' as const, scroll: { offset: 0, bodyRows: 18 }, view: {} }
+
+test('a red ✕ (reason) on the row has a see-fix button beside it that opens the guide', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, { 'cognee_statusline_render.py': () => ok(JSON.stringify(FAIL_SNAPSHOT)) })
+  const opened: string[] = []
+  on('ui.open', ($, e) => {
+    opened.push(e.id)
+    return { value: { isPlaced: true } }
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  // The verdict stays red text; the small button beside it is the press.
+  const verdict = await band.find({ type: 'Text', text: /✕ \(incorrect_cognee_api_key\)/ })
+  expect(verdict!.props.color).toBe('red')
+  const button = await band.find({ type: 'Button', key: 'fix' })
+  expect(button!.props.label).toBe('see fix')
+  expect(button!.props.variant).toBe('secondary')
+  await $.ui.press({ plugin: PLUGIN, key: 'fix' })
+  expect(opened).toEqual(['cognee-fix'])
+  await band.unmount()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: PLUGIN, surface, component: 'Pane', requestId: 'cognee-fix', props: FIX_PROPS })
+    expect(await pane.find({ type: 'Text', text: /rejected the plugin's API key/ })).toBeDefined()
+    expect(await pane.find({ type: 'Markdown', text: /delete `~\/.cognee-plugin\/api_key.json`/ })).toBeDefined()
+    expect(await pane.find({ type: 'Input', key: 'secret' })).toBeDefined()
+    expect(await pane.find({ type: 'Button', key: 'doctor' })).toBeDefined()
+    await pane.unmount()
+  }
+})
+
+test('a healthy row has no fix button', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await band.find({ type: 'Button', key: 'fix' })).toBeUndefined()
+  await band.unmount()
+})
+
+test('the fix pane runs the doctor and shows its report', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'cognee_statusline_render.py': () => ok(JSON.stringify({ ...FAIL_SNAPSHOT, reason: 'unreachable' })),
+    'cognee-doctor.sh': () => ok('Mode: Local\nServer: http://localhost:8011\nHealth: unreachable\n'),
+  })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await $.ui.press({ plugin: PLUGIN, key: 'fix' })
+  await band.unmount()
+
+  const pane = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', component: 'Pane', requestId: 'cognee-fix', props: FIX_PROPS })
+  expect(await pane.find({ type: 'Text', text: /cannot be reached/ })).toBeDefined()
+  // No key field for a reason no single value fixes.
+  expect(await pane.find({ type: 'Input', key: 'secret' })).toBeUndefined()
+  await $.ui.press({ plugin: PLUGIN, key: 'doctor' })
+  expect(argvOf(calls, 'cognee-doctor.sh')).toBeDefined()
+  expect(await pane.find({ type: 'Code', text: /Health: unreachable/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('a key pasted into the fix pane is appended to ~/.cognee/.env', async ($, on) => {
+  const calls: Call[] = []
+  const writes: Write[] = []
+  wire(on, calls, { 'cognee_statusline_render.py': () => ok(JSON.stringify(FAIL_SNAPSHOT)) }, writes)
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const band = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  await $.ui.press({ plugin: PLUGIN, key: 'fix' })
+  await band.unmount()
+
+  const pane = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'cognee-fix', props: FIX_PROPS })
+  writes.length = 0
+  await $.ui.input({ plugin: PLUGIN, key: 'secret', text: '  ck_live_123  ' })
+  const env = writes.find(w => w.path === `${HOME}/.cognee/.env`)
+  expect(env).toBeDefined()
+  // The file did not exist (the wire's fs.read throws), so it is created with the one line.
+  expect(env!.text).toBe('COGNEE_API_KEY="ck_live_123"\n')
+  expect(await pane.find({ type: 'Text', text: /COGNEE_API_KEY saved/ })).toBeDefined()
+  await pane.unmount()
+})
+
 test('a session that reports no surface at start (the Desktop app) lists when the band is first drawn', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)

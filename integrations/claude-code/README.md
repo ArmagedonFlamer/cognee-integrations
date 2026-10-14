@@ -72,7 +72,9 @@ plugin's own activity marker under `~/.cognee-plugin/claude-code/phase/`, writes
 one, `band/<session>.json`, which tells the settings-file status line to stay
 quiet for that session, and runs one program, the plugin's own status-line
 renderer (`scripts/cognee_statusline_render.py --json`, local, no network), on
-the events the hooks fire. Everything else it runs is one of this
+the events the hooks fire. On your explicit action in the fix dialog it also runs
+`cognee-doctor.sh` (read-only diagnostics) and appends a value you typed to
+`~/.cognee/.env`. Everything else it runs is one of this
 folder's scripts, on your action or Claude's: `switch-dataset.py --list` once when
 the band is first drawn and `switch-dataset.py <name>` when you pick a dataset or
 run `/cognee-dataset <name>`; the `search` tool runs `cognee-search.sh` (and
@@ -895,6 +897,27 @@ The module also adds, on both surfaces:
   recall and compaction hooks already show their own status message there.
 - **One line under each answer:** `🧠 recalled 3 memories`, the memories this answer
   was given. Quiet when nothing was recalled, and never for a subagent's turn.
+
+**A `see fix` button beside every red ✕.** When the row shows a failure, a small
+`[ see fix ]` button right after `✕ (<reason>)` opens a dialog above the prompt
+(Escape closes it) that says in plain words what is wrong and what to do, for each
+reason the row can show:
+
+| Reason on the row | The dialog says |
+|---|---|
+| `incorrect_cognee_api_key` | the server rejected the plugin's key; cloud: paste the key from your account (saved to `~/.cognee/.env`); local: delete `~/.cognee-plugin/api_key.json` and start a new session |
+| `incorrect_llm_api_key` | the local server cannot reach its LLM; paste a provider key, or remove `LLM_API_KEY` to run on your Claude subscription |
+| `missing_cognee_base_url` | cloud is forced but no URL is set; paste the URL, or `unset COGNEE_BACKEND` |
+| `cognee_needs_python_3_10` | install a Python 3.10–3.14 and start a new session, or use Cognee Cloud |
+| `unreachable` | local: a new session restarts the server, `hook.log` says why it died; cloud: check the URL and the network |
+| `server_error` | the server answers 5xx; restart locally, retry on cloud |
+| `not_responding` | the server is busy; wait, or raise `COGNEE_READY_PROBE_TIMEOUT` |
+
+Every dialog has a **run doctor** button that runs `cognee-doctor.sh` (read-only)
+and shows its report in the dialog. Where one value is the fix (a key, a URL) the
+dialog has a field for it: Enter appends `NAME="value"` to `~/.cognee/.env`,
+where the last value of a key wins, with no shell history involved; a new session
+applies it. The dialog never edits anything else.
 
 **First-run tour.** The first session on a machine gets three short hints under
 the row, each about what is right above it, with `next` and `skip` buttons:

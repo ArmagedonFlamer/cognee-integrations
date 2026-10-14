@@ -50,6 +50,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   included. Plain text until the listing lands or when it fails.
   `/cognee-dataset <name>` switches from the prompt the same way, on every
   surface; `/cognee-dataset` alone lists the datasets.
+- **A `see fix` button beside a red ✕ on the status row.** It opens a dialog above
+  the prompt that says in plain words what the reason means and what to do
+  (`incorrect_cognee_api_key`, `incorrect_llm_api_key`,
+  `missing_cognee_base_url`, `cognee_needs_python_3_10`, `unreachable`,
+  `server_error`, `not_responding`), runs `cognee-doctor.sh` on request and
+  shows its report, and, where one value is the fix, takes the key or URL and
+  appends it to `~/.cognee/.env` without a shell history.
 - **A first-run tour on the status row.** The first session on a machine shows
   three short hints under the row, each about what is right above it (the
   dataset picker; the dot, the mode and the activity; how Cognee recalls and
