@@ -16,6 +16,15 @@ const SNAPSHOT = {
   credits: '',
   update: '',
   text: 'cognee: agent_sessions · local',
+  counts: {
+    reminiscence: 0,
+    ideas: null,
+    imprints: null,
+    bar: '',
+    tokens_saved: 'tokens saved n/a',
+    tokens_saved_short: 'saved n/a',
+    show_counts: true,
+  },
 }
 
 const SWITCH_LIST = {
@@ -59,6 +68,7 @@ function wire(
   calls: Call[],
   answers: Partial<Record<string, (argv: readonly string[]) => { value: unknown }>> = {},
   writes: Write[] = [],
+  registrations: { tools: string[]; commands: string[] } = { tools: [], commands: [] },
 ) {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   mock.env(on, { HOME })
@@ -70,8 +80,18 @@ function wire(
     return Text({ children: [''] })
   })
   on('session.id', () => ({ value: SESSION }))
-  on('fs.read', () => {
-    throw new Error('no marker')
+  // No marker and no env file: an empty read (a throw from a bottom hook
+  // inside a timer would end the timer in the kit, which no real file does).
+  on('fs.read', () => ({ value: '' }))
+  // The registrations session start makes; a test that inspects them
+  // passes `registrations` and reads it back.
+  on('tool.register', ($, e) => {
+    registrations.tools.push(e.name)
+    return { value: { tool: `mcp__${PLUGIN}__${e.name}` } }
+  })
+  on('command.register', ($, e) => {
+    registrations.commands.push(e.name)
+    return { value: { command: e.name } }
   })
   on('fs.write', ($, e) => {
     writes.push({ path: e.path, text: e.text })
@@ -133,32 +153,19 @@ function resultText(ran: { result?: unknown; deny?: string; text?: string; isErr
 
 test('session start registers the two tools and the commands', async ($, on) => {
   const calls: Call[] = []
-  wire(on, calls)
-  const tools: string[] = []
-  const commands: string[] = []
-  on('tool.register', ($, e) => {
-    tools.push(e.name)
-    return { value: { tool: `mcp__${PLUGIN}__${e.name}` } }
-  })
-  on('command.register', ($, e) => {
-    commands.push(e.name)
-    return { value: { command: e.name } }
-  })
+  const registrations = { tools: [] as string[], commands: [] as string[] }
+  wire(on, calls, {}, [], registrations)
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  expect(tools).toEqual(['search', 'remember'])
-  expect(commands).toEqual(['cognee-dataset', 'cognee-tour'])
+  expect(registrations.tools).toEqual(['search', 'remember'])
+  expect(registrations.commands).toEqual(['cognee-dataset', 'cognee-tour'])
 })
 
 test('the tools row can be switched off', { options: { tools: false } }, async ($, on) => {
   const calls: Call[] = []
-  wire(on, calls)
-  const tools: string[] = []
-  on('tool.register', ($, e) => {
-    tools.push(e.name)
-    return { value: { tool: `mcp__${PLUGIN}__${e.name}` } }
-  })
+  const registrations = { tools: [] as string[], commands: [] as string[] }
+  wire(on, calls, {}, [], registrations)
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  expect(tools).toEqual([])
+  expect(registrations.tools).toEqual([])
 })
 
 test('the search tool runs the search wrapper and hands the model the hits as text', async ($, on) => {
@@ -317,7 +324,7 @@ test('on the desktop band the dataset name is a picker that switches on pick', a
   expect(picker!.props.value).toBe('agent_sessions')
   expect((picker!.props.options as { value: string }[]).map(o => o.value)).toEqual(['agent_sessions', 'demo', '+ new dataset…'])
   // The name is drawn once, as the picker, not again as text.
-  expect(await ui.find({ type: 'Text', text: /cognee: agent_sessions/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeUndefined()
 
   calls.length = 0
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'demo' })
@@ -428,7 +435,7 @@ test('the first session on a machine gets the tour under the row, once', async (
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
   expect(await ui.find({ type: 'Text', text: /the dataset name is a picker/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /cognee: / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
 
   await $.ui.press({ plugin: PLUGIN, key: 'tourNext' })
   expect(await ui.find({ type: 'Text', text: /means memory is connected/ })).toBeDefined()
@@ -466,7 +473,7 @@ test('a machine that has seen this tour gets no hints', async ($, on) => {
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
   expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /cognee: / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
   await ui.unmount()
 })
 
@@ -577,6 +584,31 @@ test('a key pasted into the fix pane is appended to ~/.cognee/.env', async ($, o
   await pane.unmount()
 })
 
+test('the row keeps checking after start until the connection marker lands', async ($, on) => {
+  const calls: Call[] = []
+  let renders = 0
+  const clock = wire(on, calls, {
+    // The first snapshot comes before the SessionStart hook wrote its marker.
+    'cognee_statusline_render.py': () => {
+      renders += 1
+      return ok(JSON.stringify(renders < 3 ? { ...SNAPSHOT, state: '' } : SNAPSHOT))
+    },
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeDefined()
+  await ui.unmount()
+
+  // Ten seconds on, the snapshot was retaken and the marker is there.
+  for (let i = 0; i < 11; i += 1) await clock.advance(1000)
+  ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /○/ })).toBeUndefined()
+  await ui.unmount()
+  expect(renders).toBeGreaterThanOrEqual(3)
+})
+
 test('a session that reports no surface at start (the Desktop app) lists when the band is first drawn', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)
@@ -600,7 +632,7 @@ test('in a terminal the band is the whole status row, the dataset name a picker'
 
   let ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
   // The first draw starts the listing (which lands before the mount settles).
-  expect(await ui.find({ type: 'Text', text: /cognee: / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
   await ui.unmount()
   expect(argvOf(calls, 'switch-dataset.py')).toContain('--list')
 
@@ -609,8 +641,7 @@ test('in a terminal the band is the whole status row, the dataset name a picker'
   expect(picker).toBeDefined()
   expect(picker!.props.value).toBe('agent_sessions')
   expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
-
+  
   calls.length = 0
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'demo' })
   expect(argsAfter(argvOf(calls, 'switch-dataset.py')!, 'switch-dataset.py')).toEqual(['demo', '--json', '--session-key', SESSION])
@@ -652,6 +683,6 @@ test('the band falls back to the name as text until the datasets are listed', as
 
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /cognee: agent_sessions/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
   await ui.unmount()
 })

@@ -25,6 +25,7 @@ import sys
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+from _cloud_worker import enabled as cloud_enabled
 from _plugin_common import (
     get_session_detail_via_http,
     hook_log,
@@ -48,7 +49,7 @@ _GRAPH_TOP_K = 3
 
 def _load_resolved_fields() -> tuple[str, str]:
     """Return (session_id, dataset) from resolved cache or config."""
-    resolved = load_resolved()
+    resolved = load_resolved(identity=False) if cloud_enabled() else load_resolved()
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     if not session_id or not dataset:
@@ -181,6 +182,11 @@ async def _run():
     # down rather than paying three recall timeouts for nothing.
     runtime = resolve_runtime_mode()
     service_url = runtime.get("base_url", "")
+    if cloud_enabled(runtime):
+        from _cloud_worker import request_improve
+
+        request_improve(dataset, session_id, "precompact")
+        return
     if not server_usable(service_url):
         hook_log("precompact_server_unusable", {"base_url": service_url})
         return

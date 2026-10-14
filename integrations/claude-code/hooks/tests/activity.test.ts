@@ -17,6 +17,15 @@ const SNAPSHOT = {
   credits: '',
   update: '',
   text: 'cognee: agent_sessions · local',
+  counts: {
+    reminiscence: 124,
+    ideas: 3,
+    imprints: { with_hits: 34, turns: 46 },
+    bar: '▰▰▰▰▱',
+    tokens_saved: '~2.4k tokens saved',
+    tokens_saved_short: '~2.4kt saved',
+    show_counts: true,
+  },
 }
 
 const BAND = {
@@ -61,6 +70,10 @@ function wire(on: Parameters<Parameters<typeof test>[1]>[1], state: { marker: st
     return { value: state.marker }
   })
   on('fs.write', () => ({ value: undefined }))
+  // Session start registers tools and commands; without these bottoms the
+  // start hook would fail there and never reach its warm-up poll.
+  on('tool.register', ($, e) => ({ value: { tool: `mcp__cognee-memory__${e.name}` } }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('process.run', () => ({
     value: { exitCode: 0, stdout: JSON.stringify(SNAPSHOT), stderr: '', isStdoutTruncated: false, isStderrTruncated: false },
   }))
@@ -75,8 +88,15 @@ test('the desktop band shows the row the terminal status line shows', async ($, 
   await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /cognee: agent_sessions/ })).toBeDefined()
+  // The badge, the dataset, the mode, dev's counters and the activity.
+  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /124 reminiscence/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /34\/46 imprints/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /▰▰▰▰▱/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /~2.4k tokens saved/ })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /recalled 3 memories/ })).toBeDefined()
+  // Healthy leads with the green dot, as on the text line.
   expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
   await ui.unmount()
 })
@@ -89,7 +109,7 @@ test('in a terminal the band draws the same row, so the status line below can st
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /cognee: agent_sessions/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: / cognee / })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /recalled 3 memories/ })).toBeDefined()
   await ui.unmount()
 })
@@ -120,11 +140,13 @@ test('a prompt shows recalling while the recall hook runs, then what it recalled
   expect(await ui.find({ type: 'Text', text: /recalled 2 memories/ })).toBeDefined()
   await ui.unmount()
 
+  // The answer's text is the agent's own (its credit line comes from the recall
+  // hook's instruction); the module adds nothing under it.
   const done = await $.turn.complete({ turnId: 't1', answer: 'We kept the cache.', durationMs: 1200, isAborted: false, reason: 'answer' })
-  expect(done.text).toBe('🧠 recalled 2 memories')
+  expect(done.text ?? '').toBe('')
 })
 
-test('nothing recalled: no line under the answer, and the band says so plainly', async ($, on) => {
+test('nothing recalled: the band says so plainly', async ($, on) => {
   const state = { marker: '' }
   const clock = wire(on, state)
   const now = clock.now()
@@ -139,25 +161,6 @@ test('nothing recalled: no line under the answer, and the band says so plainly',
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Text', text: /nothing relevant yet/ })).toBeDefined()
   await ui.unmount()
-
-  const done = await $.turn.complete({ turnId: 't1', answer: 'Hi.', durationMs: 300, isAborted: false, reason: 'answer' })
-  expect(done.text ?? '').not.toContain('recalled')
-})
-
-test('the answer line reads the count from the marker when the context has no header', async ($, on) => {
-  const state = { marker: '' }
-  const clock = wire(on, state)
-  const now = clock.now()
-  state.marker = marker(now, { active: null, results: {} })
-  on('prompt.submit', ($, e) => {
-    state.marker = marker(now, { active: null, results: { recalled: { count: 4, at: now / 1000, ok: true } } })
-    return { text: e.text }
-  })
-  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
-  await $.prompt.submit({ text: 'where is the retry logic?' })
-
-  const done = await $.turn.complete({ turnId: 't1', answer: 'In the client.', durationMs: 900, isAborted: false, reason: 'answer' })
-  expect(done.text).toBe('🧠 recalled 4 memories')
 })
 
 test('after the turn the band shows saving until the marker says what was saved', async ($, on) => {

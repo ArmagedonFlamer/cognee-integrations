@@ -258,3 +258,225 @@ def redact(value):
     if isinstance(value, list):
         return [redact(item) for item in value]
     return value
+
+
+# Only command positions count: grep patterns, Python source and ordinary repo
+# paths mentioning Cognee are evidence, not recursive plugin invocations.
+_PLUGIN_SCRIPTS = set(
+    "cognee-search.sh cognee-remember.sh cognee-doctor.sh "
+    "cognee-index-repo.sh cognee-forget.sh cognee-statusline.sh switch-dataset.py "
+    "list-datasets.py plugin_eval.py cognee-recap.py hook_runner.py cognee-evidence.py "
+    "cognee-cli.sh sync-session-to-graph.py credits-refresh.py".split()
+)
+# Plugin roots of every host: generic script names such as ``doctor.py`` count
+# only when they run from one of these.
+_PLUGIN_PATH_MARKERS = (
+    "$CLAUDE_PLUGIN_ROOT/",
+    "${CLAUDE_PLUGIN_ROOT}/",
+    "/.claude/plugins/cache/cognee/",
+    "/.cognee-plugin/",
+    "$CODEX_PLUGIN_ROOT/",
+    "${CODEX_PLUGIN_ROOT}/",
+    "/.codex/plugins/cognee/",
+    "COGNEE_ANTIGRAVITY_PLUGIN_ROOT",
+    "/.gemini/config/plugins/cognee",
+)
+_READ_COMMANDS = set(
+    "ls cat head tail grep rg sed awk echo find wc sort uniq cut tr jq "
+    "diff stat which pwd tree date env du df".split()
+)
+_GIT_READ = set(
+    "log status diff show fetch ls-tree ls-files rev-parse blame grep describe "
+    "cat-file merge-base".split()
+)
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
+
+
+def _shell_parts(command: str) -> list[list[str]]:
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=";&|<>()")
+        lex.whitespace_split = True
+        parts = [[]]
+        for token in lex:
+            if token in {"&&", ";", "||", "|", "&"}:
+                parts.append([])
+            else:
+                parts[-1].append(token)
+        return [part for part in parts if part]
+    except ValueError:
+        return []
+
+
+def _command_words(words: list[str]) -> list[str]:
+    words = list(words)
+    while words and _ASSIGNMENT.match(words[0]):
+        words.pop(0)
+    if words and words[0] in {"command", "exec", "env"}:
+        words.pop(0)
+        while words and _ASSIGNMENT.match(words[0]):
+            words.pop(0)
+    return words
+
+
+def is_plugin_invocation(command: str) -> str:
+    """Return a bounded reason for an actual plugin invocation, otherwise ''."""
+    for part in _shell_parts(command):
+        words = _command_words(part)
+        if not words:
+            continue
+        executable = words[0]
+        base = PurePosixPath(executable).name
+        if base in {"python", "python3", "bash", "sh", "zsh"}:
+            # -c source is deliberately opaque; never classify its string literals.
+            if len(words) < 2 or words[1].startswith("-"):
+                continue
+            executable = words[1]
+            base = PurePosixPath(executable).name
+        elif base in {"uv", "uvx"}:
+            rest = words[1:]
+            if rest and rest[0] in {"run", "tool"}:
+                rest = rest[1:]
+            if rest and rest[0] == "run":
+                rest = rest[1:]
+            if not rest or rest[0].startswith("-"):
+                continue
+            executable = rest[0]
+            base = PurePosixPath(executable).name
+        if base in _PLUGIN_SCRIPTS:
+            return "plugin_script"
+        if base == "cognee-cli":
+            return "cognee_cli"
+        if any(marker in executable for marker in _PLUGIN_PATH_MARKERS):
+            return "plugin_path"
+    return ""
+
+
+def _inspection_words(command: str) -> list[str]:
+    # Ambiguous shell syntax is kept. In particular, never hide writes behind a
+    # read command, command substitution, a heredoc, or a pipeline.
+    if any(marker in command for marker in (";", "|", "<", ">", "`", "$", "\n", "(")):
+        return []
+    if "&" in command.replace("&&", ""):
+        return []
+    parts = _shell_parts(command)
+    while len(parts) > 1:
+        first = parts.pop(0)
+        if first[0] not in {"cd", "export"} and not all(_ASSIGNMENT.match(w) for w in first):
+            return []
+    return _command_words(parts[0]) if parts else []
+
+
+def safe_first_token(command: str) -> str:
+    """Log a vocabulary member only, never user text or a path basename."""
+    parts = _shell_parts(command)
+    words = _inspection_words(command) or (_command_words(parts[0]) if parts else [])
+    first = PurePosixPath(words[0]).name if words else ""
+    known = (
+        _READ_COMMANDS
+        | _PLUGIN_SCRIPTS
+        | {
+            "git",
+            "gh",
+            "cognee-cli",
+            "python",
+            "python3",
+            "bash",
+            "sh",
+            "zsh",
+            "uv",
+            "uvx",
+            "cd",
+            "export",
+        }
+    )
+    return first if first in known else "other"
+
+
+def low_signal_bash(command: str, output, status: str) -> bool:
+    """Conservative inspection filter. Failures, mutations and unknowns are kept."""
+    words = _inspection_words(command)
+    if not words or not isinstance(output, dict):
+        return False  # Without a structured outcome we cannot prove success.
+    if (
+        output.get("stderr")
+        or output.get("interrupted")
+        or output.get("is_error")
+        or output.get("error")
+    ):
+        return False
+    code = output.get("exit_code", output.get("exitCode", 0))
+    first, args = PurePosixPath(words[0]).name, words[1:]
+    if code not in (0, "0"):
+        if not (code in (1, "1") and first in {"grep", "rg"}):
+            return False
+    elif status != "success":
+        return False
+    if first == "git":
+        # Global options and aliases are retained rather than guessed at.
+        if not args:
+            return False
+        sub, opts = args[0], args[1:]
+        if any(a == "--output" or a.startswith("--output=") for a in opts):
+            return False
+        if sub in {"branch", "tag"}:
+            return not opts or all(
+                a in {"--list", "-l", "--show-current", "-a", "-r", "-v", "-vv"} for a in opts
+            )
+        if sub == "worktree":
+            return bool(opts) and opts[0] == "list"
+        if sub == "remote":
+            return not opts or opts in [["-v"], ["--verbose"]]
+        return sub in _GIT_READ
+    if first == "gh":
+        if args[:2] in [["pr", "view"], ["pr", "checks"], ["run", "view"], ["issue", "view"]]:
+            return True
+        if args[:1] == ["api"]:
+            return not any(
+                a in {"-X", "--method", "-f", "-F", "--field", "--raw-field", "--input"}
+                or a.startswith(("--method=", "--field=", "--raw-field=", "-X", "-f", "-F"))
+                for a in args[1:]
+            )
+        return False
+    if first not in _READ_COMMANDS:
+        return False
+    # Commands which can execute programs or write files require extra care.
+    if first == "sed":
+        rest = args[1:] if args[:1] == ["-n"] else args
+        return (
+            bool(rest)
+            and bool(re.fullmatch(r"(?:[0-9]+(?:,[0-9]+)?)?[pqd]|s/[^/]+/[^/]+/[gip]*", rest[0]))
+            and not any(a.startswith("-") for a in rest[1:])
+        )
+    if first == "awk":
+        return (
+            bool(args)
+            and bool(re.fullmatch(r"\{\s*print\s*\}", args[0]))
+            and not any(a.startswith("-") for a in args[1:])
+        )
+    if first == "uniq":
+        return len(args) <= 1
+    if first == "find" and any(
+        a
+        in {
+            "-exec",
+            "-execdir",
+            "-ok",
+            "-okdir",
+            "-delete",
+            "-fprint",
+            "-fprintf",
+            "-fls",
+            "-fprint0",
+        }
+        for a in args
+    ):
+        return False
+    if first == "sort" and any(a == "--output" or a.startswith(("-o", "--output=")) for a in args):
+        return False
+    if first == "date" and any(
+        a in {"-s", "--set"} or a.startswith("--set=") or not a.startswith(("-", "+")) for a in args
+    ):
+        return False
+    if first == "env":
+        return not args
+    return True

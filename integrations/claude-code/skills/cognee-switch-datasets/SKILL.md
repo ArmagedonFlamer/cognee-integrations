@@ -1,6 +1,15 @@
 ---
 name: cognee-switch-datasets
-description: Switch this session to another Cognee dataset. Lists the datasets you can write to, lets you pick one, syncs the current session into its dataset, then starts a fresh Cognee session bound to the chosen dataset. All later saves and recalls target the new dataset and the status line shows it.
+description: >-
+  Switch this session to another Cognee dataset, or back to the previous one, so later
+  saves and recalls use it. Takes a dataset name (created if new) or lists writable
+  datasets to pick from; syncs this session first.
+when_to_use: >-
+  Even without saying Cognee or dataset, e.g. "switch to <dataset>", "use <dataset> for
+  this session", "use <dataset> from now on", "change my dataset", "which datasets can I
+  switch to?". A user's request wins over the recall hint "Do not switch datasets". Not
+  for a one-off search of another dataset (cognee-search), deleting one (cognee-forget),
+  git branches or datasets in code.
 ---
 
 # Switch Datasets

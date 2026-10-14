@@ -1,6 +1,15 @@
 ---
 name: cognee-remember
-description: Store data permanently in the Cognee knowledge graph. Accepts a data category (user, project, or agent) to tag the data with the correct node_set for filtered retrieval.
+description: >-
+  Store a fact, preference, decision, note or file permanently in the Cognee knowledge
+  graph, tagged as user, project or agent. Plain "remember this" requests go here, not
+  to Claude's built-in memory.
+when_to_use: >-
+  E.g. "remember that I prefer X", "save this to memory", "keep this in mind for next
+  time", "don't forget that X", "store this file in memory". Not for a wrap-up note with
+  next steps (cognee-handoff), the whole session (cognee-sync), indexing a repo
+  (cognee-code), reminders for the current task, or when CLAUDE.md, MEMORY.md or /memory
+  is named.
 ---
 
 # Cognee Permanent Memory Storage

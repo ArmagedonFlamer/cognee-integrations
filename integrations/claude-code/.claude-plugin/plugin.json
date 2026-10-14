@@ -2,7 +2,7 @@
   "name": "cognee-memory",
   "displayName": "Cognee Memory",
   "description": "Cognee knowledge graph memory for Claude Code — session-aware storage, auto-routing recall, and persistent learning across sessions. Supports local mode and Cognee Cloud.",
-  "version": "1.6.6",
+  "version": "1.7.0",
   "author": {
     "name": "Cognee",
     "url": "https://www.cognee.ai"
@@ -35,19 +35,13 @@
     "band": {
       "type": "boolean",
       "title": "Status row above the prompt",
-      "description": "Draw the Cognee status row above the prompt, in the Desktop app and in a terminal, with the dataset name as a picker. Off, no row is drawn (add the plugin's statusLine entry to your settings yourself for a line below the prompt).",
+      "description": "Draw the Cognee status row above the prompt, in the Desktop app and in a terminal: the badge, the dataset name as a picker, the counters and what memory is doing. Off, no row is drawn (add the plugin's statusLine entry to your settings yourself for a line below the prompt).",
       "default": true
     },
     "spinner": {
       "type": "boolean",
       "title": "Spinner activity",
       "description": "Add what Cognee is doing (recalling, saving, consolidating) after the spinner while Claude works.",
-      "default": true
-    },
-    "answerLine": {
-      "type": "boolean",
-      "title": "Recall line under answers",
-      "description": "Show a line under each answer with how many memories were recalled for it.",
       "default": true
     },
     "tools": {

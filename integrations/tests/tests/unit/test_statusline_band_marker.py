@@ -51,7 +51,8 @@ def _mark(sl, session: str) -> None:
 
 
 def test_without_a_marker_the_line_renders(sl, monkeypatch, capsys):
-    assert "cognee:" in _render(sl, monkeypatch, capsys, _SESSION)
+    # The default style is the badge line ("■ cognee ■"); classic says "cognee:".
+    assert "cognee" in _render(sl, monkeypatch, capsys, _SESSION)
 
 
 def test_with_this_sessions_marker_the_line_is_empty(sl, monkeypatch, capsys):
@@ -61,7 +62,7 @@ def test_with_this_sessions_marker_the_line_is_empty(sl, monkeypatch, capsys):
 
 def test_another_sessions_marker_leaves_this_line_alone(sl, monkeypatch, capsys):
     _mark(sl, _OTHER)
-    assert "cognee:" in _render(sl, monkeypatch, capsys, _SESSION)
+    assert "cognee" in _render(sl, monkeypatch, capsys, _SESSION)
 
 
 def test_the_json_mode_the_module_uses_is_unaffected(sl, monkeypatch, capsys):

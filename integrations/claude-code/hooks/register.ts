@@ -6,13 +6,15 @@
 //
 //   * the status row, above the prompt on every surface: it runs the plugin's
 //     own status-line renderer in `--json` mode and lays the result out, so
-//     the band shows the row the settings-file status line used to show. In a
+//     the band shows the row the settings-file status line shows (the badge,
+//     the counters and the tokens-saved estimate included). In a
 //     terminal the module marks its session (`band/<session>.json`) and the
 //     renderer then prints nothing for it, so the row is never drawn twice;
 //     with the `band` option off the settings status line is back below;
 //   * live activity: it reads the per-session marker the hooks write
 //     (`~/.cognee-plugin/claude-code/phase/<session>.json`) and shows it on
-//     the row, after the spinner, and under answers;
+//     the row and after the spinner (the answer's own credit line is the
+//     agent's, from the recall hook's instruction);
 //   * the dataset name on the row is a picker: choosing another writable
 //     dataset, or typing the name of a new one, switches the session there
 //     without a model turn (`/cognee-dataset <name>` does the same from the
@@ -43,6 +45,16 @@ import type { Register, RenderElement } from 'claude-code'
 
 type Activity = { kind: 'active' | 'result'; phase: string; text: string; age: number; ok: boolean; count?: number }
 
+type Counts = {
+  reminiscence: number
+  ideas: number | null
+  imprints: { with_hits: number; turns: number } | null
+  bar: string
+  tokens_saved: string
+  tokens_saved_short: string
+  show_counts: boolean
+}
+
 type Snapshot = {
   enabled: boolean
   state: string
@@ -52,7 +64,13 @@ type Snapshot = {
   credits: string
   update: string
   text: string
+  counts?: Counts
 }
+
+// The brand lavender (#BC9BFF), a deeper violet on a light theme so it keeps
+// its contrast on white.
+const PURPLE_DARK = '#bc9bff'
+const PURPLE_LIGHT = '#7c4dff'
 
 type PhaseResult = { count?: unknown; at?: unknown; ok?: unknown }
 type PhaseMarker = {
@@ -66,6 +84,12 @@ const POLL_MS = 1000
 // How long after a hook fired the marker keeps being polled for the async
 // work (saving, learning from the session) that hook started.
 const POLL_WINDOW_MS = 30_000
+// After a session start the connection marker lands when the SessionStart
+// hook finishes, which can be well after the module's first snapshot. While
+// the row still says "unknown", the snapshot is retaken every few seconds for
+// this long, then left to the next prompt.
+const WARMUP_MS = 120_000
+const WARMUP_RETRY_TICKS = 5
 // Mirrors the renderer: an active phase older than this is a hook that died.
 const STALE_MS = 90_000
 const DIM_AFTER_MS = 60_000
@@ -118,11 +142,12 @@ let frame = 0
 let spin: { cancel: () => void } | null = null
 let poll: { cancel: () => void } | null = null
 let pollUntil = 0
-let recalledThisTurn = -1
+let pollTicks = 0
+let warmupUntil = 0
 let icon = '🧠 '
+let purple = PURPLE_DARK
 let bandOn = true
 let spinnerOn = true
-let answerLineOn = true
 let toolsOn = true
 
 // The dataset picker on the band.
@@ -141,7 +166,7 @@ let namingDataset = false
 const TOUR_VERSION = 1
 const TOUR_STEPS = [
   '↑ the dataset name is a picker: pick another dataset, or "+ new dataset…" to create one',
-  '↑ ● means memory is connected · local or cloud is where it lives · the end of the row says what memory is doing',
+  '↑ ● means memory is connected, a red ✕ is a problem (see fix) · local or cloud is where memory lives · reminiscence counts what was recalled this session · the end of the row says what memory is doing',
   'Cognee recalls memory on every prompt, and Claude can search or remember on its own · /cognee-dataset <name> switches by name · /cognee-tour replays this',
 ]
 let tourOn = true
@@ -239,7 +264,7 @@ let datasetsListing = false
 
 // ── pure helpers ────────────────────────────────────────────────────────────
 function plural(n: number, word: string): string {
-  if (n === 1) return `${n} ${word}`
+  if (n === 1 || word === 'reminiscence') return `${n} ${word}`
   return `${n} ${word.endsWith('y') ? word.slice(0, -1) + 'ies' : word + 's'}`
 }
 
@@ -318,14 +343,6 @@ function pickActivity(marker: PhaseMarker, nowMs: number): Activity | null {
     ok: latest.ok !== false,
     ...(count === null ? {} : { count }),
   }
-}
-
-function parseRecallHeader(context: readonly string[] | undefined): number {
-  for (const block of context ?? []) {
-    const match = /Cognee memory: recall (\d+) memory/.exec(block)
-    if (match) return Number(match[1])
-  }
-  return -1
 }
 
 function activity(phase: Phase): Activity {
@@ -511,6 +528,12 @@ async function startPoll($: any, windowMs: number): Promise<void> {
   poll = $.clock.every(POLL_MS, async () => {
     await readPhase($)
     const at = await $.clock.now()
+    pollTicks += 1
+    // Warming up: the connection is unconfirmed until the SessionStart hook
+    // writes its marker; retake the snapshot every few ticks until it is.
+    if (at < warmupUntil && snapshot?.state !== 'ok' && pollTicks % WARMUP_RETRY_TICKS === 0) {
+      await refreshSnapshot($)
+    }
     if (!active && at > pollUntil && poll) {
       poll.cancel()
       poll = null
@@ -734,11 +757,22 @@ export const register: Register = (on, options) => {
   icon = options.icon === 'none' ? '' : '🧠 '
   bandOn = options.band !== false
   spinnerOn = options.spinner !== false
-  answerLineOn = options.answerLine !== false
   toolsOn = options.tools !== false
   tourOn = options.tour !== false
 
   on('session.start', async ($, e, next) => {
+    // A fresh start (or a reload): timers of an earlier life of the module
+    // hold an engine interface that is gone; start over.
+    if (poll) {
+      poll.cancel()
+      poll = null
+    }
+    if (spin) {
+      spin.cancel()
+      spin = null
+    }
+    pollTicks = 0
+    purple = (await $.env.get('COGNEE_STATUSLINE_THEME'))?.toLowerCase() === 'light' ? PURPLE_LIGHT : PURPLE_DARK
     await bindSession($)
     await readPhase($)
     await refreshSnapshot($)
@@ -795,8 +829,10 @@ export const register: Register = (on, options) => {
         },
       })
     }
-    // A session start still connecting or bootstrapping: watch it land.
-    if (active) await startPoll($, POLL_WINDOW_MS)
+    // A session start still connecting or bootstrapping: watch it land, and
+    // keep retaking the snapshot until the connection is confirmed.
+    warmupUntil = (await $.clock.now()) + WARMUP_MS
+    await startPoll($, snapshot?.state === 'ok' && !active ? POLL_WINDOW_MS : WARMUP_MS)
     return next(e)
   })
 
@@ -876,7 +912,6 @@ export const register: Register = (on, options) => {
   on('prompt.submit', async ($, e, next) => {
     const id = await $.session.id()
     if (id !== sessionId) await bindSession($)
-    recalledThisTurn = -1
     setActive($, activity('recalling'))
     let ran
     try {
@@ -885,22 +920,7 @@ export const register: Register = (on, options) => {
       clearActive($)
     }
     if (ran && 'drop' in ran) return ran
-    recalledThisTurn = parseRecallHeader(ran?.context)
     await readPhase($)
-    if (recalledThisTurn < 0 && result?.phase === 'recalled' && result.count !== undefined) {
-      recalledThisTurn = result.count
-    }
-    if (!result && recalledThisTurn >= 0) {
-      result = {
-        kind: 'result',
-        phase: 'recalled',
-        text: resultLabel('recalled', { count: recalledThisTurn, ok: true }),
-        age: 0,
-        ok: true,
-        count: recalledThisTurn,
-      }
-      redraw($)
-    }
     await refreshSnapshot($)
     // The turn's tool calls are saved as they happen; watch for them.
     await startPoll($, POLL_WINDOW_MS)
@@ -933,23 +953,21 @@ export const register: Register = (on, options) => {
       if (active) clearActive($)
       result = null
       snapshot = null
-      recalledThisTurn = -1
       namingDataset = false
       sessionId = ''
     }
     return next(e)
   })
 
-  // One line under the answer: how many memories this turn was answered with.
-  // Quiet when nothing was recalled, and never for a subagent's turn.
   // The Stop hook has started saving the answer by now; show it as it lands.
+  // Never for a subagent's turn. The credit line inside an answer that used
+  // memory is the agent's own, asked for by the recall hook.
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
     if (e.agentId) return ran
     setActive($, activity('saving'))
     await startPoll($, POLL_WINDOW_MS)
-    if (!answerLineOn || recalledThisTurn <= 0) return ran
-    return { ...ran, text: `${icon}recalled ${plural(recalledThisTurn, 'memory')}` }
+    return ran
   })
 
   on('ui.close', { id: FIX_PANE }, ($, e, next) => {
@@ -1056,35 +1074,46 @@ export const register: Register = (on, options) => {
       })
 
 
+    // The health slot, as the text line draws it: the spinner while something
+    // runs, a green ● once the server is confirmed up and authenticated, the
+    // red verdict with its button on a failure, and a dim ○ while nothing is
+    // known yet (warming up, no marker).
     if (active) {
-      parts.push(Text({ color: 'yellow', children: [FRAMES[frame % FRAMES.length] ?? '⠋'] }))
+      parts.push(Text({ color: 'yellow', children: [`${FRAMES[frame % FRAMES.length] ?? '⠋'} `] }))
+    } else if (snap?.state === 'ok') {
+      parts.push(Text({ color: 'green', bold: true, children: ['● '] }))
     } else if (snap?.state === 'fail') {
-      // The verdict itself is the button: pressing ✕ (reason) opens the fix
-      // dialog. Plain, so a terminal draws just the red text; the desktop
-      // draws its native button around it.
       // The verdict stays red text: a button's text takes the surface's own
       // colour on the desktop, whatever is put inside it. The small button
       // right after it is the press that opens the fix dialog.
       parts.push(Text({ color: 'red', bold: true, children: [`✕ (${snap.reason})`] }))
       parts.push(Text({ children: [' '] }))
       parts.push(Button({ key: 'fix', label: 'see fix', variant: 'secondary', onPress: () => void openFix($, snap.reason) }))
-    } else if (snap?.state === 'ok') {
-      parts.push(Text({ color: 'green', bold: true, children: ['●'] }))
+      parts.push(Text({ children: [' '] }))
     } else {
-      parts.push(Text({ dimColor: true, children: ['○'] }))
+      parts.push(Text({ dimColor: true, children: ['○ '] }))
     }
+    // The wordmark: the brain, then "cognee" bold in the brand lavender (the
+    // text line's ■ cognee ■ chip is a terminal device; a desktop draws it as
+    // a black-on-lavender block). The dataset and the mode are bold too.
+    parts.push(Text({ bold: true, color: purple, children: [`${icon}cognee `] }))
     if (canPick) {
-      // The name is the picker: choosing another writable dataset switches
-      // the session there, no model turn.
-      parts.push(Text({ children: [` ${icon}cognee: `] }))
       parts.push(namingDataset ? namer() : picker())
-      parts.push(Text({ children: [' · '] }))
     } else {
-      parts.push(Text({ children: [` ${icon}cognee: ${snap?.dataset ?? 'memory'} · `] }))
+      parts.push(Text({ color: purple, bold: true, children: [snap?.dataset ?? 'memory'] }))
     }
-    parts.push(
-      Text({ bold: true, color: snap?.mode === 'cloud' ? 'magenta' : 'cyan', children: [snap?.mode ?? '…'] }),
-    )
+    parts.push(Text({ children: [' · '] }))
+    parts.push(Text({ bold: true, color: purple, children: [snap?.mode ?? '…'] }))
+    const counts = snap?.counts
+    if (counts) {
+      parts.push(Text({ color: purple, children: [` · ${plural(counts.reminiscence, 'reminiscence')}`] }))
+      if (counts.show_counts && counts.ideas !== null) parts.push(Text({ children: [` · ${plural(counts.ideas, 'idea')}`] }))
+      if (counts.show_counts && counts.imprints) {
+        parts.push(Text({ children: [` · ${counts.imprints.with_hits}/${counts.imprints.turns} imprints`] }))
+        if (counts.bar) parts.push(Text({ color: purple, children: [`  ${counts.bar}`] }))
+      }
+      parts.push(Text({ dimColor: counts.tokens_saved.endsWith('n/a'), children: [` · ${counts.tokens_saved}`] }))
+    }
     if (snap?.credits) parts.push(Text({ children: [` · ${snap.credits}`] }))
     if (active) {
       parts.push(Text({ color: 'yellow', children: [` · ${active.text}`] }))
