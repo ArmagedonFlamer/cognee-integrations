@@ -167,6 +167,12 @@ def split_passages(block: str) -> list[str]:
     return [p for p in passages if p.strip()]
 
 
+def is_session_transcript(passage: str) -> bool:
+    """A bridged raw turn from another session, as opposed to a distilled
+    ``# Session learning`` or a remembered document."""
+    return passage.lstrip().startswith("Session ID:")
+
+
 def passage_session_id(passage: str) -> str:
     """The session a bridged chunk came from, or "" for any other document."""
     head = passage.lstrip()[:400]

@@ -110,6 +110,35 @@ def test_relations_from_all_datasets_outlive_overflowing_passages(lookup):
         assert f"passage-{i}" not in text
 
 
+def test_bridged_transcripts_are_evicted_before_distilled_passages(lookup):
+    # Two read datasets: the first returns bulky raw turns from other sessions,
+    # the second a session learning and a remembered document. Under pressure
+    # the raw turns go first, whichever dataset they came from.
+    transcripts = "\n---\n".join(
+        f"Session ID: other-{i}\n\nQuestion: q{i}\n\nAnswer: " + f"transcript-{i} " * 120
+        for i in range(4)
+    )
+    distilled = (
+        "# Session learning — 2026-10-01 (session s9)\n\nKeep retries bounded.\n---\n"
+        "Release checklist: tag, changelog, marketplace version."
+    )
+    sections = lookup._injection_sections(
+        {
+            "graph_context": [
+                {"text": "## Relevant passages\n" + transcripts},
+                {"text": "## Relevant passages\n" + distilled},
+            ]
+        }
+    )
+    text, _ = budget.fit_sections(sections, 2500)
+    assert "Keep retries bounded." in text and "Release checklist" in text
+    assert "transcript-3" not in text
+    assert "## Passages from other sessions" in text and "transcript-0" in text
+    # With room for everything, every passage is still delivered.
+    full, _ = budget.fit_sections(sections, 9000)
+    assert all(f"transcript-{i}" in full for i in range(4)) and "Release checklist" in full
+
+
 @pytest.mark.parametrize(
     "limit,notice",
     [

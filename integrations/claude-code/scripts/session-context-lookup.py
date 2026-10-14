@@ -75,6 +75,7 @@ from _recall_text import (
     PASSAGE_SEPARATOR,
     code_facts,
     format_code_facts,
+    is_session_transcript,
     split_passages,
     split_sections,
     trim_recall_text,
@@ -298,22 +299,35 @@ def _injection_sections(by_source: dict) -> list[dict]:
                         ("passages", "## Relevant passages", 40),
                     ):
                         if parts.get(kind):
-                            items = (
-                                split_passages(parts[kind])
-                                if kind == "passages"
-                                else _line_entries(parts[kind])
-                            )
                             label = f"=== Cognee memory: {kind} ===\n[cognee-memory]"
                             if heading:
                                 label += "\n" + heading
+                            if kind != "passages":
+                                entries = _line_entries(parts[kind])
+                                add(source, kind, label, rank, entries, result_id)
+                                continue
+                            passages = split_passages(parts[kind])
+                            # Raw turns bridged from other sessions are the bulk and
+                            # the least distilled: across every dataset they go before
+                            # session learnings and remembered documents.
                             add(
                                 source,
                                 kind,
                                 label,
                                 rank,
-                                items,
+                                [p for p in passages if not is_session_transcript(p)],
                                 result_id,
-                                PASSAGE_SEPARATOR if kind == "passages" else "\n\n",
+                                PASSAGE_SEPARATOR,
+                            )
+                            add(
+                                source,
+                                "transcripts",
+                                "=== Cognee memory: transcripts ===\n[cognee-memory]\n"
+                                "## Passages from other sessions",
+                                rank - 1,
+                                [p for p in passages if is_session_transcript(p)],
+                                result_id,
+                                PASSAGE_SEPARATOR,
                             )
                     continue
             formatted = _format_entry(entry)

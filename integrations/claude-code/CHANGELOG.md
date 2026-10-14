@@ -45,6 +45,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   priority order; the header is always kept and kept/dropped counts are logged. Graph
   entities and facts are kept ahead of passages. Tiny configured budgets are clamped to
   1,024 characters.
+- Raw turns bridged from other sessions (`Session ID:` passages) are shown under their
+  own heading and dropped first when the budget is tight, across every read dataset,
+  so session learnings and remembered documents survive.
 - Only hits that were actually injected are reported, with explicit drop counts.
 - Low-signal cloud traces are skipped and counted. Structured session summaries are used
   only when the server advertises support.
