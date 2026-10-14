@@ -10,6 +10,41 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Answers credit Cognee memory.** Every injected memory is tagged (`m1`, `m2`…) with
+  where it came from, and on turns where memory was injected the agent is told how many
+  memories Cognee found and asked to end an answer that used them with one
+  `🧠 Cognee memory [mN]: …` line; the first credit in a session also says how it
+  connects to the earlier work. Tags are numbered across the session and a memory
+  recalled again keeps its tag: an evidence item by its citation, an earlier turn or
+  trace by its server id, anything else by its text. Tags are assigned before the
+  injection budget and the ledger trim the context, and only the ones that survive
+  count as shown. The Stop hook reads only the credit line, checks its tags against the
+  session's and logs a `memory_credit` event (valid, invented, and valid tags from an
+  earlier turn). Every prompt starts a new turn before recall can return early, so a
+  turn whose recall failed never borrows the previous turn's tags. Off with
+  `COGNEE_PLUGIN_CITE_MEMORY=off` (SDK-1071).
+- **Reopening a chat says whether it was sent to long-term memory.** The session-end sync
+  runs after the chat is gone, so on resume of the same chat session start shows once, in
+  the terminal and to the agent, when the conversation was sent to Cognee, or why the
+  send failed. Shown only on resume, not after a compaction. It says "sent" because the
+  submit runs in the background and a server-side skip on a held lock looks the same
+  until COG-6828 (SDK-1071).
+
+### Fixed
+- **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
+  on the session alone and kept for an hour, so a chat that was resumed and left again
+  within the hour was skipped as already synced. The marker is now keyed on the session
+  plus its running stored-item count (buffered writes included): the two workers of one
+  exit still sync once, an exit after new turns syncs again, and an exit with nothing
+  new is skipped. The count is an append-only file per session, so parallel store hooks
+  never lose or reset it. A final sync whose every attempt failed releases its marker,
+  so the next exit retries (SDK-1071).
+- The memory tags, credit state and stored count live in the session's
+  `sessions/<session>/` folder, which the state sweep removes after a week idle.
+
 ## [1.7.0]
 
 ### Added

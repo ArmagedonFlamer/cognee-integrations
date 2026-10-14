@@ -287,11 +287,14 @@ def test_the_hint_names_the_hosts_way_of_asking(suite, lookup, monkeypatch):
         assert "numbered list" in ctx and "AskUserQuestion" not in ctx
 
 
-def test_an_answered_prompt_appends_the_other_datasets(lookup, monkeypatch):
+def test_an_answered_prompt_appends_the_other_datasets(lookup, monkeypatch, suite):
     _offer(lookup, monkeypatch)
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
     ctx = _context(run)
-    assert "(no memory matches for this prompt)" in ctx
+    if suite.injects_empty_recall:
+        assert "(no memory matches for this prompt)" in ctx
+    else:
+        assert ctx.startswith("Other Cognee datasets")  # no empty-recall header (SDK-1071)
     assert "Other Cognee datasets you can search (active: agent_sessions)" in ctx
     assert f"  - project-alpha [{OTHER_ID}]" in ctx and f"  - team-notes [{THIRD_ID}]" in ctx
     assert "agent_sessions [" not in ctx  # the active dataset is never offered
@@ -390,10 +393,17 @@ def test_a_dataset_without_a_graph_yet_still_offers(lookup, monkeypatch):
     assert "Other Cognee datasets you can search" in _context(run)
 
 
-def test_only_the_active_dataset_offers_nothing(lookup, monkeypatch):
+def _assert_empty_recall(ctx: str, suite) -> None:
+    if suite.injects_empty_recall:
+        assert ctx.endswith("(no memory matches for this prompt)")
+    else:
+        assert ctx == ""  # nothing recalled, nothing to offer: nothing injected
+
+
+def test_only_the_active_dataset_offers_nothing(lookup, monkeypatch, suite):
     _offer(lookup, monkeypatch, rows=ROWS[:1])
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
-    assert _context(run).endswith("(no memory matches for this prompt)")
+    _assert_empty_recall(_context(run), suite)
     assert not run.fired("recall_dataset_hint")
 
 
@@ -433,13 +443,13 @@ def test_every_other_dataset_is_named_unranked(lookup, monkeypatch):
     assert run.detail("recall_dataset_hint")["offered"] == 40
 
 
-def test_a_failing_lister_never_breaks_the_hook(lookup, monkeypatch):
+def test_a_failing_lister_never_breaks_the_hook(lookup, monkeypatch, suite):
     def boom(**kw):
         raise RuntimeError("cache exploded")
 
     monkeypatch.setattr(lookup, "cached_readable_datasets", boom)
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
-    assert _context(run).endswith("(no memory matches for this prompt)")
+    _assert_empty_recall(_context(run), suite)
     assert run.detail("recall_error") == {
         "scope": ["dataset_hint"],
         "error": "cache exploded",

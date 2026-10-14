@@ -55,6 +55,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:auto_improve_throttled` | `auto.improve_throttled` |
 | `hook:base_url_changed_mid_session` | `endpoint.base_url_changed_mid_session` |
 | `hook:base_url_notice_failed` | `endpoint.base_url_notice_failed` |
+| `hook:final_sync_once_released` | `sync.sync_once_released` |
 | `hook:hook_notice_failed` | `notice.failed` |
 | `hook:boot_refused_server_present` | `boot.refused_server_present` |
 | `hook:bootstrap_complete` | `bootstrap.complete` |
@@ -160,6 +161,9 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:managed_endpoint_boot_refused` | `boot.refused_managed_endpoint` |
 | `hook:managed_endpoint_down` | `endpoint.managed_down` |
 | `hook:map_create_failed` | `map.create_failed` |
+| `hook:memory_credit` | `memory.credit` |
+| `hook:memory_credit_failed` | `memory.credit_failed` |
+| `hook:memory_tags_write_failed` | `memory.tags_write_failed` |
 | `hook:missing_payload_session_id` | `missing.payload_session_id` |
 | `hook:mode_decision` | `runtime.decision` |
 | `hook:no_session_id` | `session.session_id` |
@@ -259,6 +263,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:store_buffered_warming` | `store.buffered_warming` |
 | `hook:store_missing_session_key` | `store.missing_session_key` |
 | `hook:store_session_key` | `store.session_key` |
+| `hook:stored_seq_write_failed` | `save.stored_seq_write_failed` |
 | `hook:switch_aborted_handle_cleanup` | `switch.aborted_handle_cleanup` |
 | `hook:switch_aborted_handle_cleanup_failed` | `switch.aborted_handle_cleanup_failed` |
 | `hook:switch_crashed` | `switch.crashed` |
@@ -278,6 +283,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:sync_failed` | `sync.failed` |
 | `hook:sync_missing_session_key` | `sync.missing_session_key` |
 | `hook:sync_no_target_sessions` | `sync.no_target_sessions` |
+| `hook:sync_notice_failed` | `sync.notice_failed` |
+| `hook:sync_notice_shown` | `sync.notice_shown` |
 | `hook:sync_payload` | `sync.payload` |
 | `hook:sync_retry_scheduled` | `sync.retry_scheduled` |
 | `hook:sync_session_key` | `sync.session_key` |
