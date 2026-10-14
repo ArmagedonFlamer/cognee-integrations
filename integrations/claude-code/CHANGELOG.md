@@ -35,8 +35,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Citable evidence.** Recall can include compact evidence indexes with source and
   version references, batch citation expansion, and body-free per-item injection
   receipts. Older servers keep the previous recall format.
-- **New status line style.** One line with recall history, a hit-rate bar, light/dark
-  themes and a short animation when memory is recalled. `COGNEE_STATUSLINE_STYLE=classic`
+- **New status line style.** One purple line with bold dataset and location, the
+  cumulative recalled count (repeats count again), a single hit-rate bar, light/dark
+  themes and a short shimmer when memory is recalled. `COGNEE_STATUSLINE_STYLE=classic`
   restores the previous line byte-for-byte.
 
 ### Changed

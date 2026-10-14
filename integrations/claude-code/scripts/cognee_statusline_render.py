@@ -871,8 +871,6 @@ def _status_prefix(session_id: str = "") -> str:
 
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-_HISTORY_BYTES = 128 * 1024
-_HISTORY_CELLS = 8
 _ANIMATION_SECONDS = 10
 
 
@@ -977,68 +975,11 @@ def _hit_count(hits) -> int:
     return sum(max(0, _int(hits, key)) for key in hits) if isinstance(hits, dict) else 0
 
 
-def _recent_hits(session_id: str, marker: dict) -> list[int]:
-    """Read at most 256 KiB of existing audit data; never write animation state.
-
-    The marker supplies the session identity and final frame. A missing or
-    rotated-away audit gives a shorter stack, not synthetic historical turns.
-    """
-    if not _path_safe(session_id) or session_id in {".", ".."}:
-        return []
-    identity = marker.get("session_id")
-    latest = _timestamp(marker.get("ts"))
-    history = []
-    if identity and latest:
-        for name in ("recall-audit.log", "recall-audit.log.1"):
-            try:
-                with (_RECALL_DIR.parent / name).open("rb") as handle:
-                    handle.seek(0, 2)
-                    start = max(0, handle.tell() - _HISTORY_BYTES)
-                    handle.seek(start)
-                    lines = handle.read(_HISTORY_BYTES).splitlines()
-                    if start:
-                        lines = lines[1:]
-            except OSError:
-                continue
-            for raw in reversed(lines):
-                try:
-                    row = json.loads(raw)
-                except (ValueError, UnicodeError):
-                    continue
-                if not isinstance(row, dict) or row.get("session_id") != identity:
-                    continue
-                stamp = _timestamp(row.get("ts"))
-                if not stamp or stamp > latest or not isinstance(row.get("hits"), dict):
-                    continue
-                history.append((stamp, _hit_count(row["hits"])))
-                if len(history) >= _HISTORY_CELLS:
-                    break
-            if len(history) >= _HISTORY_CELLS:
-                break
-    history.reverse()
-    if isinstance(marker.get("hits"), dict):
-        current = (latest, _hit_count(marker["hits"]))
-        if not history or history[-1] != current:
-            history.append(current)
-    return [hits for _, hits in history[-_HISTORY_CELLS:]]
-
-
 def _animation_phase(marker: dict, now: float) -> int | None:
     age = now - _timestamp(marker.get("ts"))
     return (
         int(age // 2) if _hit_count(marker.get("hits")) and 0 <= age < _ANIMATION_SECONDS else None
     )
-
-
-def _stack(history: list[int], phase: int | None) -> str:
-    scale = max(history, default=0)
-    cells = [
-        "▁▂▃▄▅▆▇█"[max(0, min(7, round(hits / scale * 8) - 1))] if hits and scale else "·"
-        for hits in history
-    ]
-    if cells and phase is not None and phase < 4:
-        cells[-1] = ("▔", "▀", "▄", "▂")[phase]
-    return "".join(cells)
 
 
 def _ratio_bar(turns: int, with_hits: int, cells: int = 5) -> str:
@@ -1059,7 +1000,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     # No verdict is not healthy: retain a visible, neutral unknown indicator.
     health = health or "? "
     dataset = _clean_label(_active_dataset(session_id))
-    brand = f"{purple}cognee: {dataset}{_RESET} · {purple}{_active_mode()}{_RESET}"
+    brand = f"{purple}cognee: \033[1m{dataset}{_RESET} · {purple}\033[1m{_active_mode()}{_RESET}"
     stats = (
         _read_json(_SESSIONS_DIR / session_id / "stats.json")
         if _path_safe(session_id) and session_id not in {".", ".."}
@@ -1073,7 +1014,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
             if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}
             else "\033[38;5;183m"
         )
-    chip = f"{shimmer}[{count} recalled]{_RESET}"
+    chip = f"{shimmer}{count} recalled{_RESET}"
     core = health + brand + " · " + chip
     counts_mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
     counts, decoration = "", ""
@@ -1088,10 +1029,8 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
                 with_hits = max(0, min(turns, _int(totals, "turns_with_hits")))
                 counts += f" · {with_hits}/{turns} turns"
                 decoration = _ratio_bar(turns, with_hits)
-            history = _stack(_recent_hits(session_id, marker), phase)
-            decoration = " ".join(part for part in (history, decoration) if part)
             if decoration:
-                decoration = f" {purple}{decoration}{_RESET}"
+                decoration = f"  {purple}{decoration}{_RESET}"
     credits, update = _credits_segment(), _update_segment()
     # Decorations go before data. Long diagnostics remain available in classic
     # mode; essential identity/health/counts survive ordinary 60-column widths.
@@ -1103,18 +1042,28 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     # A credit warning or update notice is never dropped to save width: they are
     # the segments a user has to act on.
     if not credits and not update:
-        candidates += [core, health + f"{purple}{dataset} · {_active_mode()}{_RESET} " + chip]
+        candidates += [
+            core,
+            health + f"{purple}\033[1m{dataset} · {_active_mode()}{_RESET} " + chip,
+        ]
     else:
         # Narrowest form with a notice: health plus the notices alone.
         candidates.append(health + (credits + update).lstrip(" ·"))
+    if columns is not None and columns <= 60:
+        candidates = candidates[1:]
+    else:
+        # Prefer breathing room, then compact spacing before dropping data.
+        candidates = [
+            variant
+            for candidate in candidates
+            for variant in (candidate.replace(" · ", "  ·  "), candidate)
+        ]
     if not unicode:
         candidates = [_ascii_line(candidate) for candidate in candidates]
     # Claude Code does not normally export COLUMNS to the status line command;
     # without a real width, show the full line as classic does.
     if columns is None:
         return candidates[0]
-    if columns <= 60:
-        candidates = candidates[1:]
     for candidate in candidates:
         if _width(candidate) <= columns:
             return candidate
