@@ -986,6 +986,19 @@ def _ratio_bar(turns: int, with_hits: int, cells: int = 5) -> str:
     return "▰" * filled + "▱" * (cells - filled)
 
 
+def _tokens_saved(stats: dict, *, compact: bool = False) -> str:
+    if _int(stats, "dedup_measurements") <= 0:
+        return "saved n/a" if compact else "tokens saved n/a"
+    tokens = max(0, _int(stats, "dedup_chars_saved")) // 4
+    if tokens >= 1_000_000:
+        amount = f"{tokens // 100_000 / 10:g}m"
+    elif tokens >= 1000:
+        amount = f"{tokens // 100 / 10:g}k"
+    else:
+        amount = str(tokens)
+    return f"~{amount}t saved" if compact else f"~{amount} tokens saved"
+
+
 def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     purple = _purple()
     now = time.time() if now is None else now
@@ -1013,7 +1026,8 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
             if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}
             else "\033[38;5;183m"
         )
-    chip = f"{shimmer}{count} recalled{_RESET}"
+    memory_label = "memory" if count == 1 else "memories"
+    chip = f"{shimmer}{count} {memory_label}{_RESET}"
     core = health + brand + " · " + chip
     counts_mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
     counts, decoration = "", ""
@@ -1021,29 +1035,37 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
         if counts_mode == "full":
             counts = _recall_diagnostic_segment(marker, marker["hits"])
         else:
-            counts = f" · {_plural(_hit_count(marker['hits']), 'hit')}"
+            counts = f" · {_plural(_hit_count(marker['hits']), 'spark')}"
             totals = marker.get("session_totals")
             if isinstance(totals, dict):
                 turns = max(0, _int(totals, "turns"))
                 with_hits = max(0, min(turns, _int(totals, "turns_with_hits")))
-                counts += f" · {with_hits}/{turns} turns"
+                counts += f" · {with_hits}/{turns} pulses"
                 decoration = _ratio_bar(turns, with_hits)
             if decoration:
                 decoration = f"  {purple}{decoration}{_RESET}"
     credits, update = _credits_segment(), _update_segment()
-    # Decorations go before data. Long diagnostics remain available in classic
-    # mode; essential identity/health/counts survive ordinary 60-column widths.
-    candidates = [
-        core + counts + decoration + credits + update,
-        core + counts + credits + update,
-        core + credits + update,
-        core,
-        health + f"{purple}\033[1m{dataset} · {_active_mode()}{_RESET} " + chip,
+    compact_core = health + f"{purple}\033[1m{dataset} · {_active_mode()}{_RESET} · " + chip
+    savings = " · " + _tokens_saved(stats)
+    short_savings = " · " + _tokens_saved(stats, compact=True)
+    # Keep the new savings metric alongside session memories. At 80 columns,
+    # shorten the brand and token unit before dropping the single bar or data.
+    candidates = []
+    if columns > 60:
+        candidates += [
+            core + counts + decoration + savings + credits + update,
+            compact_core + counts + decoration + savings + credits + update,
+            compact_core + counts + decoration + short_savings + credits + update,
+        ]
+    candidates += [
+        core + counts + savings + credits + update,
+        compact_core + counts + short_savings + credits + update,
+        core + savings + credits + update,
+        compact_core + short_savings + credits + update,
+        core + savings,
+        compact_core + short_savings,
     ]
-    if columns <= 60:
-        candidates = candidates[1:]
-    else:
-        # Prefer breathing room, then compact spacing before dropping data.
+    if columns > 60:
         candidates = [
             variant
             for candidate in candidates

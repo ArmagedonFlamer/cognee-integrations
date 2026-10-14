@@ -72,7 +72,7 @@ def test_deduped_hits_are_not_reported_as_new_injections(suite, hook_module, mon
 
     lookup = hook_module(suite, "session-context-lookup.py")
     monkeypatch.setattr(lookup, "get_session_key", lambda: "review-dedup")
-    recall = {"graph": [{"source": "graph", "text": "One useful fact"}]}
+    recall = {"graph": [{"source": "graph", "text": "One useful fact. " * 40}]}
     first = drive_recall(lookup, monkeypatch, recall=recall)
     second = drive_recall(lookup, monkeypatch, recall=recall)
     assert "recall 1 memory" in first.output["hookSpecificOutput"]["additionalContext"]
@@ -83,3 +83,34 @@ def test_deduped_hits_are_not_reported_as_new_injections(suite, hook_module, mon
 
     marker = json.loads((Path.home() / ".cognee-plugin/claude-code/last_recall.json").read_text())
     assert marker["session_totals"] == {"turns": 2, "turns_with_hits": 1}
+    stats = json.loads(
+        (Path.home() / ".cognee-plugin/claude-code/sessions/review-dedup/stats.json").read_text()
+    )
+    assert stats["dedup_measurements"] == 2
+    assert stats["dedup_chars_saved"] > 0
+
+
+def test_savings_compare_bounded_context_not_raw_duplicates(ledger):
+    sections = [{"entries": ["useful fact " * 50], "priority": 40}]
+    _, first, _ = ledger.render("savings", "header", sections, 9000)
+    actual, second, _ = ledger.render("savings", "header", sections, 9000)
+    baseline, _ = ledger.fit_sections([{"entries": ["header"], "required": True}] + sections, 9000)
+    assert first["dedup_chars_saved"] == 0
+    assert second["dedup_chars_saved"] == len(baseline) - len(actual) > 0
+    ledger.reset("savings")
+    assert ledger.render("savings", "header", sections, 9000)[1]["dedup_chars_saved"] == 0
+    huge = "x" * 10000
+    ledger.seed("savings", [ledger.entry_hash(huge)])
+    assert (
+        ledger.render("savings", "header", [{"entries": [huge]}], 100)[1]["dedup_chars_saved"] == 0
+    )
+
+
+def test_savings_account_for_replacement_context(ledger):
+    duplicate, fresh = "old " * 50, "fresh " * 40
+    ledger.seed("replacement", [ledger.entry_hash(duplicate)])
+    sections = [{"entries": [duplicate, fresh], "priority": 40}]
+    actual, stats, _ = ledger.render("replacement", "header", sections, 300)
+    baseline, _ = ledger.fit_sections([{"entries": ["header"], "required": True}] + sections, 300)
+    assert stats["dedup_chars_saved"] == max(0, len(baseline) - len(actual))
+    assert stats["dedup_chars_saved"] < len(duplicate)

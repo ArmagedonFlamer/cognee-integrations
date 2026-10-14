@@ -109,6 +109,15 @@ def render(
             f"{header}; {stats['entries_kept']} new, {duplicate_count} already in context"
         )
         text = actual_header + text[len(decorated) :]
+        # Compare the bounded payload with deduplication disabled, not the raw
+        # retrieved text. Budget-dropped entries and replacement context must not
+        # inflate savings. This is context-size reduction, not billed token usage.
+        saved_chars = 0
+        if deduped_entries:
+            baseline, _ = fit_sections(
+                [{"entries": [header], "required": True}] + sections, budget, measure=measure
+            )
+            saved_chars = max(0, len(baseline) - len(text))
         kept = {entry_hash(entry) for entry in stats["entries"]}
         data["entry_hashes"] = sorted(set(data.get("entry_hashes", [])) | kept)
         if new_guidance & kept:
@@ -116,6 +125,7 @@ def render(
         atomic_json(path, data)
         stats.update(
             entries_deduped=duplicate_count,
+            dedup_chars_saved=saved_chars,
             context_chars=len(text),
             deduped_entries=deduped_entries,
         )

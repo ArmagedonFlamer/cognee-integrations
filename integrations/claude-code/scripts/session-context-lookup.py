@@ -1046,6 +1046,8 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
         entries_injected=injection_stats["entries_kept"],
         entries_deduped=injection_stats.get("entries_deduped", 0),
         chars_injected=len(full_context),
+        dedup_chars_saved=injection_stats.get("dedup_chars_saved", 0),
+        dedup_measurements=int("dedup_chars_saved" in injection_stats),
         recall_ms=elapsed_ms(recall_start),
         metadata={"dataset": session_dataset, "session_id": session_id, "server_url": service_url},
     )

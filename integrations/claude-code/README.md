@@ -711,20 +711,30 @@ the shim, checks that `claude` can actually answer (one tiny real call), or stop
 
 ## Status line
 
-The default status line uses a purple health square, dataset and mode, with a
-cumulative recalled-entry count and one Claude-style hit-rate bar:
+The default status line uses a purple health square, bold dataset and location,
+and one Claude-style memory-pulse bar. At 80 columns it can read:
 
 ```text
-■ cognee: manual  ·  cloud  ·  124 recalled  ·  8 hits  ·  34/46 turns  ▰▰▰▰▱
+■ manual · cloud · 124 memories · 8 sparks · 34/46 pulses  ▰▰▰▰▱ · ~2.4kt saved
 ```
 
-`124 recalled` counts memory entries injected into the model's context over this
-session. It is cumulative, not a unique-memory count: injecting the same entry
-on another turn counts again. `8 hits` describes the latest lookup, and
-`34/46 turns` counts prompts with hits out of all prompts. The single five-cell
-bar shows that fraction. A new successful recall shimmers the recalled count for
-ten seconds, using the recall timestamp and current clock, with no state writes,
-network calls or changes to hook frequency.
+- **Memories**: cumulative memory entries injected into this session. This is not
+  a unique-memory count; an entry reinjected after compaction counts again.
+- **Sparks**: memory blocks delivered for the latest prompt, not proof of use.
+- **Pulses**: prompts that received memory out of all prompts. The single bar
+  shows this fraction.
+- **Tokens saved**: estimated reduction in injected context from deduplication,
+  accumulated from measured recalls since this update. Each comparison applies
+  the same context budget with and without deduplication, so oversized rejected
+  entries and replacement context do not inflate savings. Positive character
+  reductions are accumulated, then divided by four and rounded down for display.
+  `~2.4kt saved` means approximately 2,400 tokens; wider layouts spell out
+  `~2.4k tokens saved`. This is not billed-token savings or proven task savings.
+  `saved n/a` means there are no measurements yet; old counters are not backfilled.
+
+A new successful recall shimmers the memories count for ten seconds using the
+recall timestamp and current clock. The renderer only reads local counters;
+measurement happens in the existing recall hook without additional requests.
 
 The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
 The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xterm
@@ -732,8 +742,10 @@ The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xter
 colours. Unknown connection health appears as `?`.
 
 `COLUMNS` controls the single-line width (80 by default, capped at 120). At 60
-columns decorations disappear first; dataset, mode, health and recalled count
-are retained when they fit. Longer optional segments are then omitted, and very
+columns decorations disappear first; dataset, mode, health and memory count
+are retained when they fit, alongside token savings. At 80 columns the brand
+and token unit shorten before metrics are dropped. Longer optional segments are
+then omitted, and very
 narrow lines are clipped. Wider terminals add no extra fields. Non-UTF-8 stdout
 uses ASCII (`#`, `-`, `[x]`) instead of block glyphs. A renderer error falls back
 to classic output.
@@ -743,7 +755,7 @@ to classic output.
 | `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
 | `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
 | `COGNEE_STATUSLINE_PIN` | `false` | `true` restores Cognee when another command replaces the user status line; opt-in |
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Current hits and session hit ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (the cumulative count remains) |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Sparks and pulse ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (memories and token savings remain) |
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
 `cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /

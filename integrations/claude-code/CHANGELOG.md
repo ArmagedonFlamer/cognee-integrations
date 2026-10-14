@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.28]
+
+### Changed
+- Show estimated tokens saved by bounded-context deduplication; rename status-line counters to memories, sparks and pulses, keeping the single purple bar and pinned preference.
+
 ## [1.6.27]
 
 ### Changed

@@ -34,7 +34,10 @@ def sl(suite, statusline, monkeypatch):
             "base_url": "https://memory.example.test",
         },
     )
-    write_json(statusline._SESSIONS_DIR / SESSION / "stats.json", {"entries_injected": 124})
+    write_json(
+        statusline._SESSIONS_DIR / SESSION / "stats.json",
+        {"entries_injected": 124, "dedup_chars_saved": 9600, "dedup_measurements": 2},
+    )
     write_json(statusline._RECALL_DIR / f"{SESSION}.json", marker())
     return statusline
 
@@ -57,13 +60,14 @@ def plain(sl, line):
 @pytest.mark.parametrize("theme,color", [("dark", 141), ("light", 93)])
 def test_palette_and_meaning(sl, monkeypatch, theme, color):
     monkeypatch.setenv("COGNEE_STATUSLINE_THEME", theme)
+    monkeypatch.setenv("COLUMNS", "120")
     line = sl._tetris_line(SESSION)
     assert f"\033[38;5;{color}m■" in line
     assert f"\033[38;5;{color}mcognee: \033[1mmanual" in line
     assert f"\033[38;5;{color}m\033[1mcloud" in line
     assert "●" not in line
-    assert "manual  ·  cloud  ·  124 recalled" in plain(sl, line)
-    assert "124 recalled" in line and "8 hits" in line and "34/46 turns" in line
+    assert "manual  ·  cloud  ·  124 memories" in plain(sl, line)
+    assert "124 memories" in line and "8 sparks" in line and "34/46 pulses" in line
     assert plain(sl, line).count("▰▰▰▰▱") == 1
     assert not any(c in plain(sl, line) for c in "[]▁▂▃▄▅▆▇█▔▀")
 
@@ -73,11 +77,15 @@ def test_width(sl, monkeypatch):
     assert sl._width(at80) <= 80
     assert "▰" in at80
     monkeypatch.setenv("COLUMNS", "120")
-    assert sl._tetris_line(SESSION) == at80
+    wide = sl._tetris_line(SESSION)
+    assert "~2.4k tokens saved" in wide
+    assert "~2.4kt saved" in at80
+    assert "34/46 pulses" in wide and "34/46 pulses" in at80
+    assert sl._width(wide) <= 120
     monkeypatch.setenv("COLUMNS", "60")
     line = sl._tetris_line(SESSION)
     assert sl._width(line) <= 60 and "▰" not in line
-    assert all(text in line for text in ("■", "manual", "cloud", "124 recalled"))
+    assert all(text in line for text in ("■", "manual", "cloud", "124 memories"))
     monkeypatch.setenv("COLUMNS", "20")
     assert sl._width(sl._tetris_line(SESSION)) <= 20
 
@@ -86,10 +94,10 @@ def test_stateless_shimmer(sl, monkeypatch):
     write_json(sl._RECALL_DIR / f"{SESSION}.json", marker(ts=NOW))
     initial = sl._tetris_line(SESSION, now=NOW)
     assert initial == sl._tetris_line(SESSION, now=NOW)
-    assert "\033[38;5;183m124 recalled" in initial
-    assert "\033[38;5;141m124 recalled" in sl._tetris_line(SESSION, now=NOW + 2)
+    assert "\033[38;5;183m124 memories" in initial
+    assert "\033[38;5;141m124 memories" in sl._tetris_line(SESSION, now=NOW + 2)
     monkeypatch.setenv("COLORTERM", "truecolor")
-    assert "\033[38;2;208;180;255m124 recalled" in sl._tetris_line(SESSION, now=NOW)
+    assert "\033[38;2;208;180;255m124 memories" in sl._tetris_line(SESSION, now=NOW)
     assert sl._tetris_line(SESSION, now=NOW + 10) == sl._tetris_line(SESSION, now=NOW + 60)
     assert "▰▰▰▰▱" in sl._tetris_line(SESSION, now=NOW + 10)
     assert sl._animation_phase(marker(hits={"session": 0}, ts=NOW), NOW) is None
@@ -107,7 +115,7 @@ def test_counts_modes(sl, monkeypatch, mode):
     monkeypatch.setenv("COGNEE_STATUSLINE_COUNTS", mode)
     monkeypatch.setenv("COLUMNS", "120")
     line = sl._tetris_line(SESSION)
-    assert "124 recalled" in line
+    assert "124 memories" in line
     assert ("recall 8s/0t/0g/0a" in line) == (mode == "full")
     assert "▰" not in line
 
@@ -170,7 +178,7 @@ def test_cp1252_ascii(sl, suite, temp_home):
     )
     assert result.returncode == 0 and result.stderr == b""
     output = result.stdout.decode("ascii")
-    assert "124 recalled" in output and "#" in output
+    assert "124 memories" in output and "#" in output
 
 
 @pytest.mark.parametrize("counts", ["true", "full", "false"])
@@ -194,7 +202,7 @@ def test_classic_byte_identical_to_1_6_21(sl, suite, temp_home, counts, url):
 @pytest.mark.parametrize("corrupt", ["{partial", "[]", '{"entries_injected":"bad"}'])
 def test_corrupt_stats_keep_bar(sl, corrupt):
     (sl._SESSIONS_DIR / SESSION / "stats.json").write_text(corrupt)
-    assert "0 recalled" in sl._tetris_line(SESSION)
+    assert "0 memories" in sl._tetris_line(SESSION)
 
 
 def test_timestamp_iso_and_no_writes(sl):
@@ -210,7 +218,7 @@ def test_failure_at_60_keeps_identity_and_count(sl, monkeypatch):
     monkeypatch.setattr(sl, "_status_prefix", lambda _: sl._fail_glyph("server_error"))
     line = sl._tetris_line(SESSION)
     assert sl._width(line) <= 60
-    assert all(value in line for value in ("server_error", "manual", "cloud", "124 recalled"))
+    assert all(value in line for value in ("server_error", "manual", "cloud", "124 memories"))
 
 
 def test_home_without_markers(sl, suite, tmp_path):
@@ -220,5 +228,26 @@ def test_home_without_markers(sl, suite, tmp_path):
     )
     result = run_renderer(suite, fresh, sl.__file__, "{}")
     assert result.returncode == 0 and result.stderr == b""
-    assert "0 recalled" in result.stdout.decode()
+    assert "0 memories" in result.stdout.decode()
     assert len(result.stdout.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "chars,label",
+    [
+        (0, "~0 tokens saved"),
+        (3999, "~999 tokens saved"),
+        (4000, "~1k tokens saved"),
+        (9999, "~2.4k tokens saved"),
+        (4_000_000, "~1m tokens saved"),
+    ],
+)
+def test_saved_token_estimate(sl, chars, label):
+    assert sl._tokens_saved({"dedup_chars_saved": chars, "dedup_measurements": 1}) == label
+    assert sl._tokens_saved({"entries_deduped": 100}) == "tokens saved n/a"
+
+
+def test_missing_savings_are_not_fabricated(sl):
+    write_json(sl._SESSIONS_DIR / SESSION / "stats.json", {"entries_injected": 124})
+    line = sl._tetris_line(SESSION)
+    assert "saved n/a" in line and "~0" not in line
