@@ -18,6 +18,10 @@ from _injection_ledger import atomic_json, session_dir
 
 MAX_AGE = 7 * 86400
 EXPLICIT_IMPROVES = {"final", "precompact", "manual", "switch"}
+#: Explicit, but nobody waits on them: skipped when nothing was stored since the
+#: last improve (a session that compacts and then ends pays for one improve).
+#: "manual" and "switch" always run; a dataset switch waits for their result.
+SKIP_WHEN_NOTHING_NEW = {"final", "precompact"}
 #: Answers that will never change for the same payload: expire, keep the queue moving.
 PERMANENT_REJECTIONS = {400, 413, 422}
 #: Answers that mean the server or account is unusable right now, for every item.
@@ -473,6 +477,29 @@ def _throttle(path: Path, item: dict, now: float) -> bool:
     return True
 
 
+def _nothing_new(path: Path, item: dict) -> bool:
+    """Drop a final/pre-compact improve when no entry landed since the last improve."""
+    from _plugin_common import read_improve_state, read_turn_count
+
+    try:
+        then = int(read_improve_state(item["session_id"]).get("turn_count_at_improve", -1))
+    except (TypeError, ValueError):
+        then = -1
+    if then < 0 or read_turn_count(item["session_id"]) > then:
+        return False
+    with file_lock(path.with_suffix(".lock"), timeout=0.2) as acquired:
+        if not acquired or read(path).get("generation") != item.get("generation"):
+            return True  # a newer request decides on the next pass
+        path.unlink()
+    log(
+        "auto_improve_throttled",
+        session=item["session_id"],
+        reason=item["reason"],
+        why="no_new_entries",
+    )
+    return True
+
+
 def process_improves(improve, *, now: float = None) -> int:
     """Submit at most one improve per pass, explicit requests first.
 
@@ -496,6 +523,8 @@ def process_improves(improve, *, now: float = None) -> int:
             continue
         explicit = item["reason"] in EXPLICIT_IMPROVES
         if not explicit and _throttle(path, item, now):
+            continue
+        if item["reason"] in SKIP_WHEN_NOTHING_NEW and _nothing_new(path, item):
             continue
         due.append((not explicit, item.get("requested_at", 0), path.name, path, item))
     if not due:

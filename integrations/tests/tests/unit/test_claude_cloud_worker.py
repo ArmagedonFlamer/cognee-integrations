@@ -423,3 +423,30 @@ def test_cloud_improve_triggers_every_n_delivered_entries_like_local(worker, mon
     assert worker.read(marker)["reason"] == "turn_3"
     # Not explicit, and nothing is queued for the session: it runs without a quiet wait.
     assert worker.process_improves(lambda _: COMPLETED) == 1
+
+
+@pytest.mark.parametrize("reason", ["final", "precompact"])
+def test_final_and_precompact_skip_when_nothing_new_was_stored(worker, reason):
+    import _plugin_common as common
+
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "precompact")
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+    # Compacted, then ended with nothing stored in between: no second improve.
+    path = worker.request_improve("ds", "sid", reason)
+    assert worker.process_improves(lambda _: pytest.fail("nothing new to improve")) == 0
+    assert not path.exists()
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", reason)
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+
+
+@pytest.mark.parametrize("reason", ["manual", "switch"])
+def test_manual_and_switch_always_run(worker, reason):
+    import _plugin_common as common
+
+    common.bump_turn_counter("sid")
+    worker.request_improve("ds", "sid", "final")
+    assert worker.process_improves(lambda _: COMPLETED) == 1
+    worker.request_improve("ds", "sid", reason)
+    assert worker.process_improves(lambda _: COMPLETED) == 1
