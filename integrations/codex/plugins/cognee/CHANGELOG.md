@@ -12,6 +12,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- **Shell commands that mention "cognee" are captured again.** Automatic capture used to
+  drop any shell command containing the word, which lost most real work inside Cognee
+  repositories. Only commands that actually run the plugin or the Cognee CLI are now
+  skipped, together with successful read-only lookups (`cat`, `ls`, `grep`, `git log`,
+  …). Failures, builds, tests, edits and pipelines are kept. Skips are logged without
+  the command text.
+
 ### Fixed
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
   capture skipped `.env`, SSH keys, `~/.aws/credentials`, `.npmrc` and the other

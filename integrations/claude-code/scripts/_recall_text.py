@@ -24,8 +24,9 @@ Two anchors, both ours to know:
 Anything that does not fit is left untouched and reported as unparsed: a
 template change can only cost tokens, never memory.
 
-Stdlib only, no plugin imports: this file is copied verbatim between the hook
-suites like ``_recall_http.py``.
+Stdlib only, no plugin imports. The parsing logic is shared between hook suites;
+default limits are per suite. Claude Code delegates the final context ceiling to
+``_injection_budget.py``.
 """
 
 from __future__ import annotations
@@ -48,8 +49,8 @@ PASSAGE_SEPARATOR = "\n---\n"
 
 ENV_PASSAGE_CHARS = "COGNEE_RECALL_PASSAGE_CHARS"
 ENV_CONTEXT_CHARS = "COGNEE_RECALL_CONTEXT_CHARS"
-DEFAULT_PASSAGE_CHARS = 2000
-DEFAULT_CONTEXT_CHARS = 12000
+DEFAULT_PASSAGE_CHARS = 1200
+DEFAULT_CONTEXT_CHARS = 0  # The complete hook output is bounded by _injection_budget.
 
 _SECTION_RE = re.compile(
     r"(?m)^(## Relevant passages|## Relevant entities|## Related facts)[ \t]*\n"
@@ -164,6 +165,12 @@ def split_passages(block: str) -> list[str]:
         else:
             passages.append(piece)
     return [p for p in passages if p.strip()]
+
+
+def is_session_transcript(passage: str) -> bool:
+    """A bridged raw turn from another session, as opposed to a distilled
+    ``# Session learning`` or a remembered document."""
+    return passage.lstrip().startswith("Session ID:")
 
 
 def passage_session_id(passage: str) -> str:

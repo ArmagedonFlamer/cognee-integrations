@@ -98,6 +98,8 @@ match). With it, pick one exact operation:
 | `traverse` | follow edges from seeds | `{"operation":"traverse","start":"main","direction":"forward","max_depth":3}` |
 | `find_path` | how A reaches B | `{"operation":"find_path","source":"AuthMiddleware","target":"Database"}` |
 | `impact_analysis` | what breaks if X changes | `{"operation":"impact_analysis","targets":["process_payment"]}` |
+| `architecture` (>=1.6.3) | module, route, storage and service map | `{"operation":"architecture","diagram":"mermaid"}` |
+| `insights` (>=1.6.3) | explainer findings with cited facts | `{"operation":"insights","diagram":"mermaid"}` |
 | `delta` | what the last index changed | `{"operation":"delta"}` |
 
 An ambiguous seed returns an error **listing the candidates** — pick one and

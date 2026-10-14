@@ -49,10 +49,13 @@ def test_the_table_covers_every_kind():
 
 
 def test_recall_text_matches_shared_table(suite, isolated_modules, monkeypatch):
-    # Cases with a null option rely on the defaults, so the knobs must be unset.
-    monkeypatch.delenv("COGNEE_RECALL_PASSAGE_CHARS", raising=False)
-    monkeypatch.delenv("COGNEE_RECALL_CONTEXT_CHARS", raising=False)
     rt = isolated_modules(suite, "_recall_text")
+    # Cases with a null option rely on the table's reference defaults. Suites may
+    # ship their own defaults (claude-code budgets the whole hook output instead),
+    # so pin the reference values rather than reading each suite's. Set after
+    # loading: the loader scrubs every COGNEE_* variable.
+    monkeypatch.setenv("COGNEE_RECALL_PASSAGE_CHARS", "2000")
+    monkeypatch.setenv("COGNEE_RECALL_CONTEXT_CHARS", "12000")
 
     mismatches = []
     for case in _load_cases():

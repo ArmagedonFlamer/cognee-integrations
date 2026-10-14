@@ -203,6 +203,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_auth_rejected` | `recall.auth_rejected` |
 | `hook:recall_breaker_open` | `recall.breaker_open` |
 | `hook:recall_budget_exceeded` | `recall.budget_exceeded` |
+| `hook:recall_budget_reduced` | `recall.budget_reduced` |
 | `hook:recall_dataset_hint` | `recall.dataset_hint` |
 | `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_context_trimmed` | `recall.context_trimmed` |
@@ -235,6 +236,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:session_marker_write_failed` | `session.marker_write_failed` |
 | `hook:session_resolved` | `session.resolved` |
 | `hook:session_start_exception` | `session.start_exception` |
+| `hook:session_stats_failed` | `session.stats_failed` |
 | `hook:shared_memory_agent_select_tenant_failed` | `shared_memory.agent_select_tenant_failed` |
 | `hook:shared_memory_grant_denied` | `shared_memory.grant_denied` |
 | `hook:shared_memory_leave_role_failed` | `shared_memory.leave_role_failed` |
@@ -244,6 +246,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:shared_memory_skipped` | `shared_memory.skipped` |
 | `hook:shared_memory_tenant_create_failed` | `shared_memory.tenant_create_failed` |
 | `hook:shared_memory_wired` | `shared_memory.wired` |
+| `hook:bash_capture_decision` | `capture.bash_decision` |
 | `hook:skip_self_cognee_bash` | `skip.self_cognee_bash` |
 | `hook:slow_streak_escalated` | `slow.streak_escalated` |
 | `hook:state_sweep` | `state.sweep` |
@@ -343,3 +346,29 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:stopfile_unlink_failed` | `idle_watcher.stopfile_unlink_failed` |
 | `idle-watcher:throttle_check_failed` | `idle_watcher.throttle_check_failed` |
 | `idle-watcher:update_check_error` | `idle_watcher.update_check_error` |
+
+## Cloud queues and context
+
+- `cloud.auto_memory_setup_failed`: auto memory setup failed.
+- `cloud.injection_ledger_failed`: injection ledger failed.
+- `cloud.capture_spooled`: capture spooled.
+- `cloud.cloud_work_expired`: cloud work expired.
+- `cloud.cloud_work_retry`: cloud work retry.
+- `cloud.cloud_capture_delivered`: cloud capture delivered.
+- `cloud.cloud_worker_error`: cloud worker error.
+- `cloud.cloud_capture_rejected`: the server permanently rejected a queued capture (400/413/422); it was expired so the queue keeps moving.
+- `cloud.cloud_worker_idle_exit`: the worker exited with no queued work and no session active for 30 minutes; the next hook restarts it.
+- `cloud.cloud_delivery_bookkeeping_failed`: a capture was delivered but updating counters or queuing the follow-up improve failed; the event is not re-sent.
+- `cloud.context_digest_inject_failed`: startup digest skipped because its cache could not be read.
+- `cloud.context_cache_refresh_failed`: a digest refresh failed; it is retried with exponential backoff and the last good digest stays in use.
+- `cloud.context_cache_refresh_dropped`: a pending digest refresh was removed (another account, older than the cache TTL, or too many failed attempts).
+
+- `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.
+
+`recall.injection_receipt_failed`: writing the body-free last-turn injection receipt failed; recall output remains available.
+
+Bash capture decisions contain only host session identity and `captured`,
+`skipped_self` or `skipped_low_signal`. Captured means retained for the write path,
+not server acknowledgement. Self skips log an allowlisted `first_token` and
+`plugin_path`, `plugin_script` or `cognee_cli` reason. Low-signal skips log the tool
+and allowlisted first token; neither event includes command text.

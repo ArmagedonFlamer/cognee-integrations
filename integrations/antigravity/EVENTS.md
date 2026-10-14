@@ -351,3 +351,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:shared_memory_refreshed` | `idle_watcher.shared_memory_refreshed` |
 | `hook:shared_memory_grant_denied` | `shared_memory.grant_denied` |
 | `hook:plugin_provision_retry_after_update` | `plugin.provision_retry_after_update` |
+
+- `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.

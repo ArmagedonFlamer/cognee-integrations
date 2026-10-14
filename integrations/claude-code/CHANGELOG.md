@@ -10,7 +10,63 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.6.7]
+
+### Added
+- **Per-session injection ledger.** Cloud recall remembers which memory entries are
+  already in Claude's context and sends only new ones (`N new, M already in context`).
+  The ledger resets on `/clear` and compaction.
+- **Native auto-memory management in cloud mode.** The plugin turns off Claude's own
+  file memory while cloud memory is active and restores it when cloud mode is off. It
+  never overrides an explicit user choice; `/cognee-doctor` shows the setting.
+- **Distilled-memory digest at cloud session start.** A bounded, tenant-scoped digest is
+  appended to the startup context and seeds the ledger, so the same facts are not sent
+  again on the first prompt. The worker refreshes it.
+- **Durable cloud capture worker.** Hooks write a per-user queue that a background worker
+  drains in order, with retries, cached health and truthful improve results.
+- **Per-session value counters and a last-session recap.** The status line shows the
+  cumulative recalled count.
+- **Skills:** performance report (`cognee-report`), project handoff, plugin behavior
+  explanations and version-gated architecture skills.
+- **Idempotent capture.** Each event gets a stable id. Frozen requests are replayed
+  against server-side receipts, so a retry never stores a duplicate.
+- **Memory outcome trials** (opt-in eval tooling): repeated isolated trials with citation
+  scoring and usage accounting. Live citation metrics are a lower bound; see `OUTCOMES.md`.
+- **Citable evidence.** Recall can include compact evidence indexes with source and
+  version references, batch citation expansion, and body-free per-item injection
+  receipts. Older servers keep the previous recall format.
+- **New status line style.** One purple line with bold dataset and location, the
+  cumulative recalled count (repeats count again), a single hit-rate bar, light/dark
+  themes and a short shimmer when memory is recalled. `COGNEE_STATUSLINE_STYLE=classic`
+  restores the previous line byte-for-byte.
+
+### Changed
+- Hook injections are capped at 9,000 characters overall. Whole entries are dropped in
+  priority order; the header is always kept and kept/dropped counts are logged. Graph
+  entities and facts are kept ahead of passages. Tiny configured budgets are clamped to
+  1,024 characters.
+- Raw turns bridged from other sessions (`Session ID:` passages) are shown under their
+  own heading and dropped first when the budget is tight, across every read dataset,
+  so session learnings and remembered documents survive.
+- Only hits that were actually injected are reported, with explicit drop counts.
+- Automatic improve runs at most once a day per session: `COGNEE_IMPROVE_COOLDOWN`
+  now defaults to 24 hours, and a failed attempt backs off for the same window
+  (SDK-1072). Session end, manual sync and dataset switch still always run.
+- The idle watcher no longer runs improve after 60 quiet seconds, and
+  `COGNEE_IDLE_THRESHOLD` is gone (SDK-1074). Improve runs every
+  `COGNEE_AUTO_IMPROVE_EVERY` stored entries (within the cooldown), at session end,
+  from the exit watcher, on a dataset switch and on a manual sync.
+- Low-signal cloud traces are skipped and counted. Structured session summaries are used
+  only when the server advertises support.
+- Bash results with meaningful output (test results, errors, diffs) are captured;
+  empty or trivial output is skipped.
+- Evaluation reports lead with delivery, session evidence, quality bars and explicit
+  failed gates.
+- Cloud per-prompt recall waits up to 45 seconds; local mode keeps 20 seconds, and the
+  environment overrides still apply. After three timeout-only prompts in a row, recall
+  gets 5 seconds (`COGNEE_RECALL_SLOW_BUDGET`) for ten minutes or until a recall
+  answers, so a hung server does not cost the full wait on every prompt. Each
+  full-length re-test that times out again doubles that window, up to an hour.
 
 ### Fixed
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
@@ -28,6 +84,53 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `.npmrc` `_authToken=` / `_auth=` lines passed through. These names are now
   redacted, as are AWS access key ids anywhere (`AKIA…`, `ASIA…`, … plus 16
   characters), `npm_…` tokens and `pypi-…` upload tokens.
+- A partial guidance change no longer makes the unchanged guidance entries look new on
+  every later prompt.
+- A busy or broken ledger file at `/clear` or compaction no longer blocks session start.
+- Auto-memory settings writes keep symlinks, file permissions, indentation and the
+  trailing newline. Removing the key by hand is respected as a user choice. Switching
+  back to local mode restores the setting, and nothing in `~/.claude` is touched when
+  the plugin never changed it.
+- A failing last-session recap or digest no longer breaks session start.
+- The cloud worker no longer stalls: a permanently rejected event (400/413/422) is
+  dropped and logged, and a waiting or failing item holds back only its own session.
+  Old items expire even while capture is off. The worker exits after 30 idle minutes.
+- The typed-dataset capability check runs only when the write target is a dataset id,
+  as before.
+- Outcome trials match citations by whole evidence tokens and mark both question and
+  answer, so citations are not lost or misattributed.
+- `cognee-report` no longer crashes on Windows consoles that are not UTF-8.
+- The status line no longer hides credit or update notices when Claude Code does not
+  report a terminal width, and Windows terminals get the real glyphs instead of ASCII.
+- Cloud mode follows the local automatic improve policy: one improve every
+  `COGNEE_AUTO_IMPROVE_EVERY` delivered entries, within the same cooldown, failure
+  backoff and "nothing new" check, instead of one after every turn. Session end,
+  pre-compact, manual sync and dataset switch still run at once. The worker submits one improve at a time
+  (explicit ones first) with the 420-second submit timeout, and does not resubmit a
+  timed-out improve before the cooldown. An improve that fails in a way that may have
+  cost tokens (timeout, error, unexpected result) is given up after three attempts,
+  and one the server skipped is not retried; an unreachable server is retried at no
+  cost. A result is always recorded, even when a new request arrived while it ran, so
+  that request is throttled instead of submitted again at once.
+- The cloud worker runs each improve in a separate short-lived process, so captures,
+  new-session registration and digest refreshes keep flowing while an improve runs
+  for minutes. Session-end and pre-compact improves are skipped when nothing was
+  stored since the last improve.
+- A base-URL or capture-policy notice is no longer lost when cloud recall is skipped
+  during a known outage.
+- One unreadable or unremovable session directory no longer stops the startup cleanup
+  and log rotation.
+- A delivered capture is never sent back to the queue when queuing its follow-up
+  improve fails, so saves are not counted twice.
+- A failing digest refresh is logged, backs off, and is dropped after five attempts,
+  after the cache TTL, or when it belongs to another account, so the worker can still
+  exit when idle.
+- Recall keeps the plain memory text when the server returns evidence but none of it
+  can be shown, and only the prompt hook asks for evidence, so file context,
+  pre-compact and recap do not pay for lookups they never read.
+- Codex and Antigravity commands that run the plugin from their own plugin roots are
+  recognised as plugin invocations and not captured. In cloud mode a successful Bash
+  command with no output is skipped again.
 
 ## [1.6.6]
 

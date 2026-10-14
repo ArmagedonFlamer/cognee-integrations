@@ -2169,13 +2169,8 @@ def _ensure_statusline_configured() -> None:
 
 
 _MEMORY_PREFERENCE_STEER = (
-    "Memory policy for this session: Cognee is the preferred, authoritative long-term "
-    "memory. On every user request, Cognee memory relevant to the prompt is "
-    "automatically recalled and injected into your context before you answer — consult "
-    "that recalled Cognee context FIRST. When you need to look up or store durable "
-    "information, use the Cognee tools/skills (cognee-search, cognee-remember) in "
-    "preference to Claude Code's built-in file memory (MEMORY.md), and do not duplicate "
-    "durable knowledge into MEMORY.md. Cognee is the source of truth for memory."
+    "Cognee supplies distilled project memory; use cognee-search for more context "
+    "and cognee-remember to save durable knowledge."
 )
 
 
@@ -2281,7 +2276,12 @@ async def _start(payload: dict | None = None) -> dict:
     # to add the fastembed extra, and the server inherits the provider variables
     # at spawn. The shim is started detached now so the server's first LLM call
     # (and the watcher's key check) find it listening.
-    observer = _apply_observer(config, target_url)
+    from _cloud_worker import enabled as cloud_enabled
+
+    cloud = cloud_enabled({"base_url": target_url})
+    observer = (
+        {"active": False, "reason": "cloud"} if cloud else _apply_observer(config, target_url)
+    )
 
     # NOTE: the local server's LLM_API_KEY health is deliberately NOT judged here.
     # A hook-env read (config's llm_api_key / OPENAI_API_KEY) is blind to a key that
@@ -2318,6 +2318,20 @@ async def _start(payload: dict | None = None) -> dict:
             }
         }
     os.environ["COGNEE_SESSION_KEY"] = session_key
+    if payload.get("source") in {"clear", "compact"}:
+        from _injection_ledger import reset as reset_injection_ledger
+        from _injection_ledger import session_dir as ledger_dir
+
+        try:
+            reset_injection_ledger(session_key)
+        except Exception as exc:
+            # Never block startup on the ledger. A stale ledger would claim the
+            # forgotten context is still present, so drop it instead.
+            hook_log("injection_ledger_failed", {"op": "reset", "error": str(exc)[:200]})
+            try:
+                (ledger_dir(session_key) / "injected.json").unlink()
+            except (OSError, ValueError):
+                pass
 
     # Resolve (and persist) this launch's record: session_id (data scoping, unique
     # per launch) + conn_uuid (liveness handle for registration/counting). Written
@@ -2358,6 +2372,34 @@ async def _start(payload: dict | None = None) -> dict:
             "dataset": dataset,
         },
     )
+
+    if cloud:
+        from _cloud_worker import register_session
+
+        register_session(
+            {
+                "cwd": cwd,
+                "session_id": session_id,
+                "session_key": session_key,
+                "dataset": dataset,
+                "agent_session_name": agent_session_name,
+                "base_url": target_url,
+            }
+        )
+        touch_activity()
+        marker_ready = server_ready_hint(target_url)
+        message = (
+            "Cognee cloud memory ready; background synchronization active."
+            if marker_ready
+            else "Cognee cloud memory connecting in the background; captures are queued."
+        )
+        return {
+            "systemMessage": message,
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "systemMessage": message,
+            },
+        }
 
     # Boot-vs-connect is decided purely by whether the server is already up:
     #   * up                -> connect (we don't boot, so agent mode is left as-is)
@@ -2537,7 +2579,70 @@ def main():
             output = asyncio.run(_start(payload))
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
+    try:
+        from _auto_memory import sync as sync_auto_memory
+        from _cloud_worker import enabled as cloud_enabled
+
+        # Native memory is only taken over in cloud mode; anywhere else, give back
+        # a setting we changed earlier.
+        notice = sync_auto_memory(cloud_enabled())
+        if notice:
+            hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+            hso["systemMessage"] = (str(hso.get("systemMessage") or "") + "\n" + notice).strip()
+            output["systemMessage"] = hso["systemMessage"]
+    except Exception as exc:
+        hook_log("auto_memory_setup_failed", {"error": str(exc)[:200]})
+    try:
+        if payload.get("source") != "resume":
+            from _session_stats import previous, summary
+            from _session_stats import update as update_stats
+
+            config = load_config()
+            key = get_session_key()
+            last_line = summary(
+                previous(key, get_dataset(config), str(config.get("base_url") or ""))
+            )
+            update_stats(
+                key,
+                metadata={
+                    "dataset": get_dataset(config),
+                    "server_url": str(config.get("base_url") or ""),
+                },
+            )
+            if last_line:
+                hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+                hso["systemMessage"] = (
+                    str(hso.get("systemMessage") or "") + "\n" + last_line
+                ).strip()
+                hso["additionalContext"] = (
+                    str(hso.get("additionalContext") or "") + "\n" + last_line
+                ).strip()
+                output["systemMessage"] = hso["systemMessage"]
+    except Exception as exc:
+        # The recap is a courtesy; it must never cost the startup output.
+        hook_log("session_stats_failed", {"op": "recap", "error": str(exc)[:200]})
     output = _apply_memory_preference(output)
+    if payload.get("source") != "resume":
+        try:
+            from _cloud_worker import enabled as cloud_enabled
+            from _context_cache import inject as inject_digest
+
+            digest = (
+                inject_digest(
+                    get_dataset(load_config()), get_session_key(), source=payload.get("source", "")
+                )
+                if cloud_enabled()
+                else ""
+            )
+            if digest:
+                # Lead with the digest, keeping what is already there (the
+                # last-session line, and the steer when the user has not opted out).
+                hso = output.setdefault("hookSpecificOutput", {"hookEventName": "SessionStart"})
+                existing = str(hso.get("additionalContext") or "").strip()
+                hso["additionalContext"] = f"{digest}\n\n{existing}" if existing else digest
+        except Exception as exc:
+            # A missing, busy or malformed cache must never cost the startup output.
+            hook_log("context_digest_inject_failed", {"error": str(exc)[:200]})
     output = _apply_update_nudge(output)
     output = _apply_host_python_warning(output)
     print(json.dumps(output or {}))

@@ -1171,7 +1171,7 @@ def load_resolved(session_key: str = "", *, identity: bool = True) -> dict:
         conn = _json_http_request(
             f"/api/v1/agents/connections/me{query}",
             method="GET",
-            timeout=10.0,
+            timeout=15.0,
         )
         if isinstance(conn, dict):
             agent = conn.get("agent") if isinstance(conn.get("agent"), dict) else {}
@@ -1564,6 +1564,10 @@ def bump_save_counter(session_id: str, kind: str, *, buffered: bool = False) -> 
         kind = f"{kind}_buffered"
     if not session_id or kind not in ALL_SAVE_KINDS:
         return
+    if not buffered:
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), saves=1, metadata={"session_id": session_id})
     try:
         data = (
             json.loads(_SAVE_COUNTER.read_text(encoding="utf-8")) if _SAVE_COUNTER.exists() else {}
@@ -1652,6 +1656,14 @@ def warmup_backlog() -> dict:
                 age = max(0.0, now - buffered_at)
                 if oldest is None or age > oldest:
                     oldest = age
+    for path in (_PLUGIN_DIR / "spool").glob("*.json"):
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+            result["pending"] += 1
+            age = max(0, now - float(item.get("created_at", path.stat().st_mtime)))
+            oldest = max(oldest or 0, age)
+        except (OSError, ValueError, TypeError):
+            continue
     result["oldest_age_seconds"] = oldest
     return result
 
@@ -1886,7 +1898,9 @@ def read_improve_state(session_id: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
+def record_improve_success(
+    session_id: str, dataset: str, trigger: str, turn_count: int | None = None
+) -> None:
     """Persist that an improve of ``session_id`` just landed.
 
     Called by ``run_session_improve_detailed`` itself on a confirmed 2xx submit,
@@ -1894,6 +1908,8 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
     a success. Replaces the whole state, which also clears any failure backoff.
     The auto trigger reads this back through ``improve_throttle_reason``.
     Best-effort: a write failure is logged and never fails the improve.
+    ``turn_count`` is the count when the improve was submitted, when known:
+    entries stored while it ran are then still new for the next one.
     """
     if not session_id:
         return
@@ -1904,7 +1920,9 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
                 "session_id": session_id,
                 "dataset": dataset,
                 "last_improved_at": time.time(),
-                "turn_count_at_improve": read_turn_count(session_id),
+                "turn_count_at_improve": (
+                    read_turn_count(session_id) if turn_count is None else turn_count
+                ),
                 "trigger": trigger,
             },
         )
@@ -3171,12 +3189,10 @@ def server_presence(
 # Connection states recorded in the (shared) server-ready marker. "ready" means
 # the server is up AND authenticated; the failure states carry the reason shown
 # in the status line as "✕ (<state>)". Any non-"ready" state makes
-# server_ready_hint return False so recall does not attempt against a bad backend.
+# server_ready_hint return False.
 # "unreachable" is reserved for POSITIVE absence (connection refused / DNS /
-# unroutable). "not_responding" is deliberately distinct: the server exists
-# (connections are not refused) but has not answered within budget for N
-# consecutive prompts — written only by the slow-streak escalation (see
-# record_slow_probe), never by a lone timeout.
+# unroutable). "not_responding" remains readable for compatibility with older
+# state files. Timeout streaks no longer write it or prevent another recall.
 CONNECTION_STATES = ("ready", "auth_failed", "unreachable", "server_error", "not_responding")
 
 
@@ -3265,17 +3281,13 @@ def mark_server_ready(service_url: str, version: str = "") -> None:
     write_connection_state("ready", service_url, version=version)
 
 
-# Slow-server hysteresis. A single timeout is "no verdict" and must not touch
-# the connection marker — but N consecutive timeout-only prompts with no
-# success in between are a pattern (wedged server, packet-dropping network),
-# not a blip. This counter, keyed by base_url, is how a lone blip stays
-# invisible while a persistent stall still escalates to a visible "slow" state
-# (and recall backoff) instead of leaving the bar green forever.
+# Slow-server diagnostics, keyed by base_url. Even a repeated timeout is no
+# outage verdict: the counter produces telemetry without gating future recalls.
 _SLOW_STREAK_FILE = _PLUGIN_DIR / "slow-streak.json"
 
 
 def slow_streak_threshold() -> int:
-    """Consecutive timeout-only prompts before escalating to state "slow"."""
+    """Consecutive timeout-only prompts before logging a slow-streak event."""
     try:
         return max(1, int(os.environ.get("COGNEE_SLOW_STREAK_THRESHOLD", "3") or 3))
     except (TypeError, ValueError):
@@ -3312,9 +3324,8 @@ def record_slow_probe(service_url: str) -> int:
     """Count a consecutive no-verdict (timeout) observation; return the streak.
 
     The streak resets itself when the previous tick is older than the window —
-    two timeouts hours apart are noise, not a pattern. The caller escalates to
-    ``write_connection_state("not_responding", ...)`` once the return value
-    reaches ``slow_streak_threshold()``.
+    two timeouts hours apart are noise, not a pattern. The caller logs diagnostics
+    at ``slow_streak_threshold()`` without changing connection health.
     """
     url = _normalize_service_url(service_url)
     now = datetime.now(timezone.utc).timestamp()
@@ -3328,9 +3339,52 @@ def record_slow_probe(service_url: str) -> int:
     if now - last_at > _slow_streak_window_seconds():
         count = 0
     count += 1
-    state[url] = {"count": count, "last_at": now}
+    state[url] = {**entry, "count": count, "last_at": now}
     _write_slow_streaks(state)
     return count
+
+
+def recall_slow_until(service_url: str) -> float:
+    """When the shortened per-prompt recall budget ends (0 when it never applied).
+
+    A value in the past means recall was slow before: the next full-budget
+    timeout re-arms the short budget at once instead of after a new streak.
+    """
+    entry = _read_slow_streaks().get(_normalize_service_url(service_url))
+    try:
+        return float(entry.get("slow_until") or 0) if isinstance(entry, dict) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+_SLOW_RECALL_MAX_WINDOW_SECONDS = 3600.0
+
+
+def mark_recall_slow(service_url: str) -> float:
+    """Shorten per-prompt recall for a while after repeated timeouts.
+
+    ``clear_slow_streak`` (any recall that answers) ends it early. When the window
+    passes, one prompt runs with the full budget to re-test the server; each
+    re-test that times out again doubles the window (the streak window first,
+    capped at an hour), so a long hang costs a full wait about once an hour.
+    The re-test keeps the full budget on purpose: a server that is slow but
+    working would never pass a re-test under the short budget.
+    """
+    url = _normalize_service_url(service_url)
+    state = _read_slow_streaks()
+    entry = state.get(url) if isinstance(state.get(url), dict) else {}
+    try:
+        strikes = int(entry.get("slow_strikes") or 0) + 1
+    except (TypeError, ValueError):
+        strikes = 1
+    window = min(
+        _slow_streak_window_seconds() * 2 ** min(strikes - 1, 16),
+        max(_SLOW_RECALL_MAX_WINDOW_SECONDS, _slow_streak_window_seconds()),
+    )
+    until = datetime.now(timezone.utc).timestamp() + window
+    state[url] = {**entry, "slow_until": until, "slow_strikes": strikes}
+    _write_slow_streaks(state)
+    return until
 
 
 def clear_slow_streak(service_url: str) -> None:
@@ -3449,21 +3503,24 @@ def capture_policy_notice() -> str:
     return f"Cognee: automatic capture is off until this is fixed: {error}"
 
 
-def with_base_url_notice(output: dict | None, hook_event: str) -> dict | None:
+def with_base_url_notice(
+    output: dict | None, hook_event: str, *, notice: str | None = None
+) -> dict | None:
     """Add the session's notices to a hook's output (user- and model-visible).
 
     Covers ``base_url_change_notice`` and ``capture_policy_notice``.
     """
-    notices = []
-    for source in (base_url_change_notice, capture_policy_notice):
-        try:
-            text = source()
-        except Exception as exc:
-            hook_log("hook_notice_failed", {"source": source.__name__, "error": str(exc)[:200]})
-            continue
-        if text:
-            notices.append(text)
-    notice = "\n".join(notices)
+    if notice is None:
+        notices = []
+        for source in (base_url_change_notice, capture_policy_notice):
+            try:
+                text = source()
+            except Exception as exc:
+                hook_log("hook_notice_failed", {"source": source.__name__, "error": str(exc)[:200]})
+                continue
+            if text:
+                notices.append(text)
+        notice = "\n".join(notices)
     if not notice:
         return output
     result = dict(output or {})
@@ -3740,6 +3797,10 @@ def server_usable(service_url: str = "", probe_timeout: float = 1.0) -> bool:
     hooks keep the marker fresh for the whole turn and the buffer only fills
     when the server is actually unreachable.
     """
+    from _cloud_worker import enabled as cloud_enabled
+
+    if cloud_enabled({"base_url": service_url or _local_api_url()}):
+        return server_ready_hint(service_url)
     if server_ready_hint(service_url):
         return True
     now = datetime.now(timezone.utc).timestamp()
@@ -4685,6 +4746,7 @@ def remember_entry_via_http(
     *,
     dataset_id: str | None = None,
     timeout: float = 30.0,
+    client_event_id: str | None = None,
 ) -> dict | None:
     """Store a typed QA/trace entry through the backend API.
 
@@ -4697,10 +4759,25 @@ def remember_entry_via_http(
         return None
     from _project_memory import route
 
+    payload = prepare_remember_entry_payload(dataset, session_id, entry, dataset_id=dataset_id)
+    # Probe the server only for a UUID-shaped write target, as before: hooks are
+    # short-lived processes, so probing every shared-memory write would fetch
+    # /openapi.json on each PostToolUse and Stop.
+    if parse_dataset_id(route(dataset, session_id)["write"]) and not client_event_id:
+        require_typed_dataset_id_support()
+    if client_event_id:
+        payload["client_event_id"] = client_event_id
+    return _json_http_request("/api/v1/remember/entry", payload, timeout=timeout)
+
+
+def prepare_remember_entry_payload(
+    dataset: str, session_id: str, entry: dict, *, dataset_id: str | None = None
+) -> dict:
+    """Resolve the write target locally, so a queued capture can pin its request."""
+    from _project_memory import route
+
     target = route(dataset, session_id)
     dataset = target["write"]
-    if parse_dataset_id(dataset):
-        require_typed_dataset_id_support()
     entry = _sanitize_value(entry)
     if target.get("node_set") and entry.get("type") in ("qa", "trace"):
         entry = {**entry, "node_set": target["node_set"]}
@@ -4709,11 +4786,7 @@ def remember_entry_via_http(
     # Otherwise a UUID-shaped dataset is sent as an id and a name as a name.
     resolved_id = dataset_id if dataset_id is not None else dataset_id_for(dataset)
     fields = {"dataset_id": resolved_id} if resolved_id else write_fields(dataset)
-    return _json_http_request(
-        "/api/v1/remember/entry",
-        {"entry": entry, **fields, "session_id": session_id},
-        timeout=timeout,
-    )
+    return {"entry": entry, **fields, "session_id": session_id}
 
 
 def get_session_detail_via_http(session_id: str, *, timeout: float = 8.0) -> dict | None:
@@ -4965,6 +5038,7 @@ def recall_via_http(
     dataset_ids: list[str] | None = None,
     code_query: dict | None = None,
     timeout: float = 10.0,
+    evidence_mode: str | None = None,
 ) -> list:
     payload = {
         "query": query,
@@ -4973,6 +5047,8 @@ def recall_via_http(
         "scope": scope,
         "only_context": only_context,
     }
+    if evidence_mode:
+        payload["evidence_mode"] = evidence_mode
     # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
     # the scope includes "code": the server rejects code_query without it.
     if code_query:
@@ -5028,7 +5104,8 @@ def recall_via_http(
     def fetch_scopes():
         started = time.monotonic()
         result = _json_http_request("/api/v1/recall", payload, timeout=timeout)
-        result = result if isinstance(result, list) else []
+        if evidence_mode != "index":
+            result = result if isinstance(result, list) else []
         if dataset != write_dataset and "graph" in scope:
             remaining = timeout - (time.monotonic() - started)
             if remaining > 0.05:
@@ -5036,10 +5113,17 @@ def recall_via_http(
                 primary_payload.pop("session_id", None)
                 try:
                     extra = _json_http_request("/api/v1/recall", primary_payload, timeout=remaining)
-                    if isinstance(extra, list):
+                    if isinstance(extra, list) and isinstance(result, list):
                         result.extend(extra)
+                    elif evidence_mode == "index" and isinstance(result, dict):
+                        from _evidence import merge_indexes
+
+                        result = merge_indexes(result, extra)
                 except (OSError, TimeoutError):
-                    pass
+                    if evidence_mode == "index" and isinstance(result, dict):
+                        result["partial"] = True
+            elif evidence_mode == "index" and isinstance(result, dict):
+                result["partial"] = True
         return result
 
     return bounded_call(fetch_scopes, timeout)
@@ -5606,6 +5690,9 @@ def run_session_improve_detailed(dataset: str, session_id: str, *, trigger: str 
         },
     )
     if ok:
+        from _session_stats import update as update_stats
+
+        update_stats(get_session_key(), improves_landed=1)
         record_improve_success(session_id, dataset, trigger)
         # Status-line credits: attribute the spend recorded since the previous
         # reading to this improve. Approximate on purpose — the submit is
@@ -5661,6 +5748,7 @@ _SWEEP_LAUNCH_RECORD_MAX_AGE_SECONDS = 30 * 24 * 3600
 #: writer; this catches files that predate the cap and logs only ever written
 #: by a child process.
 _SWEEP_LOG_FILES = (
+    "cloud-worker.log",
     "hook.log",
     "bootstrap.log",
     "watcher.log",
@@ -5759,8 +5847,27 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             (_BRIDGE_DIR, "bridge"),
             (_PENDING_DIR, "pending"),
             (_IMPROVE_STATE_DIR, "improve_state"),
+            (_PLUGIN_DIR / "spool" / "expired", "expired_cloud_work"),
+            (_PLUGIN_DIR / "improve-wanted" / "expired", "expired_cloud_work"),
         ):
             _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
+        sessions = _PLUGIN_DIR / "sessions"
+        if sessions.is_dir():
+            for directory in sessions.iterdir():
+                if not directory.is_dir() or directory.is_symlink():
+                    continue
+                # One session directory must not stop the rest of the sweep
+                # (log rotation included): a temp file can vanish between
+                # iterdir() and stat(), and a directory may not be removable.
+                try:
+                    newest = max((p.stat().st_mtime for p in directory.iterdir()), default=0)
+                    if now - newest > _SWEEP_SESSION_FILE_MAX_AGE_SECONDS:
+                        shutil.rmtree(directory)
+                        counts["sessions"] = counts.get("sessions", 0) + 1
+                except OSError as exc:
+                    counts.setdefault("errors", []).append(
+                        f"sessions/{directory.name}: {str(exc)[:80]}"
+                    )
         _sweep_pending_husks(counts)
         _sweep_launch_records(now, counts)
         for name in _SWEEP_LEGACY_FILES:
