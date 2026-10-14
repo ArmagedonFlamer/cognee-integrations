@@ -70,6 +70,11 @@ def seed(session_id: str, hashes: list[str], guidance_hashes: list[str] = None) 
         atomic_json(directory / "injected.json", data)
 
 
+def is_guidance_section(section: dict) -> bool:
+    """Active agent guidance, deduplicated by its whole current set rather than per entry."""
+    return section.get("source") == "session_context"
+
+
 def render(
     session_id: str, header: str, sections: list[dict], budget: int, measure=None
 ) -> tuple[str, dict, str]:
@@ -90,7 +95,7 @@ def render(
         deduped_entries = []
         for section in sections:
             entries = []
-            is_guidance = section.get("priority") == 30
+            is_guidance = is_guidance_section(section)
             for entry in section.get("entries", []):
                 digest = entry_hash(entry)
                 if digest in (guidance if is_guidance else seen):

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from _cloud_worker import read, root, target
 from _injection_budget import fit_sections
-from _injection_ledger import atomic_json, entry_hash, seed
+from _injection_ledger import atomic_json, entry_hash, is_guidance_section, seed
 
 ENTRY_FORMAT = "bare-records-v1"
 TTL = 24 * 3600
@@ -216,7 +216,7 @@ def build(
         "guidance_hashes": [
             entry_hash(entry)
             for section in sections
-            if section.get("priority") == 30
+            if is_guidance_section(section)
             for entry in section["entries"]
             if entry in kept
         ],
