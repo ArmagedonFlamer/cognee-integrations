@@ -57,7 +57,6 @@ ISOLATED_MODULES = (
     "_observer",
     "cognee_plugin",
     "cognee_statusline_render",
-    "_statusline_config",
     "doctor",
 )
 

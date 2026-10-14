@@ -765,7 +765,6 @@ to classic output.
 |---|---|---|
 | `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
 | `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
-| `COGNEE_STATUSLINE_PIN` | `false` | `true` restores Cognee when another command replaces the user status line; opt-in |
 | `COGNEE_STATUSLINE_COUNTS` | `true` | Ideas and imprint ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (reminiscence and token savings remain) |
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
@@ -844,21 +843,6 @@ Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the
 (a mid-session `/cognee-memory:cognee-switch-datasets` overrides both for that launch).
 
 It is configured automatically on first launch when no custom status line is already configured. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward. Existing non-Cognee `statusLine` settings are preserved; set `COGNEE_STATUSLINE=false` before launching Claude Code to opt out entirely.
-
-To keep Cognee as your preferred status line, set `COGNEE_STATUSLINE_PIN=true`
-in the `env` object of `~/.claude/settings.json`. With the plugin enabled at user
-scope, startup and every prompt restore the Cognee command if it was replaced.
-The existing session exit watcher also checks on its two-second poll while the
-session is idle. It uses the current installed version, so older sessions cannot
-restore an outdated cache path. The first displaced custom entry is backed up in
-`~/.cognee-plugin/claude-code/statusline-before-pin.json`. Other settings are
-preserved, and a current entry is not rewritten.
-
-Set `COGNEE_STATUSLINE_PIN=false` in that settings `env` object to stop pinning
-live; `COGNEE_STATUSLINE=false` or disabling the plugin also stops repair.
-Restart Claude Code after installing this feature to load the watcher. Pinning
-repairs user settings; it does not override managed or explicit command-line
-settings, and Claude Code can still hide the bar during its own dialogs.
 
 The entry sets `refreshInterval: 2`, so Claude re-runs the (network-free, local-only) renderer every 2 seconds in addition to its event-driven updates. Without it, Claude only refreshes the status line on events (a new message, `/compact`, etc.), which go quiet while the session is idle — so a connection change detected right after launch (e.g. a rejected API key) wouldn't show until your next prompt. Tune it with `COGNEE_STATUSLINE_REFRESH_INTERVAL` (seconds; a value below `1`, e.g. `0`, disables idle polling and reverts to event-only refresh).
 
