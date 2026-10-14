@@ -1860,7 +1860,7 @@ def read_turn_count(session_id: str) -> int:
         return 0
 
 
-IMPROVE_COOLDOWN_DEFAULT_SECONDS = 5400.0
+IMPROVE_COOLDOWN_DEFAULT_SECONDS = 24 * 60 * 60.0
 
 
 def improve_cooldown_seconds() -> float:
