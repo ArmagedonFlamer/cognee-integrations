@@ -712,21 +712,19 @@ the shim, checks that `claude` can actually answer (one tiny real call), or stop
 ## Status line
 
 The default status line uses a purple health square, dataset and mode, with a
-cumulative recalled-entry chip and recent recall history:
+cumulative recalled-entry count and one Claude-style hit-rate bar:
 
 ```text
-■ cognee: manual · cloud · [124 recalled] · 8 hits · 34/46 turns ▁▂▃▄▅▆▇█ ▰▰▰▰▱
+■ cognee: manual  ·  cloud  ·  124 recalled  ·  8 hits  ·  34/46 turns  ▰▰▰▰▱
 ```
 
-`124 recalled` counts entries injected over this session; `8 hits` describes the
-latest lookup, and `34/46 turns` counts prompts with hits out of all prompts.
-The five-cell bar shows that fraction. Up to eight block heights show the latest
-observed turns relative to the largest hit count in that window (a dot means zero).
-History comes from a bounded tail of the existing recall audit logs, filtered to
-this session; missing or rotated history is left absent. A new successful recall
-animates the newest block downward for ten seconds and shimmers the chip. Frames
-come from the recall timestamp and current clock, with no state writes, network
-calls or changes to hook frequency.
+`124 recalled` counts memory entries injected into the model's context over this
+session. It is cumulative, not a unique-memory count: injecting the same entry
+on another turn counts again. `8 hits` describes the latest lookup, and
+`34/46 turns` counts prompts with hits out of all prompts. The single five-cell
+bar shows that fraction. A new successful recall shimmers the recalled count for
+ten seconds, using the recall timestamp and current clock, with no state writes,
+network calls or changes to hook frequency.
 
 The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
 The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xterm
@@ -744,11 +742,12 @@ to classic output.
 |---|---|---|
 | `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
 | `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Current hits, session hit ratio and history; `full` shows per-scope recall/saved diagnostics; `false` hides these (the cumulative chip remains) |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Current hits and session hit ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (the cumulative count remains) |
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
 `cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /
-`COGNEE_CLAUDE_BACKEND` overrides it. Both use the same purple as the brand.
+`COGNEE_CLAUDE_BACKEND` overrides it. The dataset and location are bold, using the same purple as the brand. Sections
+use wider spacing where it fits, then compact spacing before dropping fields.
 
 **Classic presentation and shared health rules.** The examples below describe
 `COGNEE_STATUSLINE_STYLE=classic`: its green dot, cyan/magenta mode labels and
@@ -831,7 +830,6 @@ The status line reads only local state — no network calls on every refresh:
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
 5. LLM key: `llm-state/<session>.json`, then `llm-state.json`
 6. Counts: `recall/<session>.json`, then `last_recall.json`; cumulative entries from `sessions/<host id>/stats.json`
-7. Recent-turn history: at most 128 KiB each from `recall-audit.log` and `recall-audit.log.1`
 
 ## Logs and state
 

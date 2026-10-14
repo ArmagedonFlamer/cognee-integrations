@@ -10,6 +10,11 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.25]
+
+### Changed
+- Simplify the Claude status line to one purple hit-rate bar, remove brackets around recalled, bold dataset/location with roomier spacing, and document that recalled counts cumulative injected entries (including repeats).
+
 ## [1.6.24]
 
 ### Changed
