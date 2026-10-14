@@ -52,14 +52,14 @@ _SAVE_COUNTER = _PLUGIN_DIR / "save_counter.json"
 _SERVER_READY_MARKER = _SHARED_PLUGIN_ROOT / "server-ready.json"
 _SERVER_READY_TTL_SECONDS = 30
 _SYNC_LOCK = _PLUGIN_DIR / "sync.lock"
-# One lock file per session (see improve_session_lock): the idle watcher, the
-# store hook and the SessionEnd sync all bridge sessions, and only one of them
-# may have an improve in flight for a given session at a time.
+# One lock file per session (see improve_session_lock): the store hook and the
+# SessionEnd sync both bridge sessions, and only one of them may have an
+# improve in flight for a given session at a time.
 _IMPROVE_LOCK_DIR = _PLUGIN_DIR / "improve-locks"
 # One state file per session (see record_improve_success): when the last
 # successful improve ran and how many turns the session had at that point.
-# Every improve trigger records it; the idle and auto triggers consult it so
-# the cooldown survives the watcher's exit-after-bridge respawn cycle.
+# Every improve trigger records it; the auto trigger consults it so the
+# cooldown survives across hook processes.
 _IMPROVE_STATE_DIR = _PLUGIN_DIR / "improve-state"
 # Per-agent-session buffer dirs. Each agent session (one host terminal)
 # owns its own file under these dirs, so two concurrent agents never
@@ -1851,11 +1851,11 @@ def read_turn_count(session_id: str) -> int:
         return 0
 
 
-IMPROVE_COOLDOWN_DEFAULT_SECONDS = 5400.0
+IMPROVE_COOLDOWN_DEFAULT_SECONDS = 24 * 60 * 60.0
 
 
 def improve_cooldown_seconds() -> float:
-    """Minimum seconds between idle/auto improves of one session (COGNEE_IMPROVE_COOLDOWN)."""
+    """Minimum seconds between auto improves of one session (COGNEE_IMPROVE_COOLDOWN)."""
     raw = os.environ.get("COGNEE_IMPROVE_COOLDOWN", "").strip()
     try:
         value = float(raw) if raw else IMPROVE_COOLDOWN_DEFAULT_SECONDS
@@ -1882,9 +1882,9 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
 
     Called by the improve functions themselves (``_run_session_improve_locked``
     and ``config.improve_session_local``) on a confirmed submit, never by their
-    callers: the idle watcher reports success even when the per-session lock
-    refused it, so recording there would stamp an improve that never landed.
-    The idle/auto triggers read this back through ``improve_throttle_reason``.
+    callers: a caller cannot tell a run the per-session lock refused from one
+    that landed, so recording there would stamp an improve that never landed.
+    The auto trigger reads this back through ``improve_throttle_reason``.
     Best-effort: a write failure is logged and never fails the improve.
     """
     if not session_id:
@@ -1905,13 +1905,13 @@ def record_improve_success(session_id: str, dataset: str, trigger: str) -> None:
 
 
 def improve_throttle_reason(session_id: str) -> str:
-    """Why an idle/auto improve of ``session_id`` should be skipped right now.
+    """Why an auto improve of ``session_id`` should be skipped right now.
 
     ``"cooldown"`` while the last successful improve is younger than
     ``improve_cooldown_seconds()``; ``"no_new_entries"`` when nothing was stored
     since it; ``""`` when an improve may run. A session that never improved is
-    never throttled. Only the automatic triggers (idle watcher, every-N entries)
-    honour this — the session-end, manual and dataset-switch syncs always run.
+    never throttled. Only the automatic every-N entries trigger honours this —
+    the session-end, manual and dataset-switch syncs always run.
     """
     state = read_improve_state(session_id)
     if not state:
@@ -1944,10 +1944,10 @@ def touch_activity() -> None:
 def improve_session_lock(session_id: str, owner: str):
     """Admit exactly one in-flight improve per session, machine-wide.
 
-    Three paths bridge the same session — the idle watcher, ``store-to-session``,
-    and the SessionEnd sync — and the outer ``sync_lock`` is bypassed in API mode
-    (``nullcontext(True) if api_mode``), so in HTTP/cloud mode nothing stopped two
-    of them submitting the same session concurrently. The server's own per-session
+    Two paths bridge the same session — ``store-to-session`` and the SessionEnd
+    sync — and the outer ``sync_lock`` is bypassed in API mode
+    (``nullcontext(True) if api_mode``), so in HTTP/cloud mode nothing stopped
+    both submitting the same session concurrently. The server's own per-session
     lock then answered the loser with ``{}`` (busy), which drove a 15s retry loop
     for up to ten minutes; concurrent writers also collide on the single-writer
     graph/vector store ("Could not set lock on file"), leaving pipeline runs stuck
@@ -5552,15 +5552,15 @@ def ensure_dataset_via_http(dataset: str) -> None:
 def run_session_improve(dataset: str, session_id: str, *, trigger: str = "final") -> bool:
     """API-mode session->graph sync: drain warmup entries, then improve.
 
-    ``trigger`` names the caller (``idle``, ``auto``, ``final``, ``manual``,
-    ``switch``) and is recorded with the session's improve state on success.
+    ``trigger`` names the caller (``auto``, ``final``, ``manual``, ``switch``)
+    and is recorded with the session's improve state on success.
     A server without session-aware improve is reported as not synced — there
     is no fallback. Returns True when a sync ran successfully.
 
     Serialized per session by ``improve_session_lock``. The guard lives here
-    rather than at the three call sites (idle watcher, store hook, SessionEnd
-    sync) so every path is covered by construction and a future fourth caller
-    cannot reintroduce the double-submit.
+    rather than at the call sites (store hook, SessionEnd sync) so every path
+    is covered by construction and a future caller cannot reintroduce the
+    double-submit.
     """
     with improve_session_lock(session_id, "run_session_improve") as claimed:
         if not claimed:
@@ -5576,7 +5576,7 @@ def _run_session_improve_locked(dataset: str, session_id: str, *, trigger: str =
     base_url = _local_api_url()
     if not _backend_reachable(base_url):
         return False
-    # Detached/idle context: nothing user-visible waits on this, so the drain
+    # Detached context: nothing user-visible waits on this, so the drain
     # gets a far larger budget than the per-prompt hook's default.
     final_budget = _improve_float_env("COGNEE_DRAIN_BUDGET_FINAL", 120.0)
     _, remaining = drain_warmup_entries(dataset, session_id, budget_seconds=final_budget)
@@ -5594,7 +5594,7 @@ def _run_session_improve_locked(dataset: str, session_id: str, *, trigger: str =
             "improve_unsupported",
             {"dataset": dataset, "session": session_id, "status": outcome.get("status")},
         )
-    # Busy = another improve holds the session lock (e.g. an idle-watcher run
+    # Busy = another improve holds the session lock (e.g. an auto-improve run
     # racing the SessionEnd sync). That run's snapshot may predate the latest
     # turns, so wait for the lock to free and re-submit; the retried improve
     # dedups unchanged content server-side, so this never double-processes.
