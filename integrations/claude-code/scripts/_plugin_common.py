@@ -5000,8 +5000,6 @@ def recall_via_http(
     }
     if evidence_mode:
         payload["evidence_mode"] = evidence_mode
-    elif "graph" in scope and only_context:
-        payload["evidence_mode"] = "context"
     # Deterministic code-graph lane (cognee >= 1.5.3). Only meaningful when
     # the scope includes "code": the server rejects code_query without it.
     if code_query:

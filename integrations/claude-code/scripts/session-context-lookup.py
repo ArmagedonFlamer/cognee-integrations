@@ -280,11 +280,9 @@ def _injection_sections(by_source: dict) -> list[dict]:
             items = evidence_items(entry)
             available = [(render_item(item), item) for item in items or []]
             available = [(text, item) for text, item in available if text]
-            if (
-                source == "graph_context"
-                and items
-                and any(item.get("status") not in {"unsupported", "error"} for item in items)
-            ):
+            # Evidence replaces the legacy text only when something can be shown;
+            # a result whose items are all unavailable keeps its plain text.
+            if source == "graph_context" and available:
                 for text, item in available:
                     add(source, "evidence", title, priority, [text], result_id)
                     grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
@@ -635,6 +633,8 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
                 dataset_ids=scope_dataset_ids,
                 code_query=scope_code_query,
                 timeout=scope_timeout,
+                # Only this hook renders evidence items; other graph callers skip the cost.
+                evidence_mode="context" if "graph" in scope_list else None,
             )
         except Exception as caught:
             exc = caught
