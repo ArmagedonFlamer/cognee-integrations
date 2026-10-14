@@ -53,3 +53,14 @@ def test_report_preserves_counter_meanings(stats):
 def test_bad_state_fails_without_breaking_hooks(stats):
     assert not stats.update("../escape", recalls=1)
     assert not stats.update("", recalls=1)
+
+
+def test_savings_accumulate_without_losing_precision(stats):
+    stats.update("one", dedup_chars_saved=7, dedup_measurements=1)
+    stats.update("one", saves=1)
+    stats.update("one", dedup_chars_saved=7, dedup_measurements=1)
+    result = stats.read("one")
+    assert result["dedup_chars_saved"] == 14
+    assert result["dedup_measurements"] == 2
+    assert result["dedup_chars_saved"] // 4 == 3
+    assert stats.read("two").get("dedup_measurements", 0) == 0

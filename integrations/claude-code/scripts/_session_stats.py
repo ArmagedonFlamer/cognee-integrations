@@ -16,6 +16,8 @@ COUNTERS = (
     "entries_injected",
     "entries_deduped",
     "chars_injected",
+    "dedup_chars_saved",
+    "dedup_measurements",
     "saves",
     "improves_landed",
     "digest_items_used",

@@ -929,23 +929,24 @@ def test_value_report_order_bars_gates_and_full_layout(env):
         "What Cognee did for you",
         "Where it helped",
         "Quality",
-        "Needs attention",
         "NO GRADE",
     ]
     positions = [text.index(section) for section in sections]
     assert positions == sorted(positions)
     assert SESSION_ID in text and ITEM_A not in text and SECRET not in text
-    attention = text.split("Needs attention\n")[1].split("\n\n")[0].splitlines()
-    assert len(attention) == 6
-    for line, metric in zip(attention, card["grade"]["metrics"]):
-        assert metric["label"] in line
-        assert pe.fmt_value(metric["value"], metric["unit"]) in line
-    assert text.count("[████████░░] 82") == 5
+    assert "Needs attention" not in text
+    for metric in card["grade"]["metrics"]:
+        assert metric["label"] in text
+        assert pe.fmt_value(metric["value"], metric["unit"]) in text
+    assert text.count("[████████░░] 82") == 4
     ascii_text = pe.render_text(card, ascii=True)
-    assert ascii_text.count("[########--] 82") == 5
+    assert ascii_text.count("[########--] 82") == 4
     markdown = pe.render_text(card, markdown=True)
     fenced = markdown.split("```")[1]
     assert "[████████░░] 82 reliability" in fenced
+    assert "latency" not in fenced
+    assert "Needs attention" not in markdown
+    assert "Needs attention" not in ascii_text
     assert text.rstrip().endswith(pe.grade_headline(card))
     assert "low-n" in text
     assert pe.render_text(card, full=True) == pe.render_full_text(card)

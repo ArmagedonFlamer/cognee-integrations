@@ -33,6 +33,20 @@ project adheres to [Semantic Versioning](https://semver.org/).
   submit runs in the background and a server-side skip on a held lock looks the same
   until COG-6828 (SDK-1071).
 
+### Changed
+- **Status line branding and counters.** The default line shows a purple `■ cognee ■`
+  badge that stays the same whatever the recall outcome; failures keep their red
+  indicator and unknown health shows `?`. The counters are renamed: **reminiscence**
+  (entries injected this session), **ideas** (blocks delivered on the latest prompt)
+  and **imprints** (prompts that received memory / all prompts).
+- **Estimated tokens saved.** The line shows an estimate computed as injected context
+  tokens (four characters per token) × 6.9; it is a heuristic, not measured billing,
+  and shows `n/a` when unmeasured. Recall also records how much context session
+  deduplication kept out (`dedup_chars_saved`).
+- **Cognee searches are named in progress text.** The search, code and architecture
+  skills and the session-start guidance ask the agent to say "Searching Cognee…"
+  before an explicit search, and to credit recalled memory only when it was used.
+
 ### Fixed
 - **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
   on the session alone and kept for an hour, so a chat that was resumed and left again
@@ -95,8 +109,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   only when the server advertises support.
 - Bash results with meaningful output (test results, errors, diffs) are captured;
   empty or trivial output is skipped.
-- Evaluation reports lead with delivery, session evidence, quality bars and explicit
-  failed gates.
+- Evaluation reports lead with delivery, session evidence and quality bars for
+  reliability, usefulness, cost and hygiene, then the measured scorecard (every gate
+  marked PASS/FAIL) and the grade. The default report has no latency bar and no
+  "Needs attention" section; latency stays in the scorecard and the grade, and
+  `--full` keeps the complete layout with recommendations.
 - Cloud per-prompt recall waits up to 45 seconds; local mode keeps 20 seconds, and the
   environment overrides still apply. After three timeout-only prompts in a row, recall
   gets 5 seconds (`COGNEE_RECALL_SLOW_BUDGET`) for ten minutes or until a recall

@@ -758,22 +758,43 @@ the next launch; cloud mode never uses the observer (the remote server owns its 
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/claude-observer.py" status|probe|stop` inspects
 the shim, checks that `claude` can actually answer (one tiny real call), or stops it.
 
+## Visible Cognee searches
+
+The search, code-graph and architecture skills ask Claude to name Cognee in its
+normal user-visible progress text before a search, for example “Searching Cognee
+for the earlier decision…”. Session-start guidance also asks for a natural
+acknowledgement when supplied memory actually informs the response. This uses
+assistant progress text; it does not add a native host chip or change the
+host's private reasoning display. It is model guidance, not a guaranteed host UI
+event. Irrelevant background recall does not require an announcement.
+
 ## Status line
 
-The default status line uses a purple health square, dataset and mode, with a
-cumulative recalled-entry count and one Claude-style hit-rate bar:
+The default status line highlights `cognee` between two purple squares, with bold
+dataset and location and one Claude-style imprint bar. At 80 columns it can read:
 
 ```text
-■ cognee: manual  ·  cloud  ·  124 recalled  ·  8 hits  ·  34/46 turns  ▰▰▰▰▱
+■ cognee ■ manual·cloud·124 reminiscence · 34/46 imprints  ▰▰▰▰▱ · ~2.4kt saved
 ```
 
-`124 recalled` counts memory entries injected into the model's context over this
-session. It is cumulative, not a unique-memory count: injecting the same entry
-on another turn counts again. `8 hits` describes the latest lookup, and
-`34/46 turns` counts prompts with hits out of all prompts. The single five-cell
-bar shows that fraction. A new successful recall shimmers the recalled count for
-ten seconds, using the recall timestamp and current clock, with no state writes,
-network calls or changes to hook frequency.
+- **Reminiscence**: cumulative memory entries injected into this session. This is not
+  a unique-memory count; an entry reinjected after compaction counts again.
+- **Ideas**: memory blocks delivered for the latest prompt, not proof of use.
+- **Imprints**: prompts that received memory out of all prompts. The single bar
+  shows this fraction.
+- **Tokens saved**: estimated as **average tokens per recall × number of recalls × 6.9**.
+  Recall tokens mean memory context injected into Claude, estimated at one token
+  per four characters. The calculation is equivalent to cumulative injected
+  characters ÷ 4 × 6.9, rounded down after multiplication. For example, 100
+  tokens per recall across 10 recalls displays approximately 6,900 tokens saved.
+  Empty recalls contribute zero; variable-size recalls use their actual context
+  lengths. The 6.9 factor is a heuristic, not measured billing or task savings.
+  `saved n/a` means recall/context measurements are unavailable. Existing sessions
+  use their recorded cumulative recall context; no network requests are added.
+
+A new successful recall shimmers the reminiscence count for ten seconds using the
+recall timestamp and current clock. The renderer only reads local counters;
+measurement happens in the existing recall hook without additional requests.
 
 The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
 The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xterm
@@ -782,17 +803,19 @@ colours. Unknown connection health appears as `?`.
 
 When `COLUMNS` is set, the line is fitted to that width; Claude Code does not
 normally export it, and then the full line is shown as in classic mode. When
-fitting, decorations disappear first (at 60 columns or fewer), then counts.
-Credit warnings and update notices are never dropped: the narrowest form keeps
-health plus the notices, and only very narrow lines are clipped. Output is UTF-8
-in both styles; ASCII (`#`, `-`, `[x]`) is used only if stdout cannot be switched
-to UTF-8. A renderer error falls back to classic output.
+fitting, the highlighted brand stays visible: decorations disappear first (at 60
+columns or fewer), token units shorten, and the latest-prompt ideas count is
+omitted before the bar and imprint ratio. Credit warnings and update notices are
+never dropped: the narrowest form keeps health plus the notices, and only very
+narrow lines are clipped. Output is UTF-8 in both styles; ASCII (`#`, `-`, `[x]`)
+is used only if stdout cannot be switched to UTF-8. A renderer error falls back
+to classic output.
 
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
 | `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Current hits and session hit ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (the cumulative count remains) |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Ideas and imprint ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (reminiscence and token savings remain) |
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
 `cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /
@@ -1249,7 +1272,9 @@ report hint within the existing injection budget; `COGNEE_REPORT_HINT=false`
 disables it.
 
 The report leads with **What Cognee did for you**, per-session delivery evidence,
-quality bars, every failed gate and its measured value, then the unchanged grade.
+quality bars for reliability, usefulness, cost and hygiene, the measured scorecard,
+then the unchanged grade. There is no latency bar or "Needs attention" section;
+latency measurements remain in the scorecard.
 `report --full` shows the original complete recommendation layout;
 `report --ascii` uses #/- score bars; `--format markdown` fences the bars.
 Delivery segments classify each recall once (zero hit, fully in transcript,

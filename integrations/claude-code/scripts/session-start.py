@@ -2169,8 +2169,9 @@ def _ensure_statusline_configured() -> None:
 
 
 _MEMORY_PREFERENCE_STEER = (
-    "Cognee supplies distilled project memory; use cognee-search for more context "
-    "and cognee-remember to save durable knowledge."
+    "Use cognee-search for memory and cognee-remember to save it. "
+    "Before searching, say 'Searching Cognee…' in progress text. "
+    "Briefly credit recalled memory only when used."
 )
 
 

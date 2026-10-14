@@ -83,7 +83,7 @@ def test_offline_start_capture_and_end_are_local(suite, run_hook, temp_home):
     assert "transaction safety" not in resumed.stdout
 
     # The digest leads the startup context without replacing it, and honours the opt-out.
-    steer = "use cognee-search for more context"
+    steer = "Use cognee-search for memory and cognee-remember to save it."
     context = json.loads(warm.stdout)["hookSpecificOutput"]["additionalContext"]
     assert context.startswith("Cognee project memory") and steer in context
     opted_out = run_hook(

@@ -10,6 +10,16 @@ endpoints, dependencies) via Cognee's enola-backed pipeline. Requires a Cognee
 server >= 1.5.3. Indexing makes **no LLM or embedding calls** — it is fast,
 deterministic, and token-free.
 
+
+## Visible search progress
+
+Before running a Cognee search, send one short user-visible progress sentence,
+for example: "Searching Cognee for the earlier decision…" or "Checking Cognee's
+code graph for callers of this function…". Name Cognee in the normal working
+text before the tool call; keep this to one update per related search batch.
+Afterwards, describe relevant findings, an empty result, or a failed search
+accurately. Do not claim Cognee improved the answer merely because a search ran.
+
 ## Index a repository
 
 ```bash

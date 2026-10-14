@@ -987,6 +987,22 @@ def _ratio_bar(turns: int, with_hits: int, cells: int = 5) -> str:
     return "▰" * filled + "▱" * (cells - filled)
 
 
+def _tokens_saved(stats: dict, *, compact: bool = False) -> str:
+    if _int(stats, "recalls") <= 0 or "chars_injected" not in stats:
+        return "saved n/a" if compact else "tokens saved n/a"
+    # Average context tokens per recall * recall count * 6.9 simplifies to
+    # total context tokens * 6.9. Estimate tokens at four characters each;
+    # multiply before rounding so small recalls retain their contribution.
+    tokens = max(0, _int(stats, "chars_injected")) * 69 // 40
+    if tokens >= 1_000_000:
+        amount = f"{tokens // 100_000 / 10:g}m"
+    elif tokens >= 1000:
+        amount = f"{tokens // 100 / 10:g}k"
+    else:
+        amount = str(tokens)
+    return f"~{amount}t saved" if compact else f"~{amount} tokens saved"
+
+
 def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     purple = _purple()
     now = time.time() if now is None else now
@@ -995,12 +1011,12 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     marker = _recall_marker(session_id)
     phase = _animation_phase(marker, now)
     health = _status_prefix(session_id)
-    if "●" in health:
-        health = purple + "■" + _RESET + " "
-    # No verdict is not healthy: retain a visible, neutral unknown indicator.
-    health = health or "? "
+    # Branding is constant; failures and unknown health remain separate indicators.
+    health = "" if "●" in health else health or "? "
     dataset = _clean_label(_active_dataset(session_id))
-    brand = f"{purple}cognee: \033[1m{dataset}{_RESET} · {purple}\033[1m{_active_mode()}{_RESET}"
+    color = "93" if os.environ.get("COGNEE_STATUSLINE_THEME", "").lower() == "light" else "141"
+    badge = f"{purple}■\033[48;5;{color}m\033[30m cognee {_RESET}{purple}■{_RESET}"
+    brand = f"{badge} {purple}\033[1m{dataset}{_RESET} · {purple}\033[1m{_active_mode()}{_RESET}"
     stats = (
         _read_json(_SESSIONS_DIR / session_id / "stats.json")
         if _path_safe(session_id) and session_id not in {".", ".."}
@@ -1014,7 +1030,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
             if os.environ.get("COLORTERM", "").lower() in {"truecolor", "24bit"}
             else "\033[38;5;183m"
         )
-    chip = f"{shimmer}{count} recalled{_RESET}"
+    chip = f"{shimmer}{count} reminiscence{_RESET}"
     core = health + brand + " · " + chip
     counts_mode = os.environ.get("COGNEE_STATUSLINE_COUNTS", "").strip().lower()
     counts, decoration = "", ""
@@ -1022,36 +1038,54 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
         if counts_mode == "full":
             counts = _recall_diagnostic_segment(marker, marker["hits"])
         else:
-            counts = f" · {_plural(_hit_count(marker['hits']), 'hit')}"
+            counts = f" · {_plural(_hit_count(marker['hits']), 'idea')}"
             totals = marker.get("session_totals")
             if isinstance(totals, dict):
                 turns = max(0, _int(totals, "turns"))
                 with_hits = max(0, min(turns, _int(totals, "turns_with_hits")))
-                counts += f" · {with_hits}/{turns} turns"
+                counts += f" · {with_hits}/{turns} imprints"
                 decoration = _ratio_bar(turns, with_hits)
             if decoration:
                 decoration = f"  {purple}{decoration}{_RESET}"
     credits, update = _credits_segment(), _update_segment()
-    # Decorations go before data. Long diagnostics remain available in classic
-    # mode; essential identity/health/counts survive ordinary 60-column widths.
-    candidates = [
-        core + counts + decoration + credits + update,
-        core + counts + credits + update,
-        core + credits + update,
+    imprint_counts = re.sub(r" · \d+ ideas?", "", counts)
+    savings = " · " + _tokens_saved(stats)
+    short_savings = " · " + _tokens_saved(stats, compact=True)
+    # No reported width (the normal Claude Code case) shows the full line.
+    wide = columns is None or columns > 60
+    # Keep the badge at every width. Shorten units and omit the latest-prompt
+    # count before dropping the single bar and cumulative imprint ratio.
+    candidates = []
+    if wide:
+        candidates += [
+            core + counts + decoration + savings + credits + update,
+            core + counts + decoration + short_savings + credits + update,
+            core + imprint_counts + decoration + short_savings + credits + update,
+            core.replace(" · ", "·")
+            + imprint_counts
+            + decoration
+            + short_savings
+            + credits
+            + update,
+        ]
+    candidates += [
+        core + counts + savings + credits + update,
+        core + counts + short_savings + credits + update,
+        core + savings + credits + update,
+        core + short_savings + credits + update,
     ]
     # A credit warning or update notice is never dropped to save width: they are
     # the segments a user has to act on.
     if not credits and not update:
+        candidates += [core + savings, core + short_savings, core, core.replace(" · ", "·")]
+    else:
         candidates += [
-            core,
-            health + f"{purple}\033[1m{dataset} · {_active_mode()}{_RESET} " + chip,
+            core.replace(" · ", "·") + credits + update,
+            health + badge + " " + (credits + update).lstrip(" ·"),
+            # Narrowest form with a notice: health plus the notices alone.
+            health + (credits + update).lstrip(" ·"),
         ]
-    else:
-        # Narrowest form with a notice: health plus the notices alone.
-        candidates.append(health + (credits + update).lstrip(" ·"))
-    if columns is not None and columns <= 60:
-        candidates = candidates[1:]
-    else:
+    if wide:
         # Prefer breathing room, then compact spacing before dropping data.
         candidates = [
             variant

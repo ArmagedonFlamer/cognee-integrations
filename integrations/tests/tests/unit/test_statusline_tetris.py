@@ -36,7 +36,10 @@ def sl(suite, statusline, monkeypatch):
             "base_url": "https://memory.example.test",
         },
     )
-    write_json(statusline._SESSIONS_DIR / SESSION / "stats.json", {"entries_injected": 124})
+    write_json(
+        statusline._SESSIONS_DIR / SESSION / "stats.json",
+        {"entries_injected": 124, "chars_injected": 1440, "recalls": 2},
+    )
     write_json(statusline._RECALL_DIR / f"{SESSION}.json", marker())
     return statusline
 
@@ -59,15 +62,30 @@ def plain(sl, line):
 @pytest.mark.parametrize("theme,color", [("dark", 141), ("light", 93)])
 def test_palette_and_meaning(sl, monkeypatch, theme, color):
     monkeypatch.setenv("COGNEE_STATUSLINE_THEME", theme)
+    monkeypatch.setenv("COLUMNS", "120")
     line = sl._tetris_line(SESSION)
     assert f"\033[38;5;{color}m■" in line
-    assert f"\033[38;5;{color}mcognee: \033[1mmanual" in line
+    assert f"\033[48;5;{color}m\033[30m cognee " in line
+    assert "■ cognee ■" in plain(sl, line)
+    assert "cognee+" not in line
+    assert f"\033[38;5;{color}m\033[1mmanual" in line
     assert f"\033[38;5;{color}m\033[1mcloud" in line
     assert "●" not in line
-    assert "manual  ·  cloud  ·  124 recalled" in plain(sl, line)
-    assert "124 recalled" in line and "8 hits" in line and "34/46 turns" in line
+    assert "manual  ·  cloud  ·  124 reminiscence" in plain(sl, line)
+    assert "124 reminiscence" in line and "8 ideas" in line and "34/46 imprints" in line
     assert plain(sl, line).count("▰▰▰▰▱") == 1
     assert not any(c in plain(sl, line) for c in "[]▁▂▃▄▅▆▇█▔▀")
+
+
+@pytest.mark.parametrize("hits", [0, 1, 8])
+def test_brand_is_constant_across_recall_outcomes(sl, monkeypatch, hits):
+    monkeypatch.setenv("COLUMNS", "120")
+    write_json(sl._RECALL_DIR / f"{SESSION}.json", marker(hits={"session": hits}))
+    line = sl._tetris_line(SESSION)
+    assert "■ cognee ■" in plain(sl, line)
+    assert "\033[48;5;141m\033[30m cognee " in line
+    assert "cognee+" not in line
+    assert f"{hits} {'idea' if hits == 1 else 'ideas'}" in line
 
 
 def test_width(sl, monkeypatch):
@@ -75,11 +93,15 @@ def test_width(sl, monkeypatch):
     assert sl._width(at80) <= 80
     assert "▰" in at80
     monkeypatch.setenv("COLUMNS", "120")
-    assert sl._tetris_line(SESSION) == at80
+    wide = sl._tetris_line(SESSION)
+    assert "~2.4k tokens saved" in wide
+    assert "~2.4kt saved" in at80
+    assert "34/46 imprints" in wide and "34/46 imprints" in at80
+    assert sl._width(wide) <= 120
     monkeypatch.setenv("COLUMNS", "60")
     line = sl._tetris_line(SESSION)
     assert sl._width(line) <= 60 and "▰" not in line
-    assert all(text in line for text in ("■", "manual", "cloud", "124 recalled"))
+    assert all(text in line for text in ("cognee", "manual", "cloud", "124 reminiscence"))
     monkeypatch.setenv("COLUMNS", "20")
     assert sl._width(sl._tetris_line(SESSION)) <= 20
 
@@ -88,10 +110,10 @@ def test_stateless_shimmer(sl, monkeypatch):
     write_json(sl._RECALL_DIR / f"{SESSION}.json", marker(ts=NOW))
     initial = sl._tetris_line(SESSION, now=NOW)
     assert initial == sl._tetris_line(SESSION, now=NOW)
-    assert "\033[38;5;183m124 recalled" in initial
-    assert "\033[38;5;141m124 recalled" in sl._tetris_line(SESSION, now=NOW + 2)
+    assert "\033[38;5;183m124 reminiscence" in initial
+    assert "\033[38;5;141m124 reminiscence" in sl._tetris_line(SESSION, now=NOW + 2)
     monkeypatch.setenv("COLORTERM", "truecolor")
-    assert "\033[38;2;208;180;255m124 recalled" in sl._tetris_line(SESSION, now=NOW)
+    assert "\033[38;2;208;180;255m124 reminiscence" in sl._tetris_line(SESSION, now=NOW)
     assert sl._tetris_line(SESSION, now=NOW + 10) == sl._tetris_line(SESSION, now=NOW + 60)
     assert "▰▰▰▰▱" in sl._tetris_line(SESSION, now=NOW + 10)
     assert sl._animation_phase(marker(hits={"session": 0}, ts=NOW), NOW) is None
@@ -109,7 +131,7 @@ def test_counts_modes(sl, monkeypatch, mode):
     monkeypatch.setenv("COGNEE_STATUSLINE_COUNTS", mode)
     monkeypatch.setenv("COLUMNS", "120")
     line = sl._tetris_line(SESSION)
-    assert "124 recalled" in line
+    assert "124 reminiscence" in line
     assert ("recall 8s/0t/0g/0a" in line) == (mode == "full")
     assert "▰" not in line
 
@@ -122,7 +144,7 @@ def test_failure_and_semantic_colors(sl, monkeypatch):
     line = sl._tetris_line(SESSION)
     assert "\033[1;31m✕ (server_error)" in line
     assert "\033[32mcredits: $5.00" in line and "\033[33mupdate" in line
-    assert "■" not in line
+    assert "■ cognee ■" in plain(sl, line)
 
 
 def test_render_exception_falls_back(sl, monkeypatch, capsys):
@@ -174,13 +196,13 @@ def test_cp1252_stdout_still_renders_utf8(sl, suite, temp_home):
     )
     assert result.returncode == 0 and result.stderr == b""
     output = result.stdout.decode("utf-8")
-    assert "124 recalled" in output and "▰" in output
+    assert "124 reminiscence" in output and "▰" in output
 
 
 def test_ascii_fallback_when_stdout_cannot_be_switched(sl, monkeypatch):
     monkeypatch.setattr(sl, "_unicode_output", lambda: False)
     line = sl._tetris_line(SESSION)
-    assert line.isascii() and "124 recalled" in line
+    assert line.isascii() and "124 reminiscence" in line
 
 
 def test_credit_and_update_notices_survive_without_a_reported_width(sl, monkeypatch):
@@ -190,7 +212,7 @@ def test_credit_and_update_notices_survive_without_a_reported_width(sl, monkeypa
     monkeypatch.setattr(sl, "_update_segment", lambda: " · ⬆ update available")
     line = sl._tetris_line(SESSION)
     assert "credits: $0.40" in line and "update available" in line
-    assert "34/46 turns" in line
+    assert "34/46 imprints" in line
     # A real narrow terminal may lose decorations and counts, never the notices.
     monkeypatch.setenv("COLUMNS", "60")
     narrow = sl._tetris_line(SESSION)
@@ -218,7 +240,7 @@ def test_classic_byte_identical_to_1_6_21(sl, suite, temp_home, counts, url):
 @pytest.mark.parametrize("corrupt", ["{partial", "[]", '{"entries_injected":"bad"}'])
 def test_corrupt_stats_keep_bar(sl, corrupt):
     (sl._SESSIONS_DIR / SESSION / "stats.json").write_text(corrupt)
-    assert "0 recalled" in sl._tetris_line(SESSION)
+    assert "0 reminiscence" in sl._tetris_line(SESSION)
 
 
 def test_timestamp_iso_and_no_writes(sl):
@@ -234,7 +256,7 @@ def test_failure_at_60_keeps_identity_and_count(sl, monkeypatch):
     monkeypatch.setattr(sl, "_status_prefix", lambda _: sl._fail_glyph("server_error"))
     line = sl._tetris_line(SESSION)
     assert sl._width(line) <= 60
-    assert all(value in line for value in ("server_error", "manual", "cloud", "124 recalled"))
+    assert all(value in line for value in ("server_error", "manual", "cloud", "124 reminiscence"))
 
 
 def test_home_without_markers(sl, suite, tmp_path):
@@ -244,5 +266,38 @@ def test_home_without_markers(sl, suite, tmp_path):
     )
     result = run_renderer(suite, fresh, sl.__file__, "{}")
     assert result.returncode == 0 and result.stderr == b""
-    assert "0 recalled" in result.stdout.decode()
+    assert "0 reminiscence" in result.stdout.decode()
     assert len(result.stdout.splitlines()) == 1
+
+
+@pytest.mark.parametrize(
+    "chars,label",
+    [
+        (0, "~0 tokens saved"),
+        (400, "~690 tokens saved"),
+        (4000, "~6.9k tokens saved"),
+        (1440, "~2.4k tokens saved"),
+        (4_000_000, "~6.9m tokens saved"),
+        (7, "~12 tokens saved"),
+    ],
+)
+def test_saved_token_estimate(sl, chars, label):
+    assert sl._tokens_saved({"chars_injected": chars, "recalls": 1}) == label
+    assert sl._tokens_saved({"entries_deduped": 100}) == "tokens saved n/a"
+
+
+def test_missing_savings_are_not_fabricated(sl):
+    write_json(sl._SESSIONS_DIR / SESSION / "stats.json", {"entries_injected": 124})
+    line = sl._tetris_line(SESSION)
+    assert "saved n/a" in line and "~0" not in line
+
+
+def test_saved_tokens_apply_multiplier_to_total_once(sl):
+    # 100 context tokens/recall * 10 recalls * 6.9 = 6900.
+    assert sl._tokens_saved({"chars_injected": 4000, "recalls": 10}) == "~6.9k tokens saved"
+    # Changing the distribution (including empty recalls) does not change the sum.
+    assert sl._tokens_saved({"chars_injected": 4000, "recalls": 20}) == "~6.9k tokens saved"
+    assert (
+        sl._tokens_saved({"dedup_chars_saved": 99999, "dedup_measurements": 1})
+        == "tokens saved n/a"
+    )
