@@ -1,6 +1,15 @@
 ---
 name: cognee-handoff
-description: Save a concise project handoff in Cognee so a later session can recover goals, outcomes, decisions, and open work.
+description: >-
+  Write a concise handoff note for the current work (goal, decisions, open items, next
+  steps, branch and PRs) and save it in Cognee so a later session can pick up where the
+  work stopped.
+when_to_use: >-
+  When pausing or wrapping up, e.g. "write a handoff", "I'm done for today, save
+  progress", "leave notes for the next session", "checkpoint before I /clear", "save
+  where we are and what's next". Not for one fact (cognee-remember), the raw session
+  (cognee-sync), a recap of past work (cognee-standup), an in-chat summary, CLAUDE.md
+  notes, or a doc or ticket for another person.
 ---
 
 # Save a handoff

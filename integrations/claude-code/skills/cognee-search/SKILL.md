@@ -1,6 +1,15 @@
 ---
 name: cognee-search
-description: Search Cognee memory. Session memory is automatically searched on every prompt via hooks. Use this skill explicitly for permanent knowledge graph search, filtered category search, or when you need more results than the automatic lookup provides.
+description: >-
+  Search Cognee memory beyond the automatic per-prompt recall: a deeper knowledge-graph
+  search, more results, one category (user, project or agent), cited sources, or a
+  one-off search of another dataset without switching.
+when_to_use: >-
+  E.g. "search Cognee for X", "what do you remember about X?", "dig deeper in memory",
+  "only my saved preferences", "show the sources for that memory", "check <dataset> for
+  X" (once, without switching). Not for making another dataset active
+  (cognee-switch-datasets), a topic's history (cognee-timeline), exact code lookups
+  (cognee-code), or file, code or web search.
 ---
 
 # Cognee Memory Search

@@ -1,6 +1,15 @@
 ---
 name: cognee-code
-description: Index a code repository into Cognee's code graph and query it deterministically (callers, impact analysis, paths, endpoints). Use for structural code questions, "index this repo", and checking what a re-index changed.
+description: >-
+  Index a repository (local path or git URL) into Cognee's code graph and answer exact
+  structural queries with no LLM calls: callers, dependencies, impact of changing a
+  symbol, call paths, endpoints, re-index changes.
+when_to_use: >-
+  E.g. "index this repo", "what calls or uses X?", "what breaks if I change X?", "how
+  does A reach B?", "list all API endpoints", "what did the last re-index change?". Not
+  for overviews, hotspots, diagrams or a whole change's impact (cognee-architecture),
+  conceptual questions naming no symbol (cognee-search), storing one file
+  (cognee-remember), or ordinary edits or debugging.
 ---
 
 # Cognee Code Graph

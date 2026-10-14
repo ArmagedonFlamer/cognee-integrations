@@ -120,8 +120,10 @@ MIN_SCOPE_TIMEOUT = 0.2
 # model to act on only when memory did not answer. The listing comes from the
 # per-plugin cache (``cached_readable_datasets``) and is refreshed only when
 # stale, inside what is left of the recall budget. Every other readable dataset
-# is named: nothing ranks them, so the user picks. COGNEE_RECALL_DATASET_HINT=off
-# disables the hint.
+# is named: nothing ranks them, so the user picks. The model must not switch on
+# its own, but a bare "Do not switch datasets." also beat users who asked for a
+# switch in plain words, so the line names the switch skill for that case.
+# COGNEE_RECALL_DATASET_HINT=off disables the hint.
 
 
 def _dataset_hint_enabled() -> bool:
@@ -138,8 +140,9 @@ def _format_dataset_hint(active: str, others: list) -> str:
         "ask which of these datasets to search, with AskUserQuestion (single select, the dataset "
         'names as options; more than four → the first three plus a "More…" option and page on '
         "the next question; say in the question that they can also decline). Do not switch "
-        "datasets. Then run the graph-only search on their choice and say which dataset the "
-        "answer came from:\n"
+        "datasets on your own; if the user asks to switch, use "
+        "/cognee-memory:cognee-switch-datasets. Then run the graph-only search on their choice "
+        "and say which dataset the answer came from:\n"
         f"  {cross_dataset_search_command()}"
     )
 

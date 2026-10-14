@@ -46,6 +46,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Cognee searches are named in progress text.** The search, code and architecture
   skills and the session-start guidance ask the agent to say "Searching Cognee…"
   before an explicit search, and to credit recalled memory only when it was used.
+- **Skills say when to use them.** Every skill has `when_to_use` trigger phrases and
+  "Not for" redirects between overlapping skills, so a plain request such as switching
+  the Cognee dataset reaches the right skill. The recall dataset hint now forbids only
+  unrequested switches and points a requested one to
+  `/cognee-memory:cognee-switch-datasets`. The longer skill listing raises the
+  always-on cost that `claude plugin details` estimates from about 1,352 to 2,899
+  tokens per session. A `claude plugin eval` routing suite lives under `evals/`.
 
 ### Fixed
 - **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed

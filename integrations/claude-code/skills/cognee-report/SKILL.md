@@ -1,6 +1,15 @@
 ---
 name: cognee-report
-description: "Evaluate Cognee from local telemetry. Use for evaluate Cognee, how is Cognee doing or performing, grade, assess or audit Cognee, is Cognee worth it, did the update help, Cognee stats, and memory quality. Reports delivery evidence, quality bars, a measured scorecard and an evidence-based grade. For coding activity summaries use cognee-standup or cognee-digest instead."
+description: >-
+  Evaluate Cognee itself from local telemetry: recall hit rate, latency, saves, injected
+  context, tokens saved, a scorecard and grade, before vs after an update, and why a
+  memory was or wasn't injected last turn.
+when_to_use: >-
+  E.g. "evaluate Cognee", "how is Cognee doing?", "grade, assess or audit Cognee", "is
+  Cognee worth it?", "did the update help?", "Cognee stats", "is the memory plugin
+  helping?". Not for what the user worked on (cognee-standup, cognee-digest,
+  cognee-timeline), what it captures, its connection or settings (cognee-how-it-works),
+  grading code or essays, or a report document.
 ---
 
 # Cognee performance report
