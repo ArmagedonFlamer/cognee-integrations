@@ -10,97 +10,49 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.6.24]
-
-### Changed
-- SDK-1109: purple single-line recall history, hit-rate bar and timestamp-driven drop/shimmer animation; width-aware and ASCII fallbacks, light theme, and byte-compatible classic opt-out.
-
-## [1.6.23]
-
-### Changed
-- SDK-1107/SDK-1108: retain meaningful Bash evidence and lead evaluation reports with delivery, session evidence, quality bars and explicit failed gates; keep the 45-second cloud recall limit.
-
-## [1.6.22]
-
-### Changed
-- Add compact evidence indexes, batch citation expansion, source/version references and body-free per-item injection receipts. Preserve legacy recall and the 45-second cloud limit.
-
-## [1.6.21]
-
-### Changed
-- Resolve cloud-worker review findings: bounded logs/quarantine, immediate explicit sync retries, short busy retries and non-sticky timeout diagnostics.
-
-## [1.6.20]
-
-### Changed
-- Add isolated repeated memory outcome trials with citation scoring, usage accounting and a 45-second recall deadline.
-
-## [1.6.19]
-
-### Changed
-- Persist capture event IDs and replay frozen requests against server-backed idempotent receipts.
-
-## [1.6.18]
-
-### Changed
-- Allow 15 seconds for connections/me in runtime resolution and explicit search. Preserve passage boundaries and global context order; correct documented trimming defaults. Cloud recall remains 45 seconds.
-
-## [1.6.17]
-
-### Changed
-- Render shared recall headings once, retain file symbols individually within the output budget, and refresh digest hashes for the new entry format.
-
-## [1.6.16]
-
-### Changed
-- Apply review fixes across the preview stack: retain graph facts, preserve file context and its search hint, and cap complete hook output including notices.
-
-## [1.6.15]
-
-### Changed
-- Raise the cloud per-prompt recall budget to 45 seconds; retain the local 20-second default and explicit environment overrides.
-
-## [1.6.14]
-
-### Changed
-- Skip and count low-signal cloud traces; consume structured session summaries only when the server advertises support.
-
-## [1.6.13]
-
-### Changed
-- Inject a bounded, tenant-scoped distilled-memory cache at cloud session start, seed deduplication and refresh from the worker.
-
-## [1.6.12]
-
-### Changed
-- Move cloud hooks to a durable per-user capture and improve worker, with ordered retries, cached health, truthful improve results and a four-second recall budget.
-
-## [1.6.11]
-
-### Changed
-- Record exact per-session memory value counters, show last-session outcomes, and include cumulative recalled items in the status line.
-
-## [1.6.10]
-
-### Changed
-- Ship performance reporting, project handoffs, plugin behavior explanations, and version-gated Enola architecture skills.
-
-## [1.6.9]
-
-### Changed
-- Manage Claude native auto-memory reversibly in cloud mode, respecting explicit user choices and exposing the setting in doctor.
-
-## [1.6.8]
-
-### Changed
-- Deduplicate injected cloud memory per session with an atomic hash ledger; reset on clear/compact and report new versus already present entries.
-
 ## [1.6.7]
 
+### Added
+- **Per-session injection ledger.** Cloud recall remembers which memory entries are
+  already in Claude's context and sends only new ones (`N new, M already in context`).
+  The ledger resets on `/clear` and compaction.
+- **Native auto-memory management in cloud mode.** The plugin turns off Claude's own
+  file memory while cloud memory is active and restores it when cloud mode is off. It
+  never overrides an explicit user choice; `/cognee-doctor` shows the setting.
+- **Distilled-memory digest at cloud session start.** A bounded, tenant-scoped digest is
+  appended to the startup context and seeds the ledger, so the same facts are not sent
+  again on the first prompt. The worker refreshes it.
+- **Durable cloud capture worker.** Hooks write a per-user queue that a background worker
+  drains in order, with retries, cached health and truthful improve results.
+- **Per-session value counters and a last-session recap.** The status line shows the
+  cumulative recalled count.
+- **Skills:** performance report (`cognee-report`), project handoff, plugin behavior
+  explanations and version-gated architecture skills.
+- **Idempotent capture.** Each event gets a stable id. Frozen requests are replayed
+  against server-side receipts, so a retry never stores a duplicate.
+- **Memory outcome trials** (opt-in eval tooling): repeated isolated trials with citation
+  scoring and usage accounting. Live citation metrics are a lower bound; see `OUTCOMES.md`.
+- **Citable evidence.** Recall can include compact evidence indexes with source and
+  version references, batch citation expansion, and body-free per-item injection
+  receipts. Older servers keep the previous recall format.
+- **New status line style.** One line with recall history, a hit-rate bar, light/dark
+  themes and a short animation when memory is recalled. `COGNEE_STATUSLINE_STYLE=classic`
+  restores the previous line byte-for-byte.
+
 ### Changed
-- Budget large recall blocks by whole facts and records, and report only actually injected hits with explicit drop counts.
-- Bound hook injections to 9,000 characters by dropping whole entries in priority order; preserve the header and log kept/dropped counts.
-- Preserve graph entities and facts ahead of passages, retain file-context formatting and search hints, and account for notices and the complete JSON envelope. Clamp tiny configured budgets to 1,024 characters so headers remain visible.
+- Hook injections are capped at 9,000 characters overall. Whole entries are dropped in
+  priority order; the header is always kept and kept/dropped counts are logged. Graph
+  entities and facts are kept ahead of passages. Tiny configured budgets are clamped to
+  1,024 characters.
+- Only hits that were actually injected are reported, with explicit drop counts.
+- Low-signal cloud traces are skipped and counted. Structured session summaries are used
+  only when the server advertises support.
+- Bash results with meaningful output (test results, errors, diffs) are captured;
+  empty or trivial output is skipped.
+- Evaluation reports lead with delivery, session evidence, quality bars and explicit
+  failed gates.
+- Cloud per-prompt recall waits up to 45 seconds; local mode keeps 20 seconds, and the
+  environment overrides still apply.
 
 ### Fixed
 - **Reading a secret file through the shell no longer stores it in memory.** Automatic
@@ -118,6 +70,30 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `.npmrc` `_authToken=` / `_auth=` lines passed through. These names are now
   redacted, as are AWS access key ids anywhere (`AKIA…`, `ASIA…`, … plus 16
   characters), `npm_…` tokens and `pypi-…` upload tokens.
+- A partial guidance change no longer makes the unchanged guidance entries look new on
+  every later prompt.
+- A busy or broken ledger file at `/clear` or compaction no longer blocks session start.
+- Auto-memory settings writes keep symlinks, file permissions, indentation and the
+  trailing newline. Removing the key by hand is respected as a user choice. Switching
+  back to local mode restores the setting, and nothing in `~/.claude` is touched when
+  the plugin never changed it.
+- A failing last-session recap or digest no longer breaks session start.
+- The cloud worker no longer stalls: a permanently rejected event (400/413/422) is
+  dropped and logged, and a waiting or failing item holds back only its own session.
+  Old items expire even while capture is off. The worker exits after 30 idle minutes.
+- The typed-dataset capability check runs only when the write target is a dataset id,
+  as before.
+- Outcome trials match citations by whole evidence tokens and mark both question and
+  answer, so citations are not lost or misattributed.
+- `cognee-report` no longer crashes on Windows consoles that are not UTF-8.
+- The status line no longer hides credit or update notices when Claude Code does not
+  report a terminal width, and Windows terminals get the real glyphs instead of ASCII.
+- Recall keeps the plain memory text when the server returns evidence but none of it
+  can be shown, and only the prompt hook asks for evidence, so file context,
+  pre-compact and recap do not pay for lookups they never read.
+- Codex and Antigravity commands that run the plugin from their own plugin roots are
+  recognised as plugin invocations and not captured. In cloud mode a successful Bash
+  command with no output is skipped again.
 
 ## [1.6.6]
 
