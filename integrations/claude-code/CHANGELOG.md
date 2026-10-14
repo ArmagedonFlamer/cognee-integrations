@@ -108,6 +108,14 @@ project adheres to [Semantic Versioning](https://semver.org/).
   pre-compact, manual sync and dataset switch still run at once. The worker submits one improve at a time
   (explicit ones first) with the 420-second submit timeout, does not resubmit a
   timed-out improve before the cooldown, and gives up after three timeouts.
+- The cloud worker runs each improve in a separate short-lived process, so captures,
+  new-session registration and digest refreshes keep flowing while an improve runs
+  for minutes. Session-end and pre-compact improves are skipped when nothing was
+  stored since the last improve.
+- A base-URL or capture-policy notice is no longer lost when cloud recall is skipped
+  during a known outage.
+- One unreadable or unremovable session directory no longer stops the startup cleanup
+  and log rotation.
 - A delivered capture is never sent back to the queue when queuing its follow-up
   improve fails, so saves are not counted twice.
 - A failing digest refresh is logged, backs off, and is dropped after five attempts,
