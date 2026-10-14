@@ -450,3 +450,29 @@ def test_manual_and_switch_always_run(worker, reason):
     assert worker.process_improves(lambda _: COMPLETED) == 1
     worker.request_improve("ds", "sid", reason)
     assert worker.process_improves(lambda _: COMPLETED) == 1
+
+
+def test_improve_runs_in_its_own_pass_so_the_main_loop_never_blocks(worker):
+    started = []
+    # Nothing due: no child process is started.
+    assert not worker.start_improve_pass(spawn=lambda: started.append(1))
+    worker.request_improve("ds", "sid", "manual")
+    assert worker.start_improve_pass(spawn=lambda: started.append(1)) and started == [1]
+    # While a pass holds the lock, the loop starts no second one and a second
+    # pass process exits without submitting.
+    with worker.file_lock(worker.root() / "improve-pass.lock") as held:
+        assert held
+        assert not worker.start_improve_pass(spawn=lambda: started.append(2))
+        assert worker.improve_pass(lambda _: pytest.fail("pass already running")) == 0
+    assert started == [1]
+    assert worker.improve_pass(lambda _: COMPLETED) == 1
+
+
+def test_main_loop_never_submits_an_improve_itself():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[3] / "claude-code/scripts/_cloud_worker.py"
+    ).read_text()
+    loop = source[source.index("def run() -> None:") :]
+    assert "process_improves(" not in loop and "start_improve_pass()" in loop

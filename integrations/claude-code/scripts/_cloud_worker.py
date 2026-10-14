@@ -500,14 +500,12 @@ def _nothing_new(path: Path, item: dict) -> bool:
     return True
 
 
-def process_improves(improve, *, now: float = None) -> int:
-    """Submit at most one improve per pass, explicit requests first.
+def due_improves(*, now: float = None) -> list:
+    """Improve requests ready to submit now, explicit ones first, then oldest.
 
-    A submit can block for the whole submit timeout; one per pass keeps captures
-    flowing between them and lets a dataset switch go ahead of queued idle work.
+    Only file work: expires old requests and applies the throttles, so the main
+    worker loop can call it every pass without touching the network.
     """
-    from _plugin_common import record_improve_failure, record_improve_success
-
     now = time.time() if now is None else now
     identity = target()
     pending_sessions = {read(p).get("session_id") for p in (root() / "spool").glob("*.json")}
@@ -527,9 +525,23 @@ def process_improves(improve, *, now: float = None) -> int:
         if item["reason"] in SKIP_WHEN_NOTHING_NEW and _nothing_new(path, item):
             continue
         due.append((not explicit, item.get("requested_at", 0), path.name, path, item))
+    return [(path, item) for *_, path, item in sorted(due)]
+
+
+def process_improves(improve, *, now: float = None) -> int:
+    """Submit at most one improve per pass, explicit requests first.
+
+    A submit can block for the whole submit timeout, so the worker runs each pass
+    in a child process (``improve_pass``); one per pass lets a dataset switch go
+    ahead of queued automatic work.
+    """
+    from _plugin_common import record_improve_failure, record_improve_success
+
+    now = time.time() if now is None else now
+    due = due_improves(now=now)
     if not due:
         return 0
-    *_, path, item = min(due)
+    path, item = due[0]
     try:
         outcome = improve_outcome(improve(item))
     except Exception as exc:
@@ -593,6 +605,60 @@ def process_improves(improve, *, now: float = None) -> int:
             retry_after = 5 if reason in {"busy", "running"} else None
         _retry(path, item, now, reason, retry_after=retry_after)
     return 0
+
+
+def submit_improve(item: dict):
+    """POST one session improve; blocks until the server finishes or the timeout."""
+    from _plugin_common import _json_http_request, dataset_id_for, set_session_key, write_fields
+    from _project_memory import route
+
+    set_session_key(item["host_key"])
+    dataset = route(item["dataset"], item["session_id"])["write"]
+    fields = write_fields(dataset_id_for(dataset) or dataset)
+    return _json_http_request(
+        "/api/v1/improve",
+        {**fields, "session_ids": [item["session_id"]], "run_in_background": False},
+        timeout=improve_submit_timeout(),
+    )
+
+
+IMPROVE_PASS_ARG = "--improve-pass"
+
+
+def improve_pass(improve=submit_improve) -> int:
+    """One improve pass in its own process; the lock allows one pass at a time.
+
+    The OS releases the lock when the process exits, so a crashed pass never
+    blocks the next one.
+    """
+    with file_lock(root() / "improve-pass.lock") as acquired:
+        if not acquired:
+            return 0
+        return process_improves(improve)
+
+
+def start_improve_pass(*, spawn=None) -> bool:
+    """From the main loop: start a pass when work is due and none is running.
+
+    Captures, session registration and digest refreshes keep their 2 s cadence
+    while an improve blocks for minutes in the child.
+    """
+    with file_lock(root() / "improve-pass.lock") as idle:
+        if not idle or not due_improves():
+            return False
+    if spawn is None:
+        with (root() / "cloud-worker.log").open("a", encoding="utf-8") as stream:
+            subprocess.Popen(
+                [sys.executable, str(Path(__file__).resolve()), IMPROVE_PASS_ARG],
+                stdin=subprocess.DEVNULL,
+                stdout=stream,
+                stderr=stream,
+                start_new_session=True,
+                close_fds=True,
+            )
+    else:
+        spawn()
+    return True
 
 
 def _bootstrap_sessions() -> None:
@@ -693,7 +759,6 @@ def run() -> None:
         _json_http_request,
         _server_session_fingerprints,
         authed_liveness,
-        dataset_id_for,
         get_session_detail_via_http,
         mark_server_ready,
         prepare_remember_entry_payload,
@@ -701,7 +766,6 @@ def run() -> None:
         require_typed_dataset_id_support,
         set_session_key,
         write_connection_state,
-        write_fields,
     )
 
     state = root()
@@ -752,22 +816,6 @@ def run() -> None:
                 detail and _entry_fingerprint(item["entry"]) in _server_session_fingerprints(detail)
             )
 
-        def improve(item):
-            set_session_key(item["host_key"])
-            from _project_memory import route
-
-            dataset = route(item["dataset"], item["session_id"])["write"]
-            fields = write_fields(dataset_id_for(dataset) or dataset)
-            return _json_http_request(
-                "/api/v1/improve",
-                {
-                    **fields,
-                    "session_ids": [item["session_id"]],
-                    "run_in_background": False,
-                },
-                timeout=improve_submit_timeout(),
-            )
-
         while True:
             if not has_pending_work():
                 # Nothing queued and no session active for IDLE_EXIT_SECONDS.
@@ -800,7 +848,7 @@ def run() -> None:
                     refresh_credits()
                     maintain_sessions()
                 drain(send, verify=verify, prepare=prepare)
-                process_improves(improve)
+                start_improve_pass()
                 from _context_cache import refresh_pending, schedule_active_refreshes
 
                 schedule_active_refreshes()
@@ -811,4 +859,7 @@ def run() -> None:
 
 
 if __name__ == "__main__":
-    run()
+    if IMPROVE_PASS_ARG in sys.argv:
+        improve_pass()
+    else:
+        run()
