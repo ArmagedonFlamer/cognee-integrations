@@ -93,6 +93,7 @@ const DIM_AFTER_MS = 60_000
 // A result older than this is no longer news: it leaves the row.
 const HIDE_AFTER_MS = 300_000
 const RENDERER_TIMEOUT_MS = 5000
+const RENDERER_RETRY_MS = 60_000
 // Phases whose settings hook runs async, so the terminal spinner shows no
 // statusMessage for them; the mod adds its own suffix there. The sync hooks
 // (recall, anchor, session start) already announce themselves in a terminal.
@@ -118,7 +119,10 @@ type Phase = keyof typeof ACTIVE_LABELS
 const OWN_PHASES = ['searching', 'remembering', 'switching']
 
 const SEARCH_TIMEOUT_MS = 60_000
-const REMEMBER_TIMEOUT_MS = 90_000
+// Above the wrapper's own worst case (a 120 s POST, an 8 s wait for the
+// cognify to become queryable, the interpreter's start), so the module never
+// cuts off a write that is still in flight and then calls it not stored.
+const REMEMBER_TIMEOUT_MS = 150_000
 // What the remember tool takes in one call. Each call runs a cognify on the
 // tenant's key (an LLM pass per chunk plus embeddings), and a typed tool
 // whose description invites a whole file lowers the bar for a large one.
@@ -126,6 +130,13 @@ const REMEMBER_TIMEOUT_MS = 90_000
 // skill, which has no cap.
 const REMEMBER_MAX_CHARS = 16_000
 const REMEMBER_MAX_FILE_BYTES = 64_000
+// And per session: each call is a paid cognify, and nothing else bounds how
+// many the model makes. Past either the call is refused with a pointer to the
+// skill, which has no allowance, so a person who wants more is never stopped.
+const REMEMBER_SESSION_CALLS = 5
+const REMEMBER_SESSION_BYTES = 64_000
+let rememberCalls = 0
+let rememberBytes = 0
 const LIST_TIMEOUT_MS = 20_000
 // A switch syncs the session it leaves first; that can take minutes.
 const SWITCH_TIMEOUT_MS = 600_000
@@ -141,6 +152,10 @@ let phasePath = ''
 let bandPath = ''
 let rendererPython: string | null = null
 let rendererFailures = 0
+// When the renderer last failed for the third time: the cutoff below expires
+// after RENDERER_RETRY_MS, so a slow start does not freeze the row for good.
+let rendererFailedAt = 0
+let snapshotInFlight = false
 let snapshot: Snapshot | null = null
 let active: Activity | null = null
 let result: Activity | null = null
@@ -589,7 +604,8 @@ async function startPoll($: any, windowMs: number): Promise<void> {
     if (active?.phase === 'saving' && !markerActive && at - activeSince > STALE_MS) clearActive($)
     // Warming up: the connection is unconfirmed until the SessionStart hook
     // writes its marker; retake the snapshot every few ticks until it is.
-    if (at < warmupUntil && snapshot?.state !== 'ok' && pollTicks % WARMUP_RETRY_TICKS === 0) {
+    const settled = snapshot?.state === 'ok' || snapshot?.state === 'fail'
+    if (at < warmupUntil && !settled && pollTicks % WARMUP_RETRY_TICKS === 0) {
       await refreshSnapshot($)
     }
     if (!active && at > pollUntil && poll) {
@@ -620,11 +636,13 @@ async function runPython($: any, args: string[], init: { stdin?: string; timeout
 }
 
 // One of the plugin's shell wrappers (the same ones the skills run).
-async function runWrapper($: any, script: string, args: string[], timeoutMs: number): Promise<Ran | null> {
+// Null when the wrapper could not run at all; 'timeout' when it ran past its
+// time and was killed, which for a write means the outcome is unknown.
+async function runWrapper($: any, script: string, args: string[], timeoutMs: number): Promise<Ran | 'timeout' | null> {
   try {
     return (await $.process.run(['bash', `${$.plugin.root}/scripts/${script}`, ...args], { timeoutMs })) as Ran
-  } catch {
-    return null
+  } catch (err) {
+    return /time|outlast|kill/i.test(String(err)) ? 'timeout' : null
   }
 }
 
@@ -635,6 +653,7 @@ async function runWrapper($: any, script: string, args: string[], timeoutMs: num
 // shown rather than nothing.
 async function runSearch($: any, query: string, args: string[]): Promise<Ran | null> {
   const ran = await runWrapper($, 'cognee-search.sh', [query, ...args], SEARCH_TIMEOUT_MS)
+  if (ran === 'timeout') return null
   if (!ran || ran.exitCode !== 0 || !ran.stdout.trimStart().startsWith('[')) return ran
   const trimmed = await runPython($, [`${$.plugin.root}/scripts/recall-trim.py`, '--query', query], {
     stdin: ran.stdout,
@@ -648,21 +667,31 @@ async function runSearch($: any, query: string, args: string[]): Promise<Ran | n
 // connection state, credits and update nudge, as the terminal bar shows them.
 // Local process, no network. Runs only on events, never on a timer.
 async function refreshSnapshot($: any): Promise<void> {
-  if (!sessionId || rendererFailures >= 3) return
-  const script = `${$.plugin.root}/scripts/cognee_statusline_render.py`
-  const stdin = JSON.stringify({ session_id: sessionId })
-  const ran = await runPython($, [script, '--json'], { stdin, timeoutMs: RENDERER_TIMEOUT_MS })
-  if (ran && ran.exitCode === 0 && ran.stdout.trim()) {
-    try {
-      snapshot = JSON.parse(ran.stdout) as Snapshot
-      rendererFailures = 0
-      redraw($)
-      return
-    } catch {
-      // fall through
-    }
+  if (!sessionId || snapshotInFlight) return
+  if (rendererFailures >= 3) {
+    if ((await $.clock.now()) - rendererFailedAt < RENDERER_RETRY_MS) return
+    rendererFailures = 0
   }
-  rendererFailures += 1
+  snapshotInFlight = true
+  try {
+    const script = `${$.plugin.root}/scripts/cognee_statusline_render.py`
+    const stdin = JSON.stringify({ session_id: sessionId })
+    const ran = await runPython($, [script, '--json'], { stdin, timeoutMs: RENDERER_TIMEOUT_MS })
+    if (ran && ran.exitCode === 0 && ran.stdout.trim()) {
+      try {
+        snapshot = JSON.parse(ran.stdout) as Snapshot
+        rendererFailures = 0
+        redraw($)
+        return
+      } catch {
+        // fall through
+      }
+    }
+    rendererFailures += 1
+    if (rendererFailures >= 3) rendererFailedAt = await $.clock.now()
+  } finally {
+    snapshotInFlight = false
+  }
 }
 
 // ── the fix dialog ──────────────────────────────────────────────────────────
@@ -685,7 +714,8 @@ async function runDoctor($: any): Promise<void> {
   redraw($)
   try {
     const ran = await runWrapper($, 'cognee-doctor.sh', [], DOCTOR_TIMEOUT_MS)
-    doctorOutput = ran ? (ran.stdout.trim() || ran.stderr.trim() || '(no output)') : 'could not run the doctor: bash not found'
+    if (ran === 'timeout') doctorOutput = `the doctor gave no answer within ${DOCTOR_TIMEOUT_MS / 1000} s`
+    else doctorOutput = ran ? (ran.stdout.trim() || ran.stderr.trim() || '(no output)') : 'could not run the doctor: bash not found'
   } finally {
     doctorRunning = false
     redraw($)
@@ -703,21 +733,13 @@ async function saveEnvValue($: any, name: string, value: string): Promise<void> 
     redraw($)
     return
   }
-  const home = (await $.env.get('HOME')) || (await $.env.get('USERPROFILE')) || ''
-  const path = `${home}/.cognee/.env`
-  let existing = ''
-  try {
-    existing = await $.fs.read(path)
-  } catch {
-    existing = ''
-  }
-  const head = existing && !existing.endsWith('\n') ? `${existing}\n` : existing
-  try {
-    await $.fs.write(path, `${head}${name}="${trimmed}"\n`)
-    fixNote = { text: `${name} saved to ${path}; a new session applies it`, isError: false }
-  } catch {
-    fixNote = { text: `could not write ${path}`, isError: true }
-  }
+  // The plugin's own env-file module does the write: it resolves the file the
+  // hooks read (COGNEE_ENV_FILE, else ~/.cognee/.env) and creates it 0600,
+  // which the fs API cannot. The value travels on stdin, never on argv.
+  const ran = await runPython($, [`${$.plugin.root}/scripts/_env_file.py`, '--append', name], { stdin: trimmed, timeoutMs: RENDERER_TIMEOUT_MS })
+  const written = ran && ran.exitCode === 0 ? ran.stdout.trim() : ''
+  if (written) fixNote = { text: `${name} saved to ${written}; a new session applies it`, isError: false }
+  else fixNote = { text: `could not save ${name}${ran?.stderr.trim() ? `: ${ran.stderr.trim()}` : ''}`, isError: true }
   redraw($)
 }
 
@@ -885,10 +907,14 @@ export const register: Register = (on, options) => {
       await $.tool.register({
         name: 'remember',
         description:
-          'Store something permanently in Cognee memory (the active dataset\'s knowledge graph). ' +
-          'Category "user" for the person\'s preferences, corrections and facts about them; "project" for facts about the codebase, ' +
-          'docs and decisions; "agent" for your own findings. Pass "file" instead of "content" to store a file under its real name ' +
-          '(code then rides the code path). Routine tool calls are captured automatically; do not store those.',
+          'Store what the person asked to remember in Cognee memory (the active dataset\'s knowledge graph): ' +
+          'a preference, a correction, a fact about them, a decision, a note. Use it when they say "remember this", ' +
+          '"save this to memory" or "store this file", not on your own initiative: the session is captured automatically, ' +
+          'routine tool calls included, so do not store those or your working notes. ' +
+          'Category "user" for their preferences and facts about them; "project" for facts about the codebase, docs and decisions; ' +
+          '"agent" only when they ask you to keep a finding of yours. Pass "file" instead of "content" to store a file they named ' +
+          '(code then rides the code path). Each call runs a cognify on their key: a session allows ' +
+          `${REMEMBER_SESSION_CALLS} calls and ${REMEMBER_SESSION_BYTES} bytes in all; past that the cognee-remember skill is the way.`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -976,13 +1002,31 @@ export const register: Register = (on, options) => {
         }
       }
     }
+    const size = file ? (await $.fs.stat(file)).size : content.length
+    if (rememberCalls >= REMEMBER_SESSION_CALLS || rememberBytes + size > REMEMBER_SESSION_BYTES) {
+      return {
+        deny:
+          `this session has used its remember allowance (${rememberCalls} of ${REMEMBER_SESSION_CALLS} calls, ` +
+          `${rememberBytes} of ${REMEMBER_SESSION_BYTES} bytes). Store it with the cognee-remember skill if the person asked for it.`,
+      }
+    }
     const nodeSet = NODE_SETS[asText(e.category)] ?? 'user_context'
+    // Counted before the call: a call that was cut off may have cost as much
+    // as one that answered.
+    rememberCalls += 1
+    rememberBytes += size
     setActive($, activity('remembering'))
     let shown
     try {
       const args = file ? ['--file', file, '--node-set', nodeSet] : [content, '--node-set', nodeSet]
       const ran = await runWrapper($, 'cognee-remember.sh', args, REMEMBER_TIMEOUT_MS)
-      shown = ran ? formatRemember(ran.stdout, ran.exitCode, snapshot?.dataset ?? '') : formatRemember('', 1, '')
+      if (ran === 'timeout') {
+        // The POST may have landed; a resubmit would pay for a second cognify.
+        shown = {
+          text: `Cognee remember gave no answer within ${REMEMBER_TIMEOUT_MS / 1000} s; the write may have landed. Do not resubmit the same text: search for it first.`,
+          isError: true,
+        }
+      } else shown = ran ? formatRemember(ran.stdout, ran.exitCode, snapshot?.dataset ?? '') : formatRemember('', 1, '')
     } finally {
       clearActive($)
     }
@@ -1009,7 +1053,9 @@ export const register: Register = (on, options) => {
     }
     if (ran && 'drop' in ran) return ran
     await readPhase($)
-    await refreshSnapshot($)
+    // Not awaited: a process spawn on the path from prompt to answer only
+    // updates the row, and the poll below refreshes it a second later anyway.
+    void refreshSnapshot($)
     // The turn's tool calls are saved as they happen; watch for them.
     await startPoll($, POLL_WINDOW_MS)
     return ran
@@ -1044,6 +1090,8 @@ export const register: Register = (on, options) => {
       namingDataset = false
       pickerOpen = false
       sessionId = ''
+      rememberCalls = 0
+      rememberBytes = 0
     }
     return next(e)
   })

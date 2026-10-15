@@ -113,6 +113,8 @@ function wire(
         return ok(JSON.stringify((JSON.parse(e.init?.stdin ?? '[]') as { text: string }[]).map(h => ({ ...h, text: `${h.text} [trimmed]` }))))
       case 'cognee-remember.sh':
         return ok(JSON.stringify({ ok: true, dataset_id: 'a1', queryable: true, wait_outcome: 'completed' }))
+      case '_env_file.py':
+        return ok(`${HOME}/.cognee/.env\n`)
       default:
         throw new Error(`unexpected process: ${e.argv.join(' ')}`)
     }
@@ -268,6 +270,45 @@ test('the remember tool refuses a file past its cap without reading it', async (
   expect(shown.text).toContain('500000 bytes')
   expect(shown.text).toContain('cognee-remember skill')
   expect(argvOf(calls, 'cognee-remember.sh')).toBeUndefined()
+})
+
+test('the remember tool has a per-session allowance, with the skill as the way past it', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  // Five calls go through; the sixth is refused before any wrapper runs.
+  for (let i = 0; i < 5; i += 1) {
+    const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: `note ${i}` }))
+    expect(shown.isError).toBe(false)
+  }
+  expect(calls.filter(c => argvOf([c], 'cognee-remember.sh')).length).toBe(5)
+  const sixth = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'one more' }))
+  expect(sixth.isError).toBe(true)
+  expect(sixth.text).toContain('allowance')
+  expect(sixth.text).toContain('cognee-remember skill')
+  expect(calls.filter(c => argvOf([c], 'cognee-remember.sh')).length).toBe(5)
+
+  // A /clear starts a fresh allowance.
+  await $.session.end({ sessionId: SESSION, reason: 'clear' })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const again = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'after clear' }))
+  expect(again.isError).toBe(false)
+})
+
+test('the remember allowance counts bytes too', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  // Four texts of 15,000 characters fit under 64,000 bytes; the fifth would not.
+  for (let i = 0; i < 4; i += 1) {
+    expect(resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x'.repeat(15_000) })).isError).toBe(false)
+  }
+  const fifth = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x'.repeat(15_000) }))
+  expect(fifth.isError).toBe(true)
+  expect(fifth.text).toContain('allowance')
+  expect(calls.filter(c => argvOf([c], 'cognee-remember.sh')).length).toBe(4)
 })
 
 test('a write the server never received is reported as not stored', async ($, on) => {
@@ -599,14 +640,70 @@ test('a key pasted into the fix pane is appended to ~/.cognee/.env', async ($, o
   await band.unmount()
 
   const pane = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', component: 'Pane', requestId: 'cognee-fix', props: FIX_PROPS })
-  writes.length = 0
+  calls.length = 0
   await $.ui.input({ plugin: PLUGIN, key: 'secret', text: '  ck_live_123  ' })
-  const env = writes.find(w => w.path === `${HOME}/.cognee/.env`)
-  expect(env).toBeDefined()
-  // The file did not exist (the wire's fs.read throws), so it is created with the one line.
-  expect(env!.text).toBe('COGNEE_API_KEY="ck_live_123"\n')
-  expect(await pane.find({ type: 'Text', text: /COGNEE_API_KEY saved/ })).toBeDefined()
+  // The plugin's env-file module writes it, where the hooks read (COGNEE_ENV_FILE
+  // honoured) and owner-only; the value goes on stdin, never on the command line.
+  const append = calls.find(c => argvOf([c], '_env_file.py'))
+  expect(append).toBeDefined()
+  expect(argsAfter(append!.argv, '_env_file.py')).toEqual(['--append', 'COGNEE_API_KEY'])
+  expect(append!.stdin).toBe('ck_live_123')
+  expect(writes.find(w => w.path.endsWith('/.env'))).toBeUndefined()
+  expect(await pane.find({ type: 'Text', text: /COGNEE_API_KEY saved to \/home\/tester\/.cognee\/.env/ })).toBeDefined()
   await pane.unmount()
+})
+
+test('a remember call cut off by its timeout is reported as outcome unknown, never as not stored', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    // The engine rejects a call whose child outlasts its time; the kit's bottom refuses it the same way.
+    'cognee-remember.sh': () => ({ deny: 'process timed out after 150000 ms' }),
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'keep this' }))
+  expect(shown.isError).toBe(true)
+  expect(shown.text).toContain('may have landed')
+  expect(shown.text).toContain('Do not resubmit')
+  expect(shown.text).not.toContain('nothing was stored')
+})
+
+test('a definitive failure ends the warm-up: the renderer is not retaken every few seconds', async ($, on) => {
+  const calls: Call[] = []
+  let renders = 0
+  const clock = wire(on, calls, {
+    'cognee_statusline_render.py': () => {
+      renders += 1
+      return ok(JSON.stringify(FAIL_SNAPSHOT))
+    },
+  })
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const after = renders
+  for (let i = 0; i < 30; i += 1) await clock.advance(1000)
+  expect(renders).toBe(after)
+})
+
+test('three renderer failures pause the snapshot for a minute, not for the session', async ($, on) => {
+  const calls: Call[] = []
+  let renders = 0
+  const clock = wire(on, calls, {
+    'cognee_statusline_render.py': () => {
+      renders += 1
+      return { value: { exitCode: 1, stdout: '', stderr: 'boom', isStdoutTruncated: false, isStderrTruncated: false } }
+    },
+  })
+  on('prompt.submit', ($, e) => ({ text: e.text }))
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  // Warm-up retries land the third failure within the first 15 s; then nothing until the minute is up.
+  for (let i = 0; i < 20; i += 1) await clock.advance(1000)
+  const paused = renders
+  expect(paused).toBeGreaterThanOrEqual(3)
+  for (let i = 0; i < 20; i += 1) await clock.advance(1000)
+  expect(renders).toBe(paused)
+  await clock.advance(61_000)
+  await $.prompt.submit({ text: 'another prompt after the pause' })
+  await clock.advance(1100)
+  expect(renders).toBeGreaterThan(paused)
 })
 
 test('the row keeps checking after start until the connection marker lands', async ($, on) => {

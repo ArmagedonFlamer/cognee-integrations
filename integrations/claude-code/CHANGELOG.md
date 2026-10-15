@@ -253,6 +253,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   that are not cloud tenants. The switch also takes the principal the dataset
   lister resolved when the launch record carries none. Same fixes in the Codex
   and Antigravity copies.
+- **A remember call cut off by the mod was reported as not stored.** The
+  tool's 90 s limit was shorter than the wrapper's own worst case (a 120 s
+  POST plus an 8 s wait), so a slow write was killed and the model told
+  "nothing was stored, retry" while the POST may already have landed, and a
+  retry paid for a second cognify. The limit is now 150 s, above the
+  wrapper's, and a call that still runs past it is reported as "the write
+  may have landed, do not resubmit".
+- **The renderer no longer runs on the path from prompt to answer.** Each
+  prompt awaited a Python process (up to 5 s) that only refreshed the status
+  row; it is now started without waiting, with one in flight at a time. The
+  warm-up stops retaking the snapshot on a definitive failure as it does on
+  success, and three renderer failures pause the row for a minute instead of
+  the whole session.
+- **The fix dialog writes where the hooks read.** A key pasted into the dialog
+  went to `~/.cognee/.env` even when `COGNEE_ENV_FILE` named another file, so
+  the row stayed red. The write now goes through the plugin's own env-file
+  module, which resolves that variable and creates the file owner-only; the
+  value travels on stdin.
 - **The status row told the truth only about success.** Four phases could end
   looking done when they were not: the recall hook's early returns for a known
   outage, a failed liveness probe or a missing session id never ended the
@@ -276,7 +294,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   on the tenant's key, and a typed tool whose description invites a whole file
   lowered the bar for a large one. `content` past 16,000 characters or a `file`
   past 64,000 bytes is refused (the file sized, never read) with a pointer to
-  the `cognee-remember` skill, which keeps no cap.
+  the `cognee-remember` skill, which keeps no cap. A session also has an
+  allowance, 5 calls and 64,000 bytes in all, reset by `/clear`, and the tool's
+  description now tells Claude to store only what the person asked to
+  remember, never its own working notes.
 - **The "Cognee Memory Connected" message said `Mode: cloud` for local sessions.**
   Its mode word was "is a URL set", checked after the bootstrap had filled the
   localhost default into the configured URL, so every local session, a
