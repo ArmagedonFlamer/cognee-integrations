@@ -194,6 +194,70 @@ def test_list_writable_without_user_id_is_unfiltered(pc, monkeypatch):
     assert [r["name"] for r in out["datasets"]] == ["x"] and out["filtered"] is False
 
 
+def test_cloud_writable_listing_routes_identity_and_permissions_to_platform(
+    suite, pc, monkeypatch
+):
+    if suite.name != "codex":
+        pytest.skip("PR #524 changes the Codex plugin only")
+    monkeypatch.setenv(
+        "COGNEE_BASE_URL", "https://tenant-example.dev.aws.cognee.ai"
+    )
+    calls = []
+    identity_calls = []
+
+    def response(path, **kwargs):
+        calls.append((path, kwargs.get("base_url")))
+        if path == "/api/v1/datasets/":
+            return [{"name": "prod", "id": "dataset-1", "ownerId": "me"}]
+        if path.startswith("/api/v1/permissions/principals/me/datasets"):
+            return [{"name": "prod", "id": "dataset-1", "ownerId": "me"}]
+        raise AssertionError(path)
+
+    monkeypatch.setattr(pc, "_json_http_request", response)
+    monkeypatch.setattr(
+        pc,
+        "current_user_id_via_http",
+        lambda api_key, **kwargs: identity_calls.append((api_key, kwargs)) or "me",
+    )
+
+    out = pc.list_writable_datasets("")
+
+    assert [row["name"] for row in out["datasets"]] == ["prod"]
+    assert identity_calls and pc._control_plane_api_url() == "https://api.dev.aws.cognee.ai"
+    assert calls == [
+        ("/api/v1/datasets/", None),
+        (
+            "/api/v1/permissions/principals/me/datasets?permission_name=write",
+            None,
+        ),
+    ]
+
+
+def test_cloud_current_user_id_uses_api_key_owner_route(suite, pc, monkeypatch):
+    if suite.name != "codex":
+        pytest.skip("PR #524 changes the Codex plugin only")
+    calls = []
+
+    def request(path, **kwargs):
+        calls.append((path, kwargs))
+        return 200, "user-1"
+
+    monkeypatch.setattr(pc, "_control_plane_request", request)
+
+    assert pc.current_user_id_via_http("secret", timeout=7) == "user-1"
+    assert calls == [
+        (
+            "/api/v1/api-keys/my-user-id",
+            {
+                "api_key": "secret",
+                "method": "GET",
+                "timeout": 7,
+                "base_url": pc._control_plane_api_url(),
+            },
+        )
+    ]
+
+
 # ── launch discovery without a hook payload ────────────────────────────────
 
 

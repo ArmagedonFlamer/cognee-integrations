@@ -42,6 +42,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the command text.
 
 ### Fixed
+- **Cloud dataset switching uses the correct API surfaces.** Cognee Cloud serves
+  API-key identity on the platform control plane and dataset permissions on the
+  tenant data plane. The switch workflow now resolves the principal through
+  `/api/v1/api-keys/my-user-id` instead of asking the tenant for `/users/me`, so
+  writable datasets can be verified and selected without a false `404`.
 - **Codex sessions now show Cognee status and memory-hit counts by default.** Some hosts
   consume hook `systemMessage` output as hidden developer context, and transcript paths
   do not reliably identify those hosts. The prompt hook now asks Codex to repeat only
