@@ -29,6 +29,8 @@ from _plugin_common import (
     http_api_ready,
     is_observer_child,
     load_resolved,
+    phase_begin,
+    phase_end,
     resolve_session_key_from_payload,
     resolved_http_endpoint_auth,
     run_session_improve_detailed,
@@ -313,6 +315,7 @@ async def _sync(
         _load_resolved()
     )
     targets = _sync_targets(session_id, dataset, session_key, include_touched)
+    phase_begin("syncing", session_key=session_key)
     hook_log(
         "sync_start",
         {
@@ -324,6 +327,7 @@ async def _sync(
         },
     )
 
+    ok = False
     try:
         if stop_watcher:
             _stop_idle_watcher()
@@ -331,6 +335,7 @@ async def _sync(
 
         if not targets:
             hook_log("sync_no_target_sessions", {"dataset": dataset})
+            ok = True  # nothing to sync is not a failed sync
             return
 
         if not http_api_ready():
@@ -383,7 +388,11 @@ async def _sync(
             # drain+improve, not silently report success. A busy answer is not
             # in this list on purpose.
             raise RuntimeError(f"final session sync incomplete for: {', '.join(incomplete)}")
+        ok = not incomplete
     finally:
+        # ``ok`` is still False after a raise above: the row then says the
+        # sync failed instead of ticking it.
+        phase_end("syncing", session_key=session_key, ok=ok)
         if unregister_on_finish:
             if not (was_registered or has_api_key):
                 hook_log(

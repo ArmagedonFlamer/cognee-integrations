@@ -41,12 +41,21 @@ def read(session_key: str) -> dict:
         return {}
 
 
+# How long an update waits for the session's stats lock. Contention is a burst
+# of parallel store hooks; each holds it for milliseconds.
+_LOCK_TIMEOUT_SECONDS = 5.0
+
+
 def update(session_key: str, *, metadata: dict = None, **increments) -> bool:
     if not session_key:
         return False
     try:
         directory = session_dir(session_key)
-        with file_lock(directory / "stats.lock", timeout=0.2) as acquired:
+        # Store hooks run in parallel, one per tool call, and each holds the lock
+        # for one read-modify-write with an fsync. On a slow disk (Windows CI)
+        # that is tens of milliseconds, so a 0.2 s wait gave up under a burst
+        # and the save was lost from the count.
+        with file_lock(directory / "stats.lock", timeout=_LOCK_TIMEOUT_SECONDS) as acquired:
             if not acquired:
                 return False
             data = read(session_key)

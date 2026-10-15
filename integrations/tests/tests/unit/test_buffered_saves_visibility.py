@@ -93,6 +93,11 @@ def store(suite, hook_module, monkeypatch):
         "bump_save_counter",
         lambda sid, kind, buffered=False: bumps.append((kind, buffered)),
     )
+    if hasattr(module, "phase_end"):
+        monkeypatch.setattr(module, "phase_begin", lambda *a, **k: None)
+        monkeypatch.setattr(
+            module, "phase_end", lambda phase, **kw: bumps.append(("phase", phase, kw))
+        )
     return module, bumps
 
 
@@ -108,13 +113,23 @@ def _raising(code: int):
     return _boom
 
 
+def _phases(bumps: list) -> list:
+    return [b for b in bumps if b[0] == "phase"]
+
+
+def _kinds(bumps: list) -> list:
+    return [b for b in bumps if b[0] != "phase"]
+
+
 @pytest.mark.parametrize("run, payload, kind", _PATHS)
 def test_stored_write_bumps_the_plain_kind(store, monkeypatch, run, payload, kind):
     module, bumps = store
     monkeypatch.setattr(module, "server_usable", lambda url="": True)
     monkeypatch.setattr(module, "remember_entry_via_http", lambda *a, **k: {"entry_id": "e"})
     asyncio.run(getattr(module, run)(payload))
-    assert bumps == [(kind, False)]
+    assert _kinds(bumps) == [(kind, False)]
+    if hasattr(module, "phase_end"):
+        assert _phases(bumps) == [("phase", "saving", {"count": 1, "ok": True})]
 
 
 @pytest.mark.parametrize("run, payload, kind", _PATHS)
@@ -131,7 +146,11 @@ def test_retryable_failure_bumps_the_buffered_kind(store, monkeypatch, run, payl
     monkeypatch.setattr(module, "server_usable", lambda url="": True)
     monkeypatch.setattr(module, "remember_entry_via_http", _raising(503))
     asyncio.run(getattr(module, run)(payload))
-    assert bumps == [(kind, True)]
+    assert _kinds(bumps) == [(kind, True)]
+    if hasattr(module, "phase_end"):
+        # The row must not tick a write that never landed: queued, since it
+        # was spooled for replay.
+        assert _phases(bumps) == [("phase", "saving", {"count": 0, "ok": False, "buffered": True})]
 
 
 @pytest.mark.parametrize("run, payload, kind", _PATHS)
@@ -141,7 +160,10 @@ def test_dropped_4xx_bumps_nothing(store, monkeypatch, run, payload, kind):
     monkeypatch.setattr(module, "server_usable", lambda url="": True)
     monkeypatch.setattr(module, "remember_entry_via_http", _raising(422))
     asyncio.run(getattr(module, run)(payload))
-    assert bumps == []
+    assert _kinds(bumps) == []
+    if hasattr(module, "phase_end"):
+        # Dropped for good (a 4xx is rejected the same way next time): failed.
+        assert _phases(bumps) == [("phase", "saving", {"count": 0, "ok": False, "buffered": False})]
 
 
 # ── the buffer: stamp, strip, backlog ───────────────────────────────────────

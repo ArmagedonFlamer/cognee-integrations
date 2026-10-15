@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -42,6 +43,7 @@ from _plugin_common import (
     PRESENCE_ABSENT,
     PRESENCE_READY,
     _https_context,
+    _is_loopback_host,
     _reexec_into_venv,
     apply_cognee_env,
     clear_server_pidfile,
@@ -50,6 +52,8 @@ from _plugin_common import (
     hook_log,
     is_observer_child,
     managed_endpoint_enabled,
+    phase_begin,
+    phase_end,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
@@ -1849,6 +1853,7 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                 hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
         if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
             hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
+            phase_end("setting_up", session_key=session_key, ok=False)
             return
 
     # 2. Register this agent/session. Runs for every agent — NOT gated by the
@@ -1866,8 +1871,10 @@ async def _run_bootstrap(bootstrap: dict) -> None:
             boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
         )
         hook_log("bootstrap_complete", {"session_id": session_id})
+        phase_end("setting_up", session_key=session_key)
     except Exception as exc:
         hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+        phase_end("setting_up", session_key=session_key, ok=False)
 
 
 def _running_server_observer(target_url: str) -> tuple[bool, bool | None]:
@@ -2058,6 +2065,24 @@ def _with_observer_note(output: dict, observer: dict) -> dict:
     return result
 
 
+def _mode_word(config: dict) -> str:
+    """The mode the user is told about, decided the way the status line decides
+    it: a forced backend first, then whether the target host is loopback.
+
+    By the time the message is built, ``config["base_url"]`` holds the target
+    the bootstrap filled in, which for a local session is the localhost default,
+    so "is a URL set" cannot tell local from cloud (it said cloud for every
+    local session, forced-local included).
+    """
+    forced = str(config.get("_forced_backend") or "")
+    if forced == "local":
+        return "local"
+    url = str(config.get("base_url") or "").strip()
+    if not url:
+        return "cloud" if forced == "cloud" else "local"
+    return "local" if _is_loopback_host(urllib.parse.urlparse(url).hostname or "") else "cloud"
+
+
 def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: bool) -> dict:
     if ready:
         message = (
@@ -2086,14 +2111,39 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
     }
 
 
-def _ensure_statusline_configured() -> None:
+def _band_draws_this_session(session_id: str) -> bool:
+    """Whether the hooks module draws this session's status row above the prompt.
+
+    The module writes ``band/<session>.json`` at its own session start, which
+    runs before this hook, so the marker is already there when the module
+    loaded for this session. It is absent where the module cannot load (a
+    Claude Code older than the mods API, ``--safe-mode``, an organisation that
+    allows only its own mods) and where the band is switched off in ``/config``.
+    """
+    if not session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
+        return False
+    marker = Path.home() / ".cognee-plugin" / "claude-code" / "band" / f"{session_id}.json"
+    try:
+        return marker.is_file()
+    except OSError:
+        return False
+
+
+def _ensure_statusline_configured(session_id: str = "") -> None:
     """Write the statusLine entry to ~/.claude/settings.json when safe.
 
-    Claude Code hot-reloads settings.json, so the status line becomes active on
-    the next status refresh without requiring a restart.
+    One row, whichever can be drawn: where the hooks module draws the row above
+    the prompt for this session, the settings file is left alone (the renderer
+    prints nothing for such a session anyway); where it does not, the line below
+    the prompt is installed, or refreshed when the plugin moved. Claude Code
+    hot-reloads settings.json, so the line becomes active on the next status
+    refresh without a restart.
     """
     if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
         hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
+        return
+    if _band_draws_this_session(session_id):
+        hook_log("statusline_setup_skipped", {"reason": "band_draws_row"})
         return
 
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
@@ -2248,9 +2298,9 @@ def _apply_update_nudge(output: dict) -> dict:
 
 
 async def _start(payload: dict | None = None) -> dict:
-    _ensure_statusline_configured()
     config = load_config()
     payload = payload or {}
+    _ensure_statusline_configured(str(payload.get("session_id") or ""))
     cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
     # The service URL is the sole router (api_key is optional auth, with a
     # default-user fallback in registration). COGNEE_AGENT_MODE is NOT decided
@@ -2418,6 +2468,7 @@ async def _start(payload: dict | None = None) -> dict:
     # are never booted. will_boot means "enter the local bootstrap path" — the
     # actual install/boot license is enforced inside _ensure_local_server_running,
     # so a busy server still gets a worker that waits for it instead of a boot.
+    phase_begin("connecting", session_key=session_key)
     presence_verdict, presence_evidence = "", {}
     if target_url and _is_local_url(target_url):
         presence_verdict, presence_evidence = server_presence(target_url, confirm_absent=False)
@@ -2456,6 +2507,7 @@ async def _start(payload: dict | None = None) -> dict:
         # The status line and the recall gate read the shared marker, not this
         # output: without this they would keep the previous session's verdict.
         write_connection_state("unreachable", target_url)
+        phase_end("connecting", session_key=session_key, ok=False)
         offline_message = (
             "## ⚠ Cognee Memory OFFLINE\n"
             f"The managed Cognee endpoint {target_url} is unreachable. "
@@ -2480,6 +2532,9 @@ async def _start(payload: dict | None = None) -> dict:
             },
         }
     if will_boot and _LAZY_BOOTSTRAP:
+        # The detached worker ends this phase once the server answers and the
+        # session is registered; the status surfaces show it meanwhile.
+        phase_begin("setting_up", "starting memory server", session_key=session_key)
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
         user_id = os.environ.get("COGNEE_USER_ID", "")
     else:
@@ -2496,8 +2551,10 @@ async def _start(payload: dict | None = None) -> dict:
         if not ok:
             if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url) and not managed_locked:
                 # Inline attempt failed; retry the heavy path out of band.
+                phase_begin("setting_up", "starting memory server", session_key=session_key)
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:
+                phase_end("connecting", session_key=session_key, ok=False)
                 return {}
 
     # Remove legacy resolved cache files. Runtime state now comes from HTTP endpoints.
@@ -2531,7 +2588,7 @@ async def _start(payload: dict | None = None) -> dict:
         service_url=str(config.get("base_url", "") or ""),
     )
 
-    mode = "cloud" if config.get("base_url") else "local"
+    mode = _mode_word(config)
     print(
         f"cognee-plugin: session ready (mode={mode}, "
         f"session={session_id}, dataset={dataset}, user={user_id[:8]}...)",
@@ -2539,6 +2596,7 @@ async def _start(payload: dict | None = None) -> dict:
     )
 
     ready = server_live or server_ready_hint(str(config.get("base_url", "") or ""))
+    phase_end("connecting", session_key=session_key, ok=bool(ready))
     return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
 
 

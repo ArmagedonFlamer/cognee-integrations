@@ -867,8 +867,32 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
     """
     items = list_readable_datasets(timeout=timeout)
     if not user_id:
-        me = _json_http_request("/api/v1/users/me", method="GET", timeout=timeout)
-        user_id = str(me.get("id") or "") if isinstance(me, dict) else ""
+        # The key's own user, from the data plane: the connection lookup serves
+        # it with or without a session name (the key identifies the user), on
+        # cloud tenants and OSS servers alike; session start reads it there too.
+        try:
+            conn = _json_http_request(
+                "/api/v1/agents/connections/me", method="GET", timeout=timeout
+            )
+            agent = conn.get("agent") if isinstance(conn, dict) else None
+            user_id = str(agent.get("user_id") or "").strip() if isinstance(agent, dict) else ""
+        except urllib.error.HTTPError as exc:
+            hook_log(
+                "runtime_state_connection_lookup_failed",
+                {"status": exc.code, "where": "list_datasets"},
+            )
+    if not user_id and not _platform_host_for(_local_api_url()):
+        # /users/me is the identity route of an OSS server, where no connection
+        # may exist yet. A cloud tenant host has none: that route lives on the
+        # platform API (api.<env>), where it answers account settings without
+        # an id, so a tenant is not asked. Without an id the write check is
+        # skipped and every readable dataset is offered, ``writable`` unknown,
+        # rather than no listing at all.
+        try:
+            me = _json_http_request("/api/v1/users/me", method="GET", timeout=timeout)
+            user_id = str(me.get("id") or "") if isinstance(me, dict) else ""
+        except urllib.error.HTTPError as exc:
+            hook_log("users_me_lookup_failed", {"status": exc.code, "where": "list_datasets"})
     writable_ids = None
     if user_id:
         try:
@@ -905,6 +929,7 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
             writable = True if owner and (owner == user_id or via_role) else None
         rows.append({**item, "writable": writable})
     return {
+        "user_id": user_id,
         "datasets": [row for row in rows if row["writable"] is not False],
         "readonly": [row["name"] for row in rows if row["writable"] is False],
         "readonly_ids": [row["id"] for row in rows if row["writable"] is False],
@@ -1199,9 +1224,26 @@ def load_resolved(session_key: str = "", *, identity: bool = True) -> dict:
     except Exception as exc:
         hook_log("runtime_state_connection_lookup_failed", {"error": str(exc)[:200]})
 
-    # Fallback identity probe — only when the connection lookup yielded none
-    # (e.g. before registration on a fresh launch).
-    if not resolved.get("user_id"):
+    # The connection named above may not exist yet (a fresh launch, a tenant
+    # the session was not registered on). The key's own user is the same on
+    # every connection of the key, so any connection of it answers.
+    if conn_uuid and not resolved.get("user_id"):
+        try:
+            conn = _json_http_request("/api/v1/agents/connections/me", method="GET", timeout=10.0)
+            agent = conn.get("agent") if isinstance(conn, dict) else None
+            user_id = str(agent.get("user_id") or "").strip() if isinstance(agent, dict) else ""
+            if user_id:
+                resolved["user_id"] = user_id
+        except Exception as exc:
+            hook_log(
+                "runtime_state_connection_lookup_failed",
+                {"error": str(exc)[:200], "where": "any_connection"},
+            )
+
+    # Fallback identity probe — only when no connection answered, and never on
+    # a cloud tenant host, which has no /users/me (the platform API's copy
+    # answers account settings without an id).
+    if not resolved.get("user_id") and not _platform_host_for(service_url):
         try:
             me = _json_http_request("/api/v1/users/me", method="GET", timeout=10.0)
             if isinstance(me, dict):
@@ -1610,13 +1652,27 @@ def _bump_stored_seq(session_key: str) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-        try:
-            os.write(fd, b".")
-        finally:
-            os.close(fd)
+        if os.name == "nt":
+            # Windows emulates O_APPEND as a seek then a write, two steps that
+            # interleave across handles, so parallel hooks lost bytes there.
+            from _file_lock import file_lock
+
+            with file_lock(path.with_suffix(".lock"), timeout=5.0) as acquired:
+                if not acquired:
+                    raise OSError("stored.log lock busy")
+                _append_one_byte(path)
+        else:
+            _append_one_byte(path)
     except OSError as exc:
         hook_log("stored_seq_write_failed", {"error": str(exc)[:200]})
+
+
+def _append_one_byte(path) -> None:
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.write(fd, b".")
+    finally:
+        os.close(fd)
 
 
 def read_stored_seq(session_key: str) -> int:
@@ -2051,6 +2107,153 @@ def touch_activity() -> None:
         _ACTIVITY_FILE.write_text(str(datetime.now(timezone.utc).timestamp()), encoding="utf-8")
     except Exception as exc:
         hook_log("activity_touch_failed", {"path": str(_ACTIVITY_FILE), "error": str(exc)[:200]})
+
+
+# ── Live activity marker ─────────────────────────────────────────────────────
+# What memory is doing right now, and the last thing it finished, for the status
+# surfaces (the terminal status line and the Claude Code mod's desktop band)
+# to show without any network call. One file per host session under
+# ``phase/<session_key>.json``; machine-wide work (the idle watcher, the detached
+# final sync) writes under its own session key too, so every bar attributes what
+# it shows.
+#
+# Shape::
+#
+#     {"session_key": "...",
+#      "active": {"phase": "recalling", "detail": "", "started_at": t, "updated_at": t},
+#      "results": {"recalled": {"count": 3, "at": t}, "saved": {"count": 5, "at": t}},
+#      "saved_this_turn": 5}
+#
+# ``active`` is null between operations. ``results`` keeps the latest outcome of
+# each kind; the renderer shows the most recent one. The saved count accumulates
+# per turn (every trace entry and the QA pair) and resets when the next recall
+# begins, so "saved 5 memories" means this turn.
+#
+# Phases overlap (a tool-call save lands while the next prompt's recall runs):
+# a begin never displaces a fresher, higher-priority phase, and an end only
+# clears the phase it began. Best-effort throughout — the marker must never
+# break a hook.
+_PHASE_DIR = _PLUGIN_DIR / "phase"
+_PHASE_STALE_SECONDS = 90.0
+# Lower number wins the single ``active`` slot while both are fresh.
+_PHASE_PRIORITY = {
+    "setting_up": 0,
+    "connecting": 1,
+    "recalling": 2,
+    "anchoring": 3,
+    "syncing": 4,
+    "saving": 5,
+    "indexing": 6,
+    "consolidating": 7,
+}
+_PHASE_RESULT_KIND = {
+    "setting_up": "ready",
+    "connecting": "ready",
+    "recalling": "recalled",
+    "anchoring": "anchored",
+    "syncing": "synced",
+    "saving": "saved",
+    "indexing": "indexed",
+    "consolidating": "consolidated",
+}
+
+
+def _phase_key(session_key: Optional[str]) -> str:
+    key = str(session_key or get_session_key() or "").strip()
+    if not key:
+        key = "_machine"
+    # The key comes from a hook payload; never build a path from it unchecked.
+    return "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in key)[:200]
+
+
+def _phase_path(session_key: Optional[str]) -> Path:
+    return _PHASE_DIR / f"{_phase_key(session_key)}.json"
+
+
+def _read_phase(path: Path) -> dict:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def phase_begin(phase: str, detail: str = "", session_key: Optional[str] = None) -> None:
+    """Record that ``phase`` (recalling, saving, consolidating, ...) is running."""
+    try:
+        path = _phase_path(session_key)
+        state = _read_phase(path)
+        now = time.time()
+        current = state.get("active") if isinstance(state.get("active"), dict) else None
+        if current:
+            fresh = now - float(current.get("updated_at") or 0) < _PHASE_STALE_SECONDS
+            keeps_slot = _PHASE_PRIORITY.get(str(current.get("phase")), 99) < _PHASE_PRIORITY.get(
+                phase, 99
+            )
+            if fresh and keeps_slot and current.get("phase") != phase:
+                # A more important phase owns the slot; leave it. Our own end
+                # still records its result below.
+                return
+        state["session_key"] = _phase_key(session_key)
+        state["active"] = {
+            "phase": phase,
+            "detail": str(detail or "")[:120],
+            "started_at": now,
+            "updated_at": now,
+        }
+        if phase == "recalling":
+            # A new turn: the per-turn save counter starts over.
+            state["saved_this_turn"] = 0
+        _write_json_file(path, state)
+    except Exception as exc:
+        hook_log("phase_begin_failed", {"phase": phase, "error": str(exc)[:200]})
+
+
+def phase_end(
+    phase: str,
+    count: Optional[int] = None,
+    session_key: Optional[str] = None,
+    ok: bool = True,
+    buffered: bool = False,
+) -> None:
+    """Record that ``phase`` finished; ``count`` is what it recalled or saved.
+
+    ``ok`` False marks failed work (the row says so); ``buffered`` True with it
+    says the write was spooled for replay rather than lost.
+    """
+    try:
+        path = _phase_path(session_key)
+        state = _read_phase(path)
+        now = time.time()
+        state["session_key"] = _phase_key(session_key)
+        current = state.get("active") if isinstance(state.get("active"), dict) else None
+        if current and current.get("phase") == phase:
+            state["active"] = None
+        results = state.get("results") if isinstance(state.get("results"), dict) else {}
+        kind = _PHASE_RESULT_KIND.get(phase, phase)
+        entry: dict = {"at": now, "ok": bool(ok)}
+        if buffered:
+            entry["buffered"] = True
+        if phase == "saving":
+            total = int(state.get("saved_this_turn") or 0) + int(count or 0)
+            state["saved_this_turn"] = total
+            entry["count"] = total
+        elif count is not None:
+            entry["count"] = int(count)
+        results[kind] = entry
+        state["results"] = results
+        _write_json_file(path, state)
+    except Exception as exc:
+        hook_log("phase_end_failed", {"phase": phase, "error": str(exc)[:200]})
+
+
+def phase_snapshot(session_key: Optional[str] = None) -> dict:
+    """The marker as the status surfaces read it (stale ``active`` cleared)."""
+    state = _read_phase(_phase_path(session_key))
+    current = state.get("active") if isinstance(state.get("active"), dict) else None
+    if current and time.time() - float(current.get("updated_at") or 0) >= _PHASE_STALE_SECONDS:
+        state["active"] = None
+    return state
 
 
 def _local_api_url_with_source() -> tuple[str, str]:
@@ -4768,25 +4971,40 @@ def elapsed_ms(start: float) -> int:
 _TYPED_DATASET_CAPABILITIES = {}
 
 
+def _openapi_request_properties(spec: dict, path: str, method: str = "post") -> set:
+    """The property names of an operation's request body, ``$ref`` resolved."""
+    op = spec.get("paths", {}).get(path, {}).get(method, {})
+    content = op.get("requestBody", {}).get("content", {}) if isinstance(op, dict) else {}
+    names: set = set()
+    for media in content.values():
+        schema = media.get("schema", {}) if isinstance(media, dict) else {}
+        ref = str(schema.get("$ref") or "")
+        if ref.startswith("#/components/schemas/"):
+            schema = spec.get("components", {}).get("schemas", {}).get(ref.rsplit("/", 1)[-1], {})
+        props = schema.get("properties", {}) if isinstance(schema, dict) else {}
+        names |= set(props)
+    return names
+
+
 def require_typed_dataset_id_support(*, service_url: str = "", api_key=None) -> None:
-    """Old SDKs advertise dataset_id but reject typed entries at runtime."""
+    """A write addressed by dataset UUID needs ``POST /api/v1/remember/entry`` to
+    take ``dataset_id``. The server's own API description says whether it does:
+    the request body of that operation lists the field (every server since the
+    V1 routes), and an older one does not. Cached a minute per server."""
     url = _normalize_service_url(service_url or _local_api_url())
     cached = _TYPED_DATASET_CAPABILITIES.get(url)
     supported = cached[1] if cached else False
     if cached is None or time.monotonic() - cached[0] > 60.0:
         spec = _json_http_request("/openapi.json", method="GET", base_url=url, api_key=api_key)
-        supported = (
-            spec.get("paths", {})
-            .get("/api/v1/remember/entry", {})
-            .get("post", {})
-            .get("x-cognee-session-dataset-ids")
-            is True
+        supported = "dataset_id" in _openapi_request_properties(
+            spec if isinstance(spec, dict) else {}, "/api/v1/remember/entry"
         )
         _TYPED_DATASET_CAPABILITIES[url] = (time.monotonic(), supported)
     if not supported:
         raise RuntimeError(
-            "This Cognee server cannot safely store typed session memory by dataset UUID. "
-            "Update the SDK before selecting a shared write dataset."
+            "This Cognee server cannot safely store typed session memory by dataset UUID "
+            "(its POST /api/v1/remember/entry takes no dataset_id). "
+            "Update the server before selecting a shared write dataset."
         )
 
 
@@ -5900,6 +6118,11 @@ def sweep_stale_state(now: Optional[float] = None) -> dict:
             (_IMPROVE_STATE_DIR, "improve_state"),
             (_PLUGIN_DIR / "spool" / "expired", "expired_cloud_work"),
             (_PLUGIN_DIR / "improve-wanted" / "expired", "expired_cloud_work"),
+            # The live-activity marker each session's hooks write, and the
+            # band marker the Claude Code mod writes beside it: one file per
+            # session (every /clear and resume), rewritten only while it runs.
+            (_PHASE_DIR, "phase"),
+            (_PLUGIN_DIR / "band", "band"),
         ):
             _sweep_dir_by_age(directory, _SWEEP_SESSION_FILE_MAX_AGE_SECONDS, now, counts, key)
         sessions = _PLUGIN_DIR / "sessions"

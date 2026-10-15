@@ -545,3 +545,72 @@ def test_unreachable_server_is_retried_without_using_up_attempts(worker):
         assert item["last_error"] == "unreachable" and item.get("failures", 0) == 0
         now = item["next_attempt"] + 1
     assert worker.process_improves(lambda _: COMPLETED, now=now) == 1
+
+
+# ── the status row hears about spooled captures ────────────────────────────
+
+
+def _saved(host_key: str) -> dict:
+    pc = __import__("_plugin_common")
+    return pc.phase_snapshot(session_key=host_key).get("results", {}).get("saved", {})
+
+
+def test_a_delivered_capture_is_reported_as_saved(worker):
+    """The Stop hook only spools in cloud mode, so the band's saving… had no
+    end until the worker said so."""
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "a"}, "answer")
+    worker.drain(lambda item: {"entry_id": "e1"}, now=worker.read(path)["created_at"])
+    saved = _saved("host-a")
+    assert saved.get("ok") is True and saved.get("count") == 1
+
+
+def test_a_capture_held_for_retry_is_reported_as_queued(worker):
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "a"}, "answer")
+
+    def offline(item):
+        raise ConnectionError("down")
+
+    worker.drain(offline, now=worker.read(path)["created_at"])
+    saved = _saved("host-a")
+    assert saved.get("ok") is False and saved.get("buffered") is True
+
+
+def test_a_rejected_capture_is_reported_as_failed(worker, monkeypatch):
+    import urllib.error
+
+    path = worker.enqueue("ds", "sid", {"type": "qa", "answer": "a"}, "answer")
+
+    def rejected(item):
+        raise urllib.error.HTTPError("u", 422, "Unprocessable", {}, None)
+
+    monkeypatch.setattr(worker, "PERMANENT_REJECTIONS", {422})
+    worker.drain(rejected, now=worker.read(path)["created_at"])
+    saved = _saved("host-a")
+    assert saved.get("ok") is False and "buffered" not in saved
+
+
+# ── the worker follows ~/.cognee/.env ──────────────────────────────────────
+
+
+def test_target_follows_an_edit_of_the_env_file(suite, isolated_modules, monkeypatch, tmp_path):
+    """The worker lives for hours. Pinned to the tenant it started with, it
+    never served a session pointed at another, whose captures and improves
+    then starved (a dataset switch waited its full 14 minutes on one)."""
+    if suite.name != "claude-code":
+        pytest.skip("Cloud worker")
+    # The loader scrubs COGNEE_* before the import, so the file is named
+    # afterwards: exactly a worker that started before the file was edited.
+    worker = isolated_modules(suite, "_cloud_worker")
+    monkeypatch.setattr(worker, "ensure_worker", lambda: None)
+    env_file = tmp_path / "cognee.env"
+    monkeypatch.setenv("COGNEE_ENV_FILE", str(env_file))
+    env_file.write_text('COGNEE_BASE_URL="https://tenant-a.aws.cognee.ai"\n', encoding="utf-8")
+    assert worker.target()["base_url"] == "https://tenant-a.aws.cognee.ai"
+
+    env_file.write_text('COGNEE_BASE_URL="https://tenant-b.stg-aws.cognee.ai"\n', encoding="utf-8")
+    assert worker.target()["base_url"] == "https://tenant-b.stg-aws.cognee.ai"
+
+    # A real export still wins over the file, as at load.
+    monkeypatch.setenv("COGNEE_BASE_URL", "https://exported.example")
+    env_file.write_text('COGNEE_BASE_URL="https://tenant-c.aws.cognee.ai"\n', encoding="utf-8")
+    assert worker.target()["base_url"] == "https://exported.example"

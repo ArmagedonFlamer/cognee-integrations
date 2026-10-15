@@ -1010,7 +1010,13 @@ def test_default_report_survives_a_non_utf8_stdout(tmp_path):
     script = pathlib.Path(_scripts_dir()) / "plugin_eval.py"
     plugin_dir = tmp_path / ".cognee-plugin" / "claude-code"
     plugin_dir.mkdir(parents=True)
-    env = {**os.environ, "HOME": str(tmp_path), "PYTHONIOENCODING": "cp1252"}
+    # Path.home() reads USERPROFILE on Windows, HOME elsewhere: point both at the temp home.
+    env = {
+        **os.environ,
+        "HOME": str(tmp_path),
+        "USERPROFILE": str(tmp_path),
+        "PYTHONIOENCODING": "cp1252",
+    }
     result = subprocess.run(
         [sys.executable, str(script), "report", "--since", "7d", "--no-transcripts"],
         env=env,

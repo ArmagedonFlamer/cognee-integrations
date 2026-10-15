@@ -53,6 +53,8 @@ from _plugin_common import (
     notify,
     other_readable_datasets,
     outage_header,
+    phase_begin,
+    phase_end,
     probe_health,
     quiet_hook_output,
     read_and_reset_save_counter,
@@ -505,6 +507,23 @@ def _has_entry_content(entry: dict) -> bool:
 
 
 async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
+    """The recall, with its ``recalling`` phase ended on every exit.
+
+    ``_recall`` returns early on a cached outage, a failed probe or a missing
+    session id, and can raise; without this wrapper those paths left the
+    phase active and the status row spinning on ``recalling…`` until the
+    marker went stale (90 s). An exit with no count is a failed recall.
+    """
+    phase_begin("recalling")
+    total: int | None = None
+    try:
+        output, total = await _recall(prompt, cwd, notice=notice)
+        return output
+    finally:
+        phase_end("recalling", count=total or 0, ok=total is not None)
+
+
+async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | None, int | None]:
     if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         # First, so a recall that returns early leaves this turn with no tags
         # and the Stop hook cannot check the answer against the previous
@@ -552,7 +571,7 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
     if known_bad and cloud_enabled(runtime):
         hook_log("recall_skipped_not_ready", {"state": prior_state, "cached": True})
         # The notice is one-shot (already consumed by main); never drop it here.
-        return _outage_output(prior_state, notice)
+        return _outage_output(prior_state, notice), None
     if known_bad:
         # Prefer an AUTHENTICATED probe so a bad/expired key is classified as
         # auth_failed instead of being masked as "ready" by an unauthenticated
@@ -576,14 +595,17 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
             hook_log("recall_skipped_not_ready", {"base_url": service_url, "state": state})
             # Report the outage instead of going quiet: the recorded failure
             # names it when the probe itself was inconclusive.
-            return _outage_output(
-                state if state in DEFINITIVE_FAILURE_STATES else prior_state, notice
+            return (
+                _outage_output(
+                    state if state in DEFINITIVE_FAILURE_STATES else prior_state, notice
+                ),
+                None,
             )
 
     session_id = _load_session_id()
     if not session_id:
         hook_log("no_session_id", {"event": "context_lookup"})
-        return None
+        return None, None
 
     # NOTE: the warmup-buffer drain deliberately does NOT run here. This hook
     # is synchronous on the keystroke->answer path, and replaying N buffered
@@ -1258,7 +1280,7 @@ async def _run(prompt: str, cwd: str = "", notice: str = "") -> dict | None:
         except Exception as exc:
             hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
 
-    return _recall_output(full_context, notice)
+    return _recall_output(full_context, notice), total
 
 
 def _recall_min_prompt_chars() -> int:
@@ -1316,6 +1338,7 @@ def main():
             output = asyncio.run(_run(prompt, cwd, notice=notice))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
+        phase_end("recalling", count=0, ok=False)
     if output is None and notice:
         header = "Cognee memory: recall unavailable"
         output = _recall_output(header, _bounded_notice(header, notice))

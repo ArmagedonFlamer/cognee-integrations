@@ -31,6 +31,8 @@ from _plugin_common import (
     hook_log,
     is_observer_child,
     load_resolved,
+    phase_begin,
+    phase_end,
     recall_via_http,
     resolve_runtime_mode,
     resolve_session_key_from_payload,
@@ -263,10 +265,15 @@ def main():
     if session_key_candidate:
         set_session_key(session_key_candidate)
 
+    phase_begin("anchoring")
+    ok = False
     try:
         asyncio.run(_run())
+        ok = True
     except Exception as exc:
         hook_log("precompact_run_exception", {"error": str(exc)[:200]})
+    finally:
+        phase_end("anchoring", ok=ok)
 
 
 if __name__ == "__main__":

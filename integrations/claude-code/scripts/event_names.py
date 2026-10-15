@@ -7,6 +7,7 @@ import os
 EVENT_NAMES = {
     "hook:auto_memory_setup_failed": "cloud.auto_memory_setup_failed",
     "hook:injection_ledger_failed": "cloud.injection_ledger_failed",
+    "hook:users_me_lookup_failed": "config.users_me_lookup_failed",
     "hook:injection_receipt_failed": "recall.injection_receipt_failed",
     "hook:bash_capture_decision": "capture.bash_decision",
     "hook:trace_skipped_low_signal": "capture.trace_skipped_low_signal",
@@ -164,6 +165,8 @@ EVENT_NAMES = {
     "hook:invalid_payload_json": "io.payload_json",
     "hook:json_load_failed": "json.load_failed",
     "hook:json_write_failed": "json.write_failed",
+    "hook:phase_begin_failed": "phase.write_failed",
+    "hook:phase_end_failed": "phase.write_failed",
     "hook:last_recall_write_failed": "last.recall_write_failed",
     "hook:launch_dataset_ids_skipped": "launch.dataset_ids_skipped",
     "hook:legacy_config_json_removed": "legacy.config_json_removed",

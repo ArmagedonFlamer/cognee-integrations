@@ -59,13 +59,39 @@ turns, swept automatically; see [Logs and state](#logs-and-state)),
 `~/.cognee-plugin/venv/`, `~/.cognee-plugin/api_key.json`, and your settings in
 `~/.cognee/.env`.
 
-**Settings it writes.** One `statusLine` entry in `~/.claude/settings.json`, pointing
-at the plugin's own renderer, so the memory status shows in Claude Code's status
-line. `COGNEE_STATUSLINE=false` skips it; the renderer removes its own entry when
-the plugin is gone. Nothing else in your Claude Code settings is touched.
+**Settings it writes.** One entry, and only where it is needed: in a session
+whose status row the hooks module draws above the prompt, nothing is written;
+in a session where the module does not load (an older Claude Code,
+`--safe-mode`, an organisation that allows only its own mods), session start
+installs the `statusLine` entry in `~/.claude/settings.json` that draws the line
+below the prompt, and refreshes it when the plugin moved. Only an entry whose
+command runs the plugin's own `cognee-statusline.sh` is ever written or
+replaced; a status line you set yourself is never touched. Nothing else in your
+Claude Code settings is touched.
 
 **Claude's own files.** The plugin reads the hook payloads Claude Code sends it, not
 your transcript or Claude Code's memory files, and writes to neither.
+
+**Code that runs inside Claude Code.** `hooks/register.ts` is a hooks module (a
+[Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview)) that draws
+the memory status row above the prompt (in a terminal and in the Desktop app),
+shows what memory is doing while it works, makes the dataset name a picker and
+serves two tools Claude can call directly. On its own it reads one file, the
+plugin's own activity marker under `~/.cognee-plugin/claude-code/phase/`, writes
+one, `band/<session>.json`, which tells the settings-file status line to stay
+quiet for that session, and runs one program, the plugin's own status-line
+renderer (`scripts/cognee_statusline_render.py --json`, local, no network), on
+the events the hooks fire. On your explicit action in the fix dialog it also runs
+`cognee-doctor.sh` (read-only diagnostics) and appends a value you typed to
+`~/.cognee/.env`. Everything else it runs is one of this
+folder's scripts, on your action or Claude's: `switch-dataset.py --list` once when
+the band is first drawn and `switch-dataset.py <name>` when you pick a dataset or
+run `/cognee-dataset <name>`; the `search` tool runs `cognee-search.sh` (and
+`recall-trim.py` on its output); the `remember` tool runs `cognee-remember.sh`.
+Those are the same programs the skills
+run, with the same server traffic. The module itself makes no network requests,
+writes no settings, reads only `HOME` / `USERPROFILE` from the environment, and
+answers only its own two tools. `claude plugin validate` lists exactly that.
 
 **Background processes.** Detached helpers that outlive a hook: the idle watcher and
 exit watcher (session sync and status), and in local mode the cognee server and,
@@ -321,6 +347,12 @@ A Cognee session never spans two datasets, so the switch:
 3. repoints this launch's record so every hook, the shell wrappers, the idle/exit watchers and
    the status line follow it.
 
+With the hooks module loaded there are two faster ways to the same switch, neither of
+which spends a model turn: `/cognee-dataset <name>` runs it from the prompt (alone, it
+lists the datasets you can write to), and the dataset name in the status row above
+the prompt is a picker that switches on pick. Both run the same script and a toast
+reports the outcome. See [Dataset picker and tools](#dataset-picker-and-tools).
+
 The choice lives in the launch record (`~/.cognee-plugin/claude-code/sessions/<host id>.json`),
 so it survives `--resume` and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
 `COGNEE_SESSION_ID`) for the rest of the launch. Retired sessions stay in the record's `touched`
@@ -344,7 +376,7 @@ Claude not to switch datasets on its own. If you ask for a switch, it runs
 `/cognee-memory:cognee-switch-datasets`.
 
 The same flow is available on demand through the `cognee-search` skill when an explicit search comes
-back empty. Under the hood:
+back empty, and through the `search` tool's `dataset_id` argument. Under the hood:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candidates
@@ -523,6 +555,13 @@ The standup, digest and timeline recaps are covered in
 [Recaps](#recaps-standup-digest-timeline) below. [`evals/`](evals/README.md) holds a
 `claude plugin eval` suite that checks this routing: two requests per skill, plus four
 look-alike requests that should reach no Cognee skill.
+
+With the hooks module loaded (Claude Code 2.1.287+), two more commands and two tools
+join them: `/cognee-dataset [name]` and `/cognee-tour`, and the tools
+`mcp__cognee-memory__search` and `mcp__cognee-memory__remember`, described under
+[Dataset picker and tools](#dataset-picker-and-tools). The skills stay the path for the
+judgement-heavy work (forget, sync, code indexing, the recaps) and for every Claude
+Code that does not load mods.
 
 ## Recaps: standup, digest, timeline
 
@@ -788,18 +827,33 @@ event. Irrelevant background recall does not require an announcement.
 
 ## Status line
 
-The default status line highlights `cognee` between two purple squares, with bold
-dataset and location and one Claude-style imprint bar. At 80 columns it can read:
+> **Where it is drawn.** The row sits **above the prompt**, on every surface, with
+> the dataset name as a picker, drawn by the plugin's hooks module (Claude Code
+> 2.1.287+) from the plugin's own renderer. On a Claude Code that does not load
+> the module (older versions, `--safe-mode`, an organisation that allows only
+> its own mods) the same renderer draws the line below the prompt instead,
+> through a settings-file `statusLine` that session start installs there; see
+> [A line below the prompt](#a-line-below-the-prompt). One or the other, never
+> both. Everything in this section describes the row's content, which is the
+> same either way.
+
+The status row highlights `cognee` between the connection glyph and a purple
+square, with bold dataset and location, the estimated tokens saved and what
+memory is doing. As a text line it can read:
 
 ```text
-■ cognee ■ manual·cloud·124 reminiscence · 34/46 imprints  ▰▰▰▰▱ · ~2.4kt saved
+● cognee manual · cloud · ~2.4k tokens saved · 3 memories used
 ```
 
-- **Reminiscence**: cumulative memory entries injected into this session. This is not
-  a unique-memory count; an entry reinjected after compaction counts again.
-- **Ideas**: memory blocks delivered for the latest prompt, not proof of use.
-- **Imprints**: prompts that received memory out of all prompts. The single bar
-  shows this fraction.
+The glyph in front of `cognee` is the connection: a green `●` once the server is
+confirmed up and authenticated, a dim `○` while nothing is known yet (warming up),
+and on a failure the line leads with the red `✕ (<reason>)`; see the health
+rules below. The wordmark is bold in the brand purple, the dataset plain and the
+mode purple, the same row the mod draws above the prompt.
+
+- **No counters.** What the latest prompt recalled is the activity segment's
+  (`3 memories used`); a session total, a per-prompt hit count and a turn
+  ratio are deliberately not shown. The classic line keeps its own counters.
 - **Tokens saved**: estimated as **average tokens per recall × number of recalls × 6.9**.
   Recall tokens mean memory context injected into Claude, estimated at one token
   per four characters. The calculation is equivalent to cumulative injected
@@ -810,20 +864,17 @@ dataset and location and one Claude-style imprint bar. At 80 columns it can read
   `saved n/a` means recall/context measurements are unavailable. Existing sessions
   use their recorded cumulative recall context; no network requests are added.
 
-A new successful recall shimmers the reminiscence count for ten seconds using the
-recall timestamp and current clock. The renderer only reads local counters;
-measurement happens in the existing recall hook without additional requests.
+The renderer only reads local counters; measurement happens in the existing
+recall hook without additional requests.
 
 The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
-The shimmer uses `#D0B4FF` when `COLORTERM=truecolor` or `24bit`, otherwise xterm
-183. Failures remain red, update notices amber, and credits retain their semantic
-colours. Unknown connection health appears as `?`.
+Failures remain red, update notices amber, and credits retain their semantic
+colours. Unknown connection health appears as a dim `○` before the wordmark.
 
 When `COLUMNS` is set, the line is fitted to that width; Claude Code does not
 normally export it, and then the full line is shown as in classic mode. When
-fitting, the highlighted brand stays visible: decorations disappear first (at 60
-columns or fewer), token units shorten, and the latest-prompt ideas count is
-omitted before the bar and imprint ratio. Credit warnings and update notices are
+fitting, the highlighted brand stays visible: token units shorten, then the
+spacing compacts, before the estimate is dropped. Credit warnings and update notices are
 never dropped: the narrowest form keeps health plus the notices, and only very
 narrow lines are clipped. Output is UTF-8 in both styles; ASCII (`#`, `-`, `[x]`)
 is used only if stdout cannot be switched to UTF-8. A renderer error falls back
@@ -832,8 +883,8 @@ to classic output.
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
-| `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
-| `COGNEE_STATUSLINE_COUNTS` | `true` | Ideas and imprint ratio; `full` shows per-scope recall/saved diagnostics; `false` hides these (reminiscence and token savings remain) |
+| `COGNEE_STATUSLINE_THEME` | from Claude Code's `theme` | `light` uses the darker purple palette, `dark` the brand lavender; unset, a `light` or `light-daltonized` Claude Code theme picks the darker one (`auto` cannot be told apart, so set this or the theme on a light terminal) |
+| `COGNEE_STATUSLINE_COUNTS` | `true` | Classic line only: its memory-hit counters; `full` shows per-scope recall/saved diagnostics; `false` hides them |
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
 `cloud` for a remote `COGNEE_BASE_URL`; an exported `COGNEE_BACKEND` /
@@ -876,17 +927,51 @@ Both cases show the same reason — the fix is the same either way, and `llm-sta
 | `COGNEE_LLM_KEY_CHECK` | `true` | Background, provider-agnostic `LLM_API_KEY` validation (local mode) surfacing `✕ (incorrect_llm_api_key)` |
 | `COGNEE_LLM_CHECK_INTERVAL` | `300` | Minimum seconds between LLM-key checks |
 
-**Memory hits.** The line ends with what memory actually did — this turn, then (faint) over the session:
+**Activity.** The line ends with what memory is doing right now, and once it is done,
+what it did:
 
 ```
-● cognee: agent_sessions · local · 5 memory hits · 12/40 turns had hits this session
+● cognee agent_sessions · local · ~1.1k tokens saved · recalling…
+● cognee agent_sessions · local · ~1.4k tokens saved · 3 memories used
+● cognee agent_sessions · local · ~1.4k tokens saved · saving…
+● cognee agent_sessions · local · ~1.4k tokens saved · ✓ memory saved
+● cognee agent_sessions · local · ~1.4k tokens saved · learning from this session…
+○ cognee agent_sessions · local · tokens saved n/a · setting up memory · starting memory server…
 ```
 
-`5 memory hits` is how many memory blocks this turn's lookup found and injected into context (the memory request, plus code-graph facts when that lane is armed). `12/40 turns had hits this session` is the running total — 40 prompts so far, memory fired on 12 of them. A session that has not had a single hit yet shows `memory warming up (7 turns)` instead of a bare `0/7`: the graph is usually still filling up. `UserPromptSubmit` writes these to `~/.cognee-plugin/claude-code/recall/<session>.json`, so the renderer stays network-free, and the counts are stamped with the session that produced them so a second terminal's numbers never show up here. The per-scope breakdown (`recall 4s/5t/0g/1a · saved 2p/41t/2a` — `s`ession turns, `t`races, `g`raph context, `a`gent guidance; saves as `p`rompts, `t`races, `a`nswers) is still available with `COGNEE_STATUSLINE_COUNTS=full`; hide the segment with `false`.
+(`COGNEE_STATUSLINE_STYLE=classic` keeps the activity segment too, at the end of
+its line.)
+
+While an operation runs the segment is present tense and coloured (`connecting…`,
+`recalling…`, `saving…`, `learning from this session…` for the automatic improve pass,
+`indexing repository…`, `preserving context…` before compaction, `saving session…`
+at exit). When it finishes, the result replaces it in plain words with its number
+(`3 memories used`, `✓ memory saved` for this turn's tool calls and answer,
+`✓ learned`, `memory ready`, `✓ repository indexed`, `✓ context kept`,
+`✓ session saved`); a recall that found nothing says `nothing relevant` rather
+than counting to zero. Work that failed is never ticked: a recall the server
+could not answer says `recall failed`, a write dropped for good `save failed`,
+one spooled for replay after a transport error `save queued`, an exit sync
+that did not finish `session sync failed`, a compaction anchor that could not
+be built `context not kept`. The number is recall's alone, since that is what helped
+this turn; the save side shows a tick, because what it stored (the captured
+prompt, tool calls and answer of the turn) is bookkeeping nobody can act on. A
+result stays until the next operation begins, turns faint after a minute and
+leaves the line after five, so a fresh `3 memories used` and one left over from
+ten minutes ago never read the same.
+
+The hooks write one activity marker per session,
+`~/.cognee-plugin/claude-code/phase/<session>.json`, at the start and end of every
+operation (`phase_begin` / `phase_end` in `_plugin_common.py`), so the renderer
+stays network-free and a second terminal's activity never shows up here. An
+operation left marked active for more than 90 seconds (a hook that died) is
+ignored rather than shown forever. The per-session recall counts are still written
+to `recall/<session>.json` for `cognee-plugin metrics`.
 
 | Env var | Default | Effect |
 |---|---|---|
-| `COGNEE_STATUSLINE_COUNTS` | `true` | `true`: `N memory hits · H/T turns had hits this session`; `full`: per-scope `recall …/saved …` strip; `false`: hidden |
+| `COGNEE_STATUSLINE_ACTIVITY` | `true` | `false` hides the activity segment |
+| `COGNEE_STATUSLINE_ICON` | unset | `brain` puts a 🧠 in front of the name (`🧠 cognee: …`). Off by default: the emoji is double-width and some terminal fonts misrender it. |
 
 **Per-terminal status.** Every signal in the line answers *for this terminal*, not for the machine. That matters because terminals legitimately disagree: one shell exported `LLM_API_KEY` and another didn't, or two hold different `COGNEE_API_KEY`s against the same server. Both sessions show the truth at the same time:
 
@@ -910,9 +995,29 @@ them during startup — and a stale value can misroute identity or session resol
 Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the dataset
 (a mid-session `/cognee-memory:cognee-switch-datasets` overrides both for that launch).
 
-It is configured automatically on first launch when no custom status line is already configured. SessionStart writes the correct path into `~/.claude/settings.json` and Claude Code hot-reloads it, so the status line appears from your first interaction onward. Existing non-Cognee `statusLine` settings are preserved; set `COGNEE_STATUSLINE=false` before launching Claude Code to opt out entirely.
+#### A line below the prompt
 
-The entry sets `refreshInterval: 2`, so Claude re-runs the (network-free, local-only) renderer every 2 seconds in addition to its event-driven updates. Without it, Claude only refreshes the status line on events (a new message, `/compact`, etc.), which go quiet while the session is idle — so a connection change detected right after launch (e.g. a rejected API key) wouldn't show until your next prompt. Tune it with `COGNEE_STATUSLINE_REFRESH_INTERVAL` (seconds; a value below `1`, e.g. `0`, disables idle polling and reverts to event-only refresh).
+The renderer behind the row, `scripts/cognee_statusline_render.py`, is also a
+complete Claude Code `statusLine` command, through `scripts/cognee-statusline.sh`.
+Session start writes it into your settings in a session where the hooks module
+does not draw the row, and leaves settings alone where it does. You can also add
+it yourself, for instance if you prefer the line below the prompt:
+
+```json
+"statusLine": {
+  "type": "command",
+  "command": "[ -x \"<plugin dir>/scripts/cognee-statusline.sh\" ] && exec \"<plugin dir>/scripts/cognee-statusline.sh\" || true",
+  "refreshInterval": 2
+}
+```
+
+`<plugin dir>` is the folder holding this README (`/plugin list` prints it as
+"Read from"). `refreshInterval: 2` re-runs the network-free renderer every two
+seconds while the session is idle, so a connection change shows without a prompt.
+In a session where the hooks module draws the row above the prompt, this line
+prints nothing (the module marks its session, see below), so the two never show
+together. The renderer removes the entry itself when the plugin is disabled or
+uninstalled but its files linger.
 
 The status line reads only local state — no network calls on every refresh:
 1. Dataset: this launch's record (`sessions/<host id>.json`, written at SessionStart and by a dataset switch), otherwise `COGNEE_PLUGIN_DATASET`, otherwise `agent_sessions`
@@ -920,7 +1025,181 @@ The status line reads only local state — no network calls on every refresh:
 3. Default mode: `local`
 4. Connection glyph: `conn-state/<session>.json`, then `server-ready.json` + `recall-breaker.json`
 5. LLM key: `llm-state/<session>.json`, then `llm-state.json`
-6. Counts: `recall/<session>.json`, then `last_recall.json`; cumulative entries from `sessions/<host id>/stats.json`
+6. Activity: `phase/<session>.json`
+7. Counts: `recall/<session>.json`, then `last_recall.json`; cumulative entries from `sessions/<host id>/stats.json`
+
+### Desktop app and the hooks module
+
+The plugin's hooks module, `hooks/register.ts` (a
+[Claude Code mod](https://code.claude.com/docs/en/plugins/mods/overview)), draws
+the status row **above the prompt**, in the Code tab of the Claude Desktop app and
+in a terminal alike:
+
+```
+● cognee [agent_sessions ▾] · local · ~2.4k tokens saved · 3 memories used
+⠹ cognee [agent_sessions ▾] · local · ~2.4k tokens saved · recalling…
+```
+
+On the desktop the row leads with cognee's waveform mark, the official icon
+itself (an inline SVG from `assets/icon-lavender.svg`, read once at session
+start), then the wordmark in the brand lavender. A terminal gets the wordmark
+alone: no character looks like the mark, so none stands in for it, there or
+after the spinner or in toasts. The `icon` row in `/config` (`wave` or `none`)
+switches the desktop mark off; the text line has no mark either, only the
+glyph and the wordmark. The module runs the plugin's own
+renderer in `--json` mode and lays the result
+out: the dataset, mode, tokens-saved estimate, credits,
+connection reason and update nudge are the renderer's, so the row and a
+[line below the prompt](#a-line-below-the-prompt) cannot drift. While an
+operation runs a braille spinner leads the row; a failure leads it with the red
+`✕ (<reason>)`, and unknown health with a dim `?`, as on the text line. The module
+marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`) and the
+renderer, run as a settings-file status line, prints nothing for a marked session,
+so the row is never shown twice.
+
+Credits read as on the text line, green, red once exhausted or a request was
+refused; where the text line prints `top up: <url>`, the row draws **top up** as a
+link to billing instead, an anchor in the Desktop app and a terminal hyperlink
+where the terminal supports one (`COGNEE_BILLING_URL` overrides the target). To
+see that state without an empty balance, set `COGNEE_STATUSLINE_CREDITS=exhausted`
+(in `~/.cognee/.env`, or exported): the renderer then shows a preview balance of
+`-$0.40` with the link, reading no marker and writing nothing; `false` hides the
+credits segment altogether.
+
+The dataset name in the row is a **picker**: it lists the datasets you can write to
+(one `switch-dataset.py --list` when the band is first drawn, not awaited, and again
+after each switch), and choosing another one switches the session there at once,
+with no model turn, the way `/cognee-dataset <name>` does. Its last entry, `+ new
+dataset…`, turns the picker into a text field: Enter with a name switches to that
+dataset, creating it (the same rules as a typed switch: no spaces or dots), and
+Enter on nothing or the `✕` brings the picker back. The row says `switching
+dataset…` while it runs and a toast reports the outcome, errors included. Until the
+listing lands, or when it fails (no launch record, server down), the name is plain
+text. In a terminal the picker stays closed until asked for, since a focused
+picker shows its list: the dataset name is a button (`agent_sessions ▾`); press
+it, or `/cognee-dataset` alone, to open the list, then `ctrl+x tab` or a click
+reaches it, arrows move, Enter picks and the list closes again. Escape returns
+to the prompt.
+
+The module also adds, on both surfaces:
+
+- **After the spinner, while Claude works:** `Thinking · recalling…`, `· saving…`.
+  On the desktop for every phase; in a terminal only for the phases whose hooks run
+  in the background (saving, learning from the session, indexing, session sync), because the
+  recall and compaction hooks already show their own status message there.
+
+The credit inside an answer that used memory (`🧠 Cognee memory [m2]: …`) is the
+agent's own, asked for by the recall hook; see [Credit in the answer](#credit-in-the-answer).
+The module adds nothing under answers.
+
+**A `see fix` button beside every red ✕.** When the row shows a failure, a small
+`[ see fix ]` button right after `✕ (<reason>)` opens a dialog above the prompt
+(Escape closes it) that says in plain words what is wrong and what to do, for each
+reason the row can show:
+
+| Reason on the row | The dialog says |
+|---|---|
+| `incorrect_cognee_api_key` | the server rejected the plugin's key; cloud: paste the key from your account (saved to `~/.cognee/.env`); local: delete `~/.cognee-plugin/api_key.json` and start a new session |
+| `incorrect_llm_api_key` | the local server cannot reach its LLM; paste a provider key, or remove `LLM_API_KEY` to run on your Claude subscription |
+| `missing_cognee_base_url` | cloud is forced but no URL is set; paste the URL, or `unset COGNEE_BACKEND` |
+| `cognee_needs_python_3_10` | install a Python 3.10–3.14 and start a new session, or use Cognee Cloud |
+| `unreachable` | local: a new session restarts the server, `hook.log` says why it died; cloud: check the URL and the network |
+| `server_error` | the server answers 5xx; restart locally, retry on cloud |
+| `not_responding` | the server is busy; wait, or raise `COGNEE_READY_PROBE_TIMEOUT` |
+
+Every dialog has a **run doctor** button that runs `cognee-doctor.sh` (read-only)
+and shows its report in the dialog. Where one value is the fix (a key, a URL) the
+dialog has a field for it: Enter appends `NAME="value"` to `~/.cognee/.env`,
+where the last value of a key wins, with no shell history involved; a new session
+applies it. The dialog never edits anything else.
+
+**First-run tour.** The first session on a machine gets three short hints under
+the row, each about what is right above it, with `next` and `skip` buttons:
+
+```
+cognee [agent_sessions ▾] · local · tokens saved n/a
+The dataset name is a picker ↑: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
+```
+
+then that the dot means memory is connected, local/cloud where it lives and the
+end of the row what memory is doing, then that Claude uses the memories Cognee
+recalls on every prompt, and the two commands. `done` or `skip` ends it and it is not shown again:
+the plugin's own store (Claude Code keeps it per plugin, across sessions) records
+that this version of the tour was seen. `/cognee-tour` replays it any time. In a
+terminal, focus the band with `ctrl+x tab` to press the buttons, or click them.
+
+Four rows in `/config` switch each piece: `icon` (`wave` or `none`), `band` (off,
+no row is drawn and no session is marked, so a line you added below the prompt
+shows again), `spinner`, `tour` (a fifth, `tools`, is described below).
+
+The module never calls the Cognee server and runs nothing on a timer while the
+session is idle. It reads the activity marker when the hooks fire (session start,
+each prompt, each tool call, the end of a turn, compaction), polls it once a second
+only while an operation is running or for thirty seconds after one started in the
+background, and runs the renderer (a local process, no network) at session start
+and after each recall. For two minutes after a session starts, while the row still
+shows the connection as unknown (`○`), it retakes that snapshot every five seconds,
+since the SessionStart hook writes the connection marker only once it has
+connected. Server traffic is exactly what the hooks produce without it.
+It hooks only Claude Code's native events, never the `classic.*` mirrors of the
+settings hooks, which the built-in guard withholds from a user-installed mod for
+Team and Enterprise sign-ins.
+
+Needs Claude Code 2.1.287 in the terminal or 2.1.286 in the Desktop app. On an
+older version, with `--safe-mode`, with `disableAllHooks`, or where an organisation
+allows only its own mods, the module does not load and everything else in this
+README works unchanged: the settings hooks run the memory pipeline. The status row
+is the module's, so there it is not drawn; add the
+[line below the prompt](#a-line-below-the-prompt) yourself if you want one.
+
+### Dataset picker and tools
+
+The module also gives the dataset a control of its own and a direct line for
+Claude. All of it runs the scripts in this folder, with the same server traffic as
+the skills.
+
+**The dataset picker.** The dataset name in the status row above the prompt is a
+picker of the datasets you can write to, the current one selected, with `+ new
+dataset…` last for a name that does not exist yet. Picking another
+runs `switch-dataset.py <name>` at once, with no model turn: the session it leaves
+is synced first, a new Cognee session starts on the chosen dataset, and the row
+follows. `switching dataset…` shows while it runs; a toast reports `switched to
+demo`, `already on demo`, or the script's error (`✕ Selected dataset is not
+writable`). The list is read once when the row is first drawn and again after each
+switch; nothing polls. `/cognee-dataset <name>` does the same from the prompt on
+every surface, and `/cognee-dataset` alone prints the list.
+
+**Two tools Claude calls directly.** At session start the module registers
+`mcp__cognee-memory__search` and `mcp__cognee-memory__remember`. Both sit behind
+tool search, so they cost nothing on the turns Claude does not reach for them, and
+Claude loads the schema when it needs one. They replace the skill-file read and the
+Bash row the `cognee-search` and `cognee-remember` skills need, with typed
+arguments instead of a command line; the skills remain for every Claude Code that
+does not load mods and for the judgement the skill text carries.
+
+| Tool | Arguments | Runs | Returns |
+|---|---|---|---|
+| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from the active dataset.` then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
+| `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
+
+On the desktop, the credit line the model writes under an answer that used
+memory (`> 🧠 Cognee memory [m4, m5]: …`) is drawn as the wave mark and the
+note alone, the label and the tags left to the stored line: the engine still
+draws the reply, with the line taken off its text, and the mod draws the row
+under it. A terminal
+draws no vector image and keeps the line as written. The stored message is
+never changed, so ctrl+o shows the original and the Stop hook's credit check
+reads what the model wrote. The `icon` row in `/config` turns the mark off
+here as in the band.
+
+While a tool runs the spinner says `· searching memory…` or `· remembering…`
+on both surfaces, as it says `· switching dataset…` during a switch. The
+`tools` row in `/config` turns the registration off; the skills are unaffected.
+
+Everything here hooks only Claude Code's native events, as the band does: no
+`classic.*` mirrors, nothing on a timer, and no system-prompt or skill-text
+rewriting (which the built-in guard withholds from a user-installed mod for Team
+and Enterprise sign-ins anyway).
 
 ## Logs and state
 

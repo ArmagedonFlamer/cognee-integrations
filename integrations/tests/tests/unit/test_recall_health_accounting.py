@@ -156,6 +156,33 @@ def test_a_refused_connection_is_an_outage_once_the_server_has_answered_before(l
     assert [e for e, _ in run.events].count("recall_server_down") == 1, run.events
 
 
+def test_a_cached_outage_ends_the_recalling_phase_as_failed(lookup, monkeypatch):
+    """The early return for a known outage used to leave the phase active, so
+    the status row spun on ``recalling…`` for the marker's stale window."""
+    if not hasattr(lookup, "phase_end"):
+        pytest.skip("no live-activity marker on this suite")
+    phases: list = []
+    monkeypatch.setattr(lookup, "phase_begin", lambda phase, **kw: phases.append(("begin", phase)))
+    monkeypatch.setattr(lookup, "phase_end", lambda phase, **kw: phases.append(("end", phase, kw)))
+    monkeypatch.setattr(lookup, "cloud_enabled", lambda runtime: True)
+    run = drive_recall(
+        lookup, monkeypatch, recall=_raise(_refused), prior_state={"state": "unreachable"}
+    )
+
+    assert run.calls == [], f"a cached outage skips the fan-out: {run.calls}"
+    assert phases == [("begin", "recalling"), ("end", "recalling", {"count": 0, "ok": False})]
+
+
+def test_a_successful_recall_ends_the_phase_with_its_count(lookup, monkeypatch):
+    if not hasattr(lookup, "phase_end"):
+        pytest.skip("no live-activity marker on this suite")
+    phases: list = []
+    monkeypatch.setattr(lookup, "phase_begin", lambda phase, **kw: None)
+    monkeypatch.setattr(lookup, "phase_end", lambda phase, **kw: phases.append((phase, kw)))
+    drive_recall(lookup, monkeypatch, recall={}, prior_state=READY_PRIOR)
+    assert phases == [("recalling", {"count": 0, "ok": True})]
+
+
 def test_a_refused_connection_with_no_history_is_warming_and_says_nothing(lookup, monkeypatch):
     """The plugin boots its own server; complaining during startup is noise."""
     run = drive_recall(lookup, monkeypatch, recall=_raise(_refused), prior_state=None)

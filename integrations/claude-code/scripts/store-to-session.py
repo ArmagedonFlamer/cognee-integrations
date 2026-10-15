@@ -37,6 +37,8 @@ from _plugin_common import (
     is_observer_child,
     load_resolved,
     notify,
+    phase_begin,
+    phase_end,
     pop_pending_prompt,
     quiet_hook_output,
     record_payment_required,
@@ -83,7 +85,11 @@ async def _fire_improve_background(dataset: str, session_id: str, reason: str) -
         if not http_api_ready():
             hook_log("auto_improve_skipped_no_auth", {"reason": reason, "session": session_id})
             return
-        outcome = run_session_improve_detailed(dataset, session_id, trigger="auto")
+        phase_begin("consolidating")
+        try:
+            outcome = run_session_improve_detailed(dataset, session_id, trigger="auto")
+        finally:
+            phase_end("consolidating", ok=bool(locals().get("outcome", {}).get("ok")))
         wrote = bool(outcome.get("ok"))
         hook_log(
             "auto_improve_fired",
@@ -314,6 +320,7 @@ async def _store_tool_call(payload: dict) -> None:
         hook_log("store_buffered_warming", {"hook": "tool", "tool": tool_name})
         return
 
+    phase_begin("saving")
     try:
         result = remember_entry_via_http(dataset, session_id, entry)
     except Exception as exc:
@@ -325,6 +332,9 @@ async def _store_tool_call(payload: dict) -> None:
         # rejected one would block every entry behind it.
         status_code = exc.code if isinstance(exc, urllib.error.HTTPError) else None
         retryable = status_code is None or status_code >= 500
+        # Not saved: the row says "save queued" for a buffered write, "save
+        # failed" for one dropped for good.
+        phase_end("saving", count=0, ok=False, buffered=retryable)
         if retryable:
             # A timeout or gateway error may have landed server-side; mark the
             # buffered copy so the drain verifies before re-sending —
@@ -352,6 +362,7 @@ async def _store_tool_call(payload: dict) -> None:
             notify(f"trace store failed ({exc})")
         return
 
+    phase_end("saving", count=1 if result else 0, ok=bool(result))
     if result:
         clear_payment_required()
         trace_id = (
@@ -464,6 +475,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         hook_log("store_buffered_warming", {"hook": "stop"})
         return
 
+    phase_begin("saving")
     try:
         result = remember_entry_via_http(dataset, session_id, entry)
     except Exception as exc:
@@ -482,6 +494,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         # retryable, so those are buffered and anything else is dropped loudly.
         status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
         retryable = status is None or status >= 500
+        phase_end("saving", count=0, ok=False, buffered=retryable)
         if retryable:
             # Ambiguous outcomes (timeout / gateway error after the request
             # went out) are verified against the server before replay — see
@@ -503,6 +516,7 @@ async def _store_assistant_stop(payload: dict) -> None:
             notify(f"stop store failed ({exc})")
         return
 
+    phase_end("saving", count=1 if result else 0, ok=bool(result))
     if result:
         clear_payment_required()
         qa_id = (

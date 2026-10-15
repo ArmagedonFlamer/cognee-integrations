@@ -39,6 +39,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `exit-watcher:pidfile_unlink_failed` | `exit_watcher.pidfile_unlink_failed` |
 | `exit-watcher:pidfile_write_failed` | `exit_watcher.pidfile_write_failed` |
 | `exit-watcher:started` | `exit_watcher.started` |
+| `hook:users_me_lookup_failed` | `config.users_me_lookup_failed` |
 | `hook:activity_log_write_failed` | `activity.log_write_failed` |
 | `hook:activity_touch_failed` | `activity.touch_failed` |
 | `hook:agent_lifecycle_error` | `agent.lifecycle_error` |
@@ -149,6 +150,8 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:invalid_payload_json` | `io.payload_json` |
 | `hook:json_load_failed` | `json.load_failed` |
 | `hook:json_write_failed` | `json.write_failed` |
+| `hook:phase_begin_failed` | `phase.write_failed` |
+| `hook:phase_end_failed` | `phase.write_failed` |
 | `hook:last_recall_write_failed` | `last.recall_write_failed` |
 | `hook:launch_dataset_ids_skipped` | `launch.dataset_ids_skipped` |
 | `hook:legacy_config_json_removed` | `legacy.config_json_removed` |
