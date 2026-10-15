@@ -12,6 +12,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import ssl
@@ -827,6 +828,38 @@ def list_readable_datasets(*, timeout: float = 15.0) -> list[dict]:
     return rows
 
 
+def current_user_id(*, timeout: float = 10.0) -> str:
+    """The id of the user the API key authenticates as, or "".
+
+    ``load_resolved`` looks the user up through this launch's own connection,
+    which the tenant does not know when the launch registered on another
+    server (a session moved from local to cloud). The unnamed
+    ``/agents/connections/me`` answers with any active connection of this
+    user, on cloud tenants and local servers alike; ``/users/me`` covers a
+    user with no active connection on servers whose ``/users/me`` carries an
+    ``id`` (Cognee Cloud's does not).
+    """
+
+    def agent_user(body: dict) -> str:
+        agent = body.get("agent")
+        return _row_str(agent, "user_id", "userId") if isinstance(agent, dict) else ""
+
+    lookups = (
+        ("/api/v1/agents/connections/me", agent_user),
+        ("/api/v1/users/me", lambda body: _row_str(body, "id")),
+    )
+    for path, pick in lookups:
+        try:
+            body = _json_http_request(path, method="GET", timeout=timeout)
+        except Exception as exc:
+            hook_log("current_user_lookup_failed", {"path": path, "error": str(exc)[:200]})
+            continue
+        ident = pick(body) if isinstance(body, dict) else ""
+        if ident:
+            return ident
+    return ""
+
+
 def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
     """Use effective permissions. Ownership cannot prove absence of write access.
 
@@ -845,7 +878,7 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
     """
     items = list_readable_datasets(timeout=timeout)
     if not user_id:
-        user_id = current_user_id_via_http(_api_key(), timeout=timeout)
+        user_id = current_user_id(timeout=timeout)
     writable_ids = None
     if user_id:
         try:
@@ -1760,6 +1793,31 @@ def outage_header(state: str, saves: dict, backlog: dict | None, joiner: str) ->
     return "Cognee memory: " + joiner.join(parts)
 
 
+# The visible status receipt the prompt hook asks Codex to end an answer with:
+# ``> 🧠 ● cognee: <dataset> · <mode> · Cognee memory: …`` (or ``✕ (<reason>)``
+# in the glyph slot). It is plugin chrome, not conversation, so the Stop hook
+# strips it before the answer is stored. A credit line (``> 🧠 Cognee memory
+# [mN]: …``) does not match: it has no ``cognee:`` status segment.
+STATUS_RECEIPT_PREFIX = "> 🧠 "
+_STATUS_RECEIPT_RE = re.compile(
+    r"^[ \t]*>[ \t]*🧠[ \t]*(?:●[ \t]*|✕[ \t]*\([^)\n]*\)[ \t]*)?cognee:[^\n]*(?:\n|$)",
+    re.M,
+)
+
+
+def status_receipt(header: str) -> str:
+    """The one-line receipt for a (possibly multi-line) status header."""
+    compact = " · ".join(line.strip() for line in header.splitlines() if line.strip())
+    return f"{STATUS_RECEIPT_PREFIX}{compact}"
+
+
+def strip_status_receipt(answer: str) -> str:
+    """``answer`` without the model-rendered status receipt line(s)."""
+    if "🧠" not in answer:
+        return answer
+    return _STATUS_RECEIPT_RE.sub("", answer).rstrip()
+
+
 def _pending_keys(session_id: str, turn_id: str = "") -> tuple[str, str]:
     # Scope by the host-provided session key (COGNEE_SESSION_KEY, unique per
     # Claude/Codex session) rather than the cwd-derived cognee session_id, so
@@ -2203,7 +2261,6 @@ def _control_plane_request(
     api_key: str,
     method: str = "POST",
     timeout: float = 20.0,
-    base_url: str | None = None,
 ) -> tuple[int, object]:
     """``_json_http_request`` that reports instead of raising: ``(status, body)``.
 
@@ -2211,14 +2268,7 @@ def _control_plane_request(
     got an HTTP answer (connection error, timeout).
     """
     try:
-        body = _json_http_request(
-            path,
-            payload,
-            method=method,
-            timeout=timeout,
-            base_url=base_url,
-            api_key=api_key,
-        )
+        body = _json_http_request(path, payload, method=method, timeout=timeout, api_key=api_key)
         return 200, body
     except urllib.error.HTTPError as exc:
         detail = ""
@@ -2249,11 +2299,7 @@ def _row_str(row: dict, *keys: str) -> str:
 def user_me_via_http(api_key: str) -> dict:
     """``{"id", "tenant_id"}`` for the key's user, or {} (absent /users/me on some tenants)."""
     status, body = _control_plane_request(
-        "/api/v1/users/me",
-        api_key=api_key,
-        method="GET",
-        timeout=10.0,
-        base_url=_control_plane_api_url(),
+        "/api/v1/users/me", api_key=api_key, method="GET", timeout=10.0
     )
     if status != 200 or not isinstance(body, dict):
         return {}
@@ -2261,31 +2307,6 @@ def user_me_via_http(api_key: str) -> dict:
         "id": _row_str(body, "id"),
         "tenant_id": _row_str(body, "tenant_id", "tenantId"),
     }
-
-
-def current_user_id_via_http(api_key: str, *, timeout: float = 10.0) -> str:
-    """Principal id for ``api_key`` across Cloud and self-hosted servers.
-
-    Cognee Cloud's ``UserMeDTO`` is an account-preferences object and carries no
-    identity id. Its control plane exposes the API-key owner separately as a
-    JSON string. Older/local servers may not have that route, so retain the
-    legacy ``/users/me`` object as a compatibility fallback.
-    """
-    status, body = _control_plane_request(
-        "/api/v1/api-keys/my-user-id",
-        api_key=api_key,
-        method="GET",
-        timeout=timeout,
-        base_url=_control_plane_api_url(),
-    )
-    if status == 200:
-        if isinstance(body, str):
-            return body.strip()
-        if isinstance(body, dict):
-            ident = _row_str(body, "id", "user_id", "userId")
-            if ident:
-                return ident
-    return str(user_me_via_http(api_key).get("id") or "")
 
 
 def list_datasets_via_http(api_key: str, *, timeout: float = 15.0) -> list[dict]:
@@ -3837,23 +3858,6 @@ def _platform_api_url() -> str:
         return override.rstrip("/")
     host = _platform_host_for(_local_api_url())
     return f"https://{host}" if host else _PLATFORM_API_URL_DEFAULT
-
-
-def _control_plane_api_url(service_url: str = "") -> str:
-    """Control-plane host for this server without redirecting self-hosted APIs.
-
-    Cognee Cloud splits memory traffic onto ``tenant-<id>.<environment>`` and
-    account/identity/permission traffic onto ``api.<environment>``. Local and
-    arbitrary remote/self-hosted servers expose both surfaces on one origin,
-    so only a recognized tenant host (or an explicit platform override) moves
-    control-plane requests to a different base URL.
-    """
-    service_url = (service_url or _local_api_url()).rstrip("/")
-    override = str(os.environ.get("COGNEE_PLATFORM_API_URL", "") or "").strip()
-    if override and not service_url_is_local(service_url):
-        return override.rstrip("/")
-    host = _platform_host_for(service_url)
-    return f"https://{host}" if host else service_url
 
 
 # The marker is a MAP keyed by tenant id: several concurrent Claude sessions

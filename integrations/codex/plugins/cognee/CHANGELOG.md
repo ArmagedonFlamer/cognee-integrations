@@ -42,17 +42,21 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the command text.
 
 ### Fixed
-- **Cloud dataset switching uses the correct API surfaces.** Cognee Cloud serves
-  API-key identity on the platform control plane and dataset permissions on the
-  tenant data plane. The switch workflow now resolves the principal through
-  `/api/v1/api-keys/my-user-id` instead of asking the tenant for `/users/me`, so
-  writable datasets can be verified and selected without a false `404`.
+- **Switching datasets works after a session moves from a local server to Cognee Cloud.**
+  The switch identifies the user through this launch's own connection, which the cloud
+  tenant never saw when the launch registered locally; the fallback, the tenant's
+  `/users/me`, answered `404`, so listing writable datasets failed. The switch now asks
+  `/api/v1/agents/connections/me` for any active connection of the user before falling
+  back to `/users/me`, and keeps the user it resolved while listing for the rest of the
+  switch.
 - **Codex sessions now show Cognee status and memory-hit counts by default.** Some hosts
   consume hook `systemMessage` output as hidden developer context, and transcript paths
-  do not reliably identify those hosts. The prompt hook now asks Codex to repeat only
-  the compact status header as a one-line receipt at the end of every answer.
-  `COGNEE_CODEX_VISIBLE_STATUS=off` suppresses the receipt when a host already renders
-  the native hook status.
+  do not reliably identify those hosts. On every turn that recalled memory or skipped
+  recall during an outage, the prompt hook now asks Codex to repeat only the compact
+  status header as a one-line receipt at the end of the answer, below any memory credit
+  line. The receipt is stripped before the answer is captured. In a host that already
+  renders the native hook status (the Codex TUI) it repeats that status;
+  `COGNEE_CODEX_VISIBLE_STATUS=off` suppresses it.
 - **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
   on the session alone and kept for an hour, so a chat that was resumed and left again
   within the hour was skipped as already synced, and its new turns waited for the idle

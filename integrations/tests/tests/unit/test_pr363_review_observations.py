@@ -257,9 +257,7 @@ def test_owned_uuid_selection_uses_compatible_owned_name(suite, hook_module, mon
     assert chosen == ["owned"]
 
 
-def test_owned_selection_uses_principal_resolved_during_listing(
-    suite, hook_module, monkeypatch
-):
+def test_owned_selection_uses_principal_resolved_during_listing(suite, hook_module, monkeypatch):
     from uuid import uuid4
 
     if suite.name != "codex":
@@ -272,9 +270,7 @@ def test_owned_selection_uses_principal_resolved_during_listing(
         "list_writable_datasets",
         lambda *args: {
             "principal_id": "writer",
-            "datasets": [
-                {"id": ident, "name": "owned", "owner_id": "writer", "writable": True}
-            ],
+            "datasets": [{"id": ident, "name": "owned", "owner_id": "writer", "writable": True}],
             "readonly": [],
         },
     )
@@ -287,9 +283,7 @@ def test_owned_selection_uses_principal_resolved_during_listing(
 
     monkeypatch.setattr(switch, "_ensure_dataset", inspect)
     with pytest.raises(RuntimeError, match="inspection complete"):
-        switch._switch(
-            "host", {"session_id": "old", "dataset": "previous"}, ident, force=False
-        )
+        switch._switch("host", {"session_id": "old", "dataset": "previous"}, ident, force=False)
     assert chosen == ["owned"]
 
 

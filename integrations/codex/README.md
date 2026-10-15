@@ -113,8 +113,9 @@ Details worth knowing:
 - Not sure what a terminal resolved? The status line's mode field shows it live, and `doctor.py` prints the decision with its cause, e.g. `Mode: Local — forced by COGNEE_BACKEND=local`.
 
 On startup Codex TUI shows `cognee: <dataset> · local` (or `· cloud`) to confirm the
-plugin is active. Orca currently hides Codex hook status messages, so the plugin
-automatically carries that status into a compact receipt at the end of each answer there.
+plugin is active. Some hosts (Orca, for one) hide Codex hook status messages, so the
+plugin also asks Codex to end answers with the status as a compact receipt, in every
+host — see [Status visibility](#status-visibility).
 
 Every prompt's recalled context opens with a one-line memory header:
 
@@ -523,17 +524,21 @@ cognee: my-project · cloud
 ```
 
 Codex hosts are not required to expose hook status messages consistently. The plugin
-therefore asks Codex to end every answer with the same status and recall counts as one
-visible line:
+therefore asks Codex to end the answer with the same status and recall counts as one
+visible line on every turn that recalled memory or skipped recall because the server is
+down:
 
 ```
 > 🧠 ● cognee: agent_sessions · local · Cognee memory: 2 memory hits · 3/4 turns had hits this session · saved last turn 1 prompt / 2 trace / 1 answer
 ```
 
 The receipt contains only the short status header; recalled passages remain private
-model context. It is on by default because transcript paths do not reliably identify
-the host. Set `COGNEE_CODEX_VISIBLE_STATUS=off` if your host already renders the hook
-status and you do not want the additional end-of-answer receipt.
+model context. A turn with no recall hits gets no receipt, because the header is kept out
+of the model's context then. The receipt is stripped from the answer before it is
+captured, so it never reaches memory. It is on in every host because transcript paths do
+not reliably identify the host, so a host that already renders hook status (the Codex
+TUI) shows the status twice. Set `COGNEE_CODEX_VISIBLE_STATUS=off` there if you do not
+want the extra end-of-answer line.
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host; an exported `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` switch overrides that, so the status always shows the mode the terminal actually resolved.
 
@@ -542,7 +547,7 @@ A connection glyph precedes the line: `●` once the server is confirmed up **an
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_READY_PROBE_TIMEOUT` | `3.0` | Seconds the per-prompt readiness probe waits before giving up and skipping recall for that turn. It sits on the keystroke→answer path, so the default is deliberately tight; raise it on a slow or loaded server that is otherwise healthy. |
-| `COGNEE_CODEX_VISIBLE_STATUS` | `on` | Adds a visible per-answer status receipt in every Codex host; `off` keeps status only in the host's hook-message surface. |
+| `COGNEE_CODEX_VISIBLE_STATUS` | `on` | Adds a visible end-of-answer status receipt, in every Codex host, on turns that recalled memory or hit an outage; `off` keeps status only in the host's hook-message surface. |
 
 In local mode the plugin also surfaces `LLM_API_KEY` problems (the key the local server uses to call the LLM) **in that same leading glyph slot**: `✕ (incorrect_llm_api_key) cognee: … · local` when the key is missing or the provider rejects it — one reason for both, since the fix is the same either way (`llm-state.json` still records which it was). The slot holds one sign, by precedence: a server-connection failure wins (if the server can't be reached or authenticated, its LLM key isn't the actionable problem), otherwise an LLM-key failure is shown **in place of** the `●` — the `llm_*` reason already tells you the server side itself is fine, so `●` and `✕` never appear together.
 

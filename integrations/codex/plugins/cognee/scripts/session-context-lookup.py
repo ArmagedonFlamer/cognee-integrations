@@ -61,6 +61,7 @@ from _plugin_common import (
     server_ready_hint,
     set_session_key,
     slow_streak_threshold,
+    status_receipt,
     warmup_backlog,
     with_base_url_notice,
     write_connection_state,
@@ -84,11 +85,11 @@ _AUDIT_PROMPT_CHARS = 2000
 _AUDIT_CONTEXT_CHARS = 4000
 
 # Some Codex hosts render ``systemMessage`` hook output inline, while others
-# consume the same hook result as hidden developer context. Host detection is
-# not reliable: the same app can report either an app-owned transcript path or
-# a regular ``~/.codex/sessions`` path. Ask Codex to repeat the compact status
-# header by default so every host has a visible receipt; the recalled content
-# itself remains private model context.
+# (Orca) consume the same hook result as hidden developer context. Host
+# detection is not reliable: the same app can report either an app-owned
+# transcript path or a regular ``~/.codex/sessions`` path. So on every host,
+# a turn whose header reaches the model also asks Codex to repeat it as a
+# visible receipt; the recalled content itself remains private model context.
 _VISIBLE_STATUS_ENV = "COGNEE_CODEX_VISIBLE_STATUS"
 
 
@@ -106,23 +107,31 @@ def _visible_status_enabled(payload: dict | None = None) -> bool:
 
 
 def _with_visible_status_receipt(output: dict | None, enabled: bool) -> dict | None:
-    """Put hidden hook status into the eventual answer for app-server hosts."""
+    """Ask Codex to end the answer with the status header as a visible receipt.
+
+    Only a turn whose header already reaches the model gets one: a hit, or a
+    recall skipped by an outage. An empty recall keeps the header out of the
+    model's context (SDK-1071), so it gets no receipt either. The instruction
+    takes the header's place in the context rather than repeating it.
+    """
     if not enabled or not isinstance(output, dict):
         return output
     header = str(output.get("systemMessage") or "").strip()
-    if not header:
+    hook_output = output.get("hookSpecificOutput")
+    if not header or not isinstance(hook_output, dict):
         return output
-    compact = " · ".join(line.strip() for line in header.splitlines() if line.strip())
-    receipt = f"> 🧠 {compact}"
+    context = str(hook_output.get("additionalContext") or "")
+    if header not in context:
+        return output
     instruction = (
-        "Visible Cognee status: this client hides hook status messages. End your answer "
-        "with exactly the following blockquote line, verbatim and without commentary:\n"
-        f"{receipt}\n"
+        "Visible Cognee status: not every Codex host displays hook status messages. "
+        "End your answer with the following blockquote line as its very last line, "
+        "verbatim and without commentary. If the answer also has a Cognee memory credit "
+        "line, put the credit line directly above it:\n"
+        f"{status_receipt(header)}\n"
         "This is a user-facing plugin receipt, not source material for the answer."
     )
-    hook_output = output.setdefault("hookSpecificOutput", {})
-    context = str(hook_output.get("additionalContext") or "").strip()
-    hook_output["additionalContext"] = instruction + (f"\n\n{context}" if context else "")
+    hook_output["additionalContext"] = context.replace(header, instruction, 1)
     return output
 
 
