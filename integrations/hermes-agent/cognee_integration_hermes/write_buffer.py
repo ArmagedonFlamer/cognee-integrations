@@ -11,12 +11,15 @@ Only failures where the request certainly never reached the server are queued:
 the connection could not be opened (refused, unreachable, DNS failure) or the
 server answered 503 while warming up. A timeout, a reset mid-request or another
 error can happen after the server stored the entry, so those are not replayed:
-a lost turn is better than a duplicated one. Replayed entries leave the file one
-by one, so a crash mid-replay re-sends at most the entry in flight.
+a lost turn is better than a duplicated one.
 
 The file is shared by every Hermes process on the machine; each
 read-modify-write holds an exclusive ``flock`` on a sidecar lock file where the
-platform has one, and a process-wide lock otherwise.
+platform has one, and a process-wide lock otherwise. A drain claims each entry
+before sending it, taking it out of the file under that lock, so two processes
+draining at once never send the same entry; an entry goes back only when the
+server is still away. A crash mid-send therefore loses at most the entry in
+flight rather than sending it twice.
 """
 
 from __future__ import annotations
@@ -52,13 +55,6 @@ def is_bufferable_write_error(exc: BaseException) -> bool:
     if isinstance(status, int):
         return status == 503
     return bool(getattr(exc, "not_connected", False))
-
-
-def _key(item: dict[str, Any]) -> str:
-    return json.dumps(
-        [item.get("queued_at"), item.get("session_id"), item.get("kind"), item.get("entry")],
-        sort_keys=True,
-    )
 
 
 class WriteBuffer:
@@ -141,15 +137,34 @@ class WriteBuffer:
             return sum(1 for e in entries if e.get("session_id") == session_id)
         return len(entries)
 
-    def _remove(self, item: dict[str, Any]) -> None:
+    def _claim(self, session_id: str) -> Optional[dict[str, Any]]:
+        """Take the oldest eligible entry out of the file, or None when there is none.
+
+        Under the file lock, so an entry is claimed by exactly one drain, in
+        whichever process; nobody else can send it once it has left the file.
+        """
         with self._locked():
-            current = self._load()
-            wanted = _key(item)
-            for index, entry in enumerate(current):
-                if _key(entry) == wanted:
-                    del current[index]
-                    self._save(current)
-                    return
+            entries = self._prune(self._load())
+            for index, entry in enumerate(entries):
+                if session_id and entry.get("session_id") != session_id:
+                    continue
+                del entries[index]
+                self._save(entries)
+                return entry
+            return None
+
+    def _restore(self, item: dict[str, Any]) -> None:
+        """Put a claimed entry back in its place (by ``queued_at``): the server is still away."""
+        self._maybe_non_empty = True
+        with self._locked():
+            entries = self._load()
+            at = len(entries)
+            for index, entry in enumerate(entries):
+                if float(entry.get("queued_at") or 0) > float(item.get("queued_at") or 0):
+                    at = index
+                    break
+            entries.insert(at, item)
+            self._save(self._prune(entries))
 
     def drain(
         self,
@@ -162,32 +177,31 @@ class WriteBuffer:
         """Replay queued entries oldest-first. Returns how many were stored.
 
         With ``session_id`` only that session's entries are sent (session end);
-        others stay queued. A send that fails with a bufferable error ends the
-        drain and keeps the rest; any other failure drops that entry, since
-        replaying it can never succeed (a 4xx) or may duplicate it (a timeout).
-        Single-flight per process: a drain already running is not joined.
+        others stay queued. Each entry is claimed (taken out of the file) before
+        it is sent, so a drain running in another process never sends it too. A
+        send that fails with a bufferable error puts the entry back and ends the
+        drain; any other failure drops it, since replaying it can never succeed
+        (a 4xx) or may duplicate it (a timeout). Single-flight per process: a
+        drain already running is not joined.
         """
         if not self._drain_lock.acquire(blocking=bool(session_id)):
             return 0
         try:
             deadline = time.monotonic() + budget_secs
-            with self._locked():
-                pending = self._prune(self._load())
             stored = 0
-            for item in pending:
-                if time.monotonic() >= deadline:
+            while time.monotonic() < deadline:
+                item = self._claim(session_id)
+                if item is None:
                     break
-                if session_id and item.get("session_id") != session_id:
-                    continue
                 try:
                     send(item)
                     stored += 1
                 except Exception as exc:
                     if is_bufferable_write_error(exc):
+                        self._restore(item)
                         break
                     if on_drop is not None:
                         on_drop(item, exc)
-                self._remove(item)
             with self._locked():
                 if not self._load():
                     self._maybe_non_empty = False

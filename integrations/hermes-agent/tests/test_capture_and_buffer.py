@@ -325,6 +325,57 @@ def test_drain_drops_an_entry_that_can_never_succeed(buffer):
     assert buffer.size() == 0
 
 
+def test_a_failed_send_puts_the_entry_back_in_its_place(buffer):
+    for n in range(3):
+        buffer.enqueue(dataset="d", session_id="s", kind="qa", entry={"n": n})
+    sent = []
+
+    def send(item):
+        if item["entry"]["n"] == 1:
+            raise _bufferable()
+        sent.append(item["entry"]["n"])
+
+    assert buffer.drain(send, budget_secs=5) == 1
+    assert sent == [0]
+    data = json.loads(buffer.path.read_text())
+    assert [e["entry"]["n"] for e in data["entries"]] == [1, 2]
+    assert buffer.maybe_non_empty
+
+
+def test_two_processes_draining_at_once_send_each_entry_exactly_once(tmp_path):
+    # Two WriteBuffer instances on one file stand in for two Hermes processes:
+    # each has its own drain lock, and only the file lock is shared.
+    import threading
+    from collections import Counter
+
+    path = tmp_path / "pending.json"
+    seed = write_buffer.WriteBuffer(path)
+    for n in range(40):
+        seed.enqueue(dataset="d", session_id="s", kind="qa", entry={"n": n})
+    sent = Counter()
+    lock = threading.Lock()
+    start = threading.Barrier(2)
+
+    def send(item):
+        time.sleep(0.005)  # a slow server, so the two drains overlap
+        with lock:
+            sent[item["entry"]["n"]] += 1
+
+    def drain():
+        buffer = write_buffer.WriteBuffer(path)
+        start.wait()
+        buffer.drain(send, budget_secs=10)
+
+    workers = [threading.Thread(target=drain) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=20)
+    assert sorted(sent) == list(range(40))
+    assert set(sent.values()) == {1}, {n: c for n, c in sent.items() if c != 1}
+    assert seed.size() == 0
+
+
 def test_drain_for_one_session_leaves_the_others(buffer):
     buffer.enqueue(dataset="d", session_id="a", kind="qa", entry={})
     buffer.enqueue(dataset="d", session_id="b", kind="qa", entry={})

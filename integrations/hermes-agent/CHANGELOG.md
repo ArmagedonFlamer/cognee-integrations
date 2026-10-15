@@ -51,7 +51,8 @@ writes (#479).
   open, writes go straight to the queue instead of being dropped. A write that
   timed out, was cut off mid-request, or failed otherwise is not replayed, since
   the server may already have stored it. The file is shared by every Hermes
-  process and locked around each change. Until now such writes were logged and
+  process and locked around each change, and a replay claims each entry before
+  sending it, so two processes replaying at once never send the same one twice. Until now such writes were logged and
   lost, and every turn of a cold boot with them.
 - **`cognee_recap` tool and `hermes cognee standup|digest|timeline`**, a port of
   the Claude Code and Codex recap skills (and OpenClaw's `memory_recap`): what was
