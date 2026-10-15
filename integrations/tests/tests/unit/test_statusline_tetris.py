@@ -65,14 +65,17 @@ def test_palette_and_meaning(sl, monkeypatch, theme, color):
     monkeypatch.setenv("COGNEE_STATUSLINE_THEME", theme)
     monkeypatch.setenv("COLUMNS", "120")
     line = sl._tetris_line(SESSION)
-    assert f"\033[38;5;{color}m■" in line
-    assert f"\033[48;5;{color}m\033[30m cognee " in line
-    # The badge's leading square is the connection glyph: ● once confirmed, ○
-    # while unknown (a failure leads with ✕ and keeps the square); never "?".
-    assert plain(sl, line).startswith(("● cognee ■", "○ cognee ■", "✕"))
+    # The wordmark in the brand purple, bold, with no chip around it: the same
+    # row the mod draws above the prompt.
+    assert f"\033[38;5;{color}m\033[1mcognee\033[0m" in line
+    assert "■" not in plain(sl, line) and "\033[48;5;" not in line
+    # The connection glyph leads: ● once confirmed, ○ while unknown (a failure
+    # leads with ✕ and its reason); never "?".
+    assert plain(sl, line).startswith(("● cognee ", "○ cognee ", "✕"))
     assert "?" not in plain(sl, line)
     assert "cognee+" not in line
-    assert f"\033[38;5;{color}m\033[1mmanual" in line
+    # The dataset is plain, as in the picker above the prompt; the mode purple.
+    assert "cognee\033[0m manual" in line and f"\033[38;5;{color}m\033[1mmanual" not in line
     assert f"\033[38;5;{color}m\033[1mcloud" in line
     assert "manual  ·  cloud  ·  ~2.4k tokens saved" in plain(sl, line)
     assert "reminiscence" not in line
@@ -86,8 +89,8 @@ def test_brand_is_constant_across_recall_outcomes(sl, monkeypatch, hits):
     monkeypatch.setenv("COLUMNS", "120")
     write_json(sl._RECALL_DIR / f"{SESSION}.json", marker(hits={"session": hits}))
     line = sl._tetris_line(SESSION)
-    assert re.search(r"(^|\s)[●○] cognee ■", plain(sl, line))
-    assert "\033[48;5;141m\033[30m cognee " in line
+    assert re.search(r"^[●○] cognee manual", plain(sl, line))
+    assert "\033[38;5;141m\033[1mcognee\033[0m" in line
     assert "cognee+" not in line
     assert "idea" not in line
 
@@ -127,8 +130,8 @@ def test_failure_and_semantic_colors(sl, monkeypatch):
     line = sl._tetris_line(SESSION)
     assert "\033[1;31m✕ (server_error)" in line
     assert "\033[32mcredits: $5.00" in line and "\033[33mupdate" in line
-    # A failure keeps the badge's square and leads the line with the red verdict.
-    assert plain(sl, line).startswith("✕ (server_error) ■ cognee ■")
+    # A failure leads the line with the red verdict, then the wordmark.
+    assert plain(sl, line).startswith("✕ (server_error) cognee manual")
 
 
 def test_render_exception_falls_back(sl, monkeypatch, capsys):

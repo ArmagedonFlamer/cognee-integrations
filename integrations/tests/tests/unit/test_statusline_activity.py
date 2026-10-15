@@ -7,7 +7,7 @@ Contract:
   * an active phase renders in the accent colour, present tense (`recalling…`);
     a stale active phase (a hook that died) is ignored;
   * otherwise the most recent finished result renders in past tense with its
-    number (`3 memories used`, `✓ saved`); zero recalled is phrased
+    number (`3 memories used`, `✓ memory saved`); zero recalled is phrased
     (`nothing relevant`), never counted;
   * a result a minute old renders faint, so "recent" and "left over" differ;
   * only this session's marker is ever read, and a session id from stdin never
@@ -136,7 +136,7 @@ def test_stale_active_phase_falls_back_to_the_last_result(sl):
         active=_active("recalling", age=sl._PHASE_STALE_SECONDS + 1),
         results={"saved": _result(2, age=5)},
     )
-    assert sl._activity_segment(_SESSION) == " · ✓ saved"
+    assert sl._activity_segment(_SESSION) == " · ✓ memory saved"
 
 
 def test_unknown_phase_renders_nothing(sl):
@@ -154,7 +154,7 @@ def test_recalled_count_renders_past_tense(sl):
 
 def test_single_memory_is_singular(sl):
     _marker(sl, results={"saved": _result(1)})
-    assert sl._activity_segment(_SESSION) == " · ✓ saved"
+    assert sl._activity_segment(_SESSION) == " · ✓ memory saved"
 
 
 def test_zero_recalled_is_phrased_not_counted(sl):
@@ -187,9 +187,37 @@ def test_failed_ready_says_unavailable(sl):
     assert sl._activity_segment(_SESSION) == " · memory unavailable"
 
 
+@pytest.mark.parametrize(
+    "kind, text",
+    [
+        ("anchored", "context not kept"),
+        ("synced", "session sync failed"),
+        ("saved", "save failed"),
+    ],
+)
+def test_failed_work_is_never_ticked(sl, kind, text):
+    """``ok`` False is honoured for every kind: a sync that raised, a
+    compaction anchor that failed or a dropped write must not read as done."""
+    _marker(sl, results={kind: _result(0 if kind == "saved" else None, ok=False)})
+    assert sl._activity_segment(_SESSION) == f" · {text}"
+
+
+def test_a_buffered_write_is_queued_not_failed(sl):
+    entry = _result(0, ok=False)
+    entry["buffered"] = True
+    _marker(sl, results={"saved": entry})
+    assert sl._activity_segment(_SESSION) == " · save queued"
+
+
+def test_a_failed_write_after_a_saved_one_still_ticks_the_turn(sl):
+    """The count is the turn's total; one landed write keeps the tick."""
+    _marker(sl, results={"saved": _result(1, ok=False)})
+    assert sl._activity_segment(_SESSION) == " · ✓ memory saved"
+
+
 def test_most_recent_result_wins(sl):
     _marker(sl, results={"recalled": _result(3, age=20), "saved": _result(5, age=2)})
-    assert sl._activity_segment(_SESSION) == " · ✓ saved"
+    assert sl._activity_segment(_SESSION) == " · ✓ memory saved"
 
 
 def test_old_result_renders_faint(sl):

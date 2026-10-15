@@ -16,7 +16,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Live activity in the status line.** The bar now says what memory is doing while
   it happens (`recalling…`, `saving…`, `learning from this session…`, `setting up memory ·
   starting memory server…`, `preserving context…`, `saving session…`) and, once
-  done, what it did (`3 memories used`, `✓ saved`, `✓ learned`, `memory ready`):
+  done, what it did (`3 memories used`, `✓ memory saved`, `✓ learned`, `memory ready`):
   a number only for recall, a ticked verb for everything that keeps work. A
   finished result stays until the next operation begins, turns faint after a
   minute and leaves after five. The hooks write one activity
@@ -30,7 +30,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   a terminal alike, with a braille spinner while an operation runs. In a terminal
   the module marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`)
   and the renderer, run as a settings-file status line, prints nothing for a
-  marked session, so the row is not shown twice. The row carries the badge, the
+  marked session, so the row is not shown twice. The row carries the wordmark, the
   counters and the tokens-saved estimate the text line shows (below), the
   dataset as a picker, and what memory is doing; the credit inside an answer that
   used memory stays the agent's own (below). It also adds what memory is doing
@@ -44,13 +44,28 @@ project adheres to [Semantic Versioning](https://semver.org/).
   rows (`icon`, `band`, `spinner`) switch each piece off. Needs Claude
   Code 2.1.287 (terminal) or 2.1.286 (Desktop); on older versions and wherever
   mods are disabled the settings hooks keep running unchanged.
+- **Out of cloud credits, the status row links to billing.** Where the text line
+  prints `top up: <url>`, the row above the prompt draws `top up` as a link (an
+  anchor in the Desktop app, a terminal hyperlink where supported).
+- **The purple follows Claude Code's theme.** Without `COGNEE_STATUSLINE_THEME`,
+  the row above the prompt and the text line pick the darker purple when the
+  Claude Code theme is `light` or `light-daltonized`, the brand lavender
+  otherwise; the variable still overrides. A theme of `auto` cannot be told
+  apart from dark, so a light terminal on `auto` sets one of the two.
+- **The wave mark on the credit line (desktop).** The line the model writes
+  under an answer that used memory (`> 🧠 Cognee memory [m4, m5]: …`) is drawn
+  on the desktop as the wave mark and the note alone, as a row under the
+  reply; a terminal keeps the line as written, and the stored message is
+  unchanged.
 - **The dataset name in the status row is a picker.** It lists the datasets you
   can write to, plus `+ new dataset…`, which turns the picker into a text field
   for a dataset that does not exist yet (one listing when the band is first drawn, unawaited, and after
   each switch) and switches the session on pick with no model turn (the plugin's
   `switch-dataset.py`, the session it leaves synced first); the row says
   `switching dataset…` meanwhile and a toast reports the outcome, errors
-  included. Plain text until the listing lands or when it fails.
+  included. Plain text until the listing lands or when it fails. In a
+  terminal the picker is closed at rest: the name is a button that opens it,
+  as does `/cognee-dataset` alone.
   `/cognee-dataset <name>` switches from the prompt the same way, on every
   surface; `/cognee-dataset` alone lists the datasets.
 - **A `see fix` button beside a red ✕ on the status row.** It opens a dialog above
@@ -137,8 +152,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   nothing in a session where the module draws the row, so the two never show
   together. On a Claude Code that does not load mods no row is drawn unless you
   add that entry.
-- **Status line branding and counters.** The row (and the text line) shows a purple
-  `cognee` badge whose leading glyph is the connection: a green `●` once confirmed,
+- **Status line branding and counters.** The row and the text line show the
+  `cognee` wordmark bold in the brand purple, the dataset plain and the mode in
+  purple, led by the connection glyph: a green `●` once confirmed,
   a dim `○` while unknown, and on a failure the red `✕ (<reason>)` leads the line
   (the row above the prompt opens with the brain and `cognee` in the brand
   lavender). No counters: the activity segment (`3 memories used`) says what
@@ -191,6 +207,76 @@ project adheres to [Semantic Versioning](https://semver.org/).
   full-length re-test that times out again doubles that window, up to an hour.
 
 ### Fixed
+- **The dataset picker never appeared on a cloud tenant without a user id in
+  the launch record.** The dataset lister asked `/api/v1/users/me` on the
+  tenant to tell writable datasets apart. That route is not on the tenant data
+  plane (it lives on the platform API, where it answers account settings
+  without an id), so the 404 took the whole listing down although
+  `/api/v1/datasets/` had answered, reported as `GET /api/v1/datasets failed
+  (HTTP 404)`. The lister now takes the key's user from the data plane's
+  `/api/v1/agents/connections/me`, as session start does, so the write check
+  runs on cloud tenants; `/users/me` remains only as the last resort on servers
+  that are not cloud tenants, and its failure is logged rather than fatal
+  (every readable dataset then offered, `writable` unknown). The switch error
+  names the request that actually failed. Same fix in the Codex and
+  Antigravity copies.
+- **The cloud worker served only the tenant it started with.** It read
+  `~/.cognee/.env` once, at start, and lived for hours, so after the file was
+  pointed at another tenant (or at local) every session there was starved:
+  its spooled captures were never sent, its improves never ran, and a dataset
+  switch waited its full 14 minutes for an improve nobody would run, with the
+  row on `switching dataset…` the whole time. The worker now re-reads the env
+  file on every pass (values the file set follow the file; a real export still
+  wins), so the target is whatever the file says now.
+- **`saving…` never ended on the cloud.** In cloud mode the Stop hook only
+  spools the capture for the worker and writes no phase, so the row's `saving…`
+  (started when the turn ended) had nothing to end it, and with no marker file
+  at all the band never cleared it. The worker now reports each capture to the
+  row as it lands (`✓ memory saved`), is held for replay (`save queued`) or is dropped
+  (`save failed`), and the band drops a `saving…` nothing reported within the
+  marker's stale window (90 s).
+- **Switching to a dataset by UUID failed on every server.** The switch's
+  capability gate looked for a custom marker (`x-cognee-session-dataset-ids`)
+  in the server's OpenAPI description that no Cognee server emits (only the
+  plugin's own test mock did), so a switch that went by UUID always ended
+  with "This Cognee server cannot safely store typed session memory by
+  dataset UUID". The gate now reads what the description actually says: whether
+  the request body of `POST /api/v1/remember/entry` lists `dataset_id` (inline
+  or behind a `$ref`), which every server since the V1 routes does.
+- **A session on a cloud tenant could end up with no user id.** Session start
+  looked up the session's own connection; on a tenant where that connection
+  did not exist (a session registered elsewhere) it fell back to `/users/me`,
+  which a tenant host does not serve. With no id every dataset counted as
+  someone else's, so the switch went by UUID and hit the gate above. The
+  identity chain is now: the named connection, then any connection of the key
+  (the key's user is the same on all of them), then `/users/me` only on servers
+  that are not cloud tenants. The switch also takes the principal the dataset
+  lister resolved when the launch record carries none. Same fixes in the Codex
+  and Antigravity copies.
+- **The status row told the truth only about success.** Four phases could end
+  looking done when they were not: the recall hook's early returns for a known
+  outage, a failed liveness probe or a missing session id never ended the
+  `recalling` phase, so the row spun on `recalling…` for the marker's 90 s stale
+  window exactly when the server was down (the recall is now wrapped so every
+  exit ends it, a count-less one as failed); a write that raised ended `saving`
+  with `ok` at its default, so a dropped write (a 402 included) read `✓ memory saved`
+  (now `save failed`, or `save queued` when the entry was spooled for replay;
+  a landed write passes `ok` from its result); the exit sync and the
+  compaction anchor ended their phases from a `finally` with the default, so a
+  sync that raised read `✓ session saved` and a failed anchor `✓ context kept`
+  (both now track the outcome, and the labels have failure forms: `session
+  sync failed`, `context not kept`). Both renderers, the Python status line and
+  the mod, read the new `ok`/`buffered` fields the same way.
+- **Per-session marker files were never swept.** Each session left a
+  `phase/<session>.json` (the live-activity marker) and a `band/<session>.json`
+  (the mod's marker) under `~/.cognee-plugin/claude-code/`, and
+  `sweep_stale_state` aged out every other per-session directory but these two.
+  Both now join the age sweep.
+- **The `remember` tool caps what one call stores.** Each call runs a cognify
+  on the tenant's key, and a typed tool whose description invites a whole file
+  lowered the bar for a large one. `content` past 16,000 characters or a `file`
+  past 64,000 bytes is refused (the file sized, never read) with a pointer to
+  the `cognee-remember` skill, which keeps no cap.
 - **The "Cognee Memory Connected" message said `Mode: cloud` for local sessions.**
   Its mode word was "is a URL set", checked after the bootstrap had filled the
   localhost default into the configured URL, so every local session, a

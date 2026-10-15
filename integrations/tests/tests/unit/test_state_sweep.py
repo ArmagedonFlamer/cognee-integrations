@@ -49,8 +49,12 @@ def _dead_pid() -> int:
 # ── status markers and per-session caches: age only ────────────────────────
 
 
-@pytest.mark.parametrize("subdir", ["conn-state", "llm-state", "recall", "bridge", "pending"])
+@pytest.mark.parametrize(
+    "subdir", ["conn-state", "llm-state", "recall", "bridge", "pending", "phase", "band"]
+)
 def test_week_old_session_files_go_and_recent_ones_stay(pc, subdir):
+    if subdir in ("phase", "band") and not hasattr(pc, "_PHASE_DIR"):
+        pytest.skip("no live-activity marker on this suite")
     directory = pc._PLUGIN_DIR / subdir
     old = _write(directory / "old.json", {"x": 1}, 8 * DAY)
     fresh = _write(directory / "fresh.json", {"x": 1}, 6 * DAY)

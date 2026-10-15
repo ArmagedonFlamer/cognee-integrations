@@ -714,9 +714,10 @@ def _result_label(kind: str, entry: dict) -> str:
             return "nothing relevant"
         return f"{_plural(count, 'memory')} used"
     if kind == "saved":
-        if not ok and not count:
-            return "save failed"
-        return "✓ saved"
+        if ok or count:
+            return "✓ memory saved"
+        # Nothing landed this turn: spooled for replay, or dropped for good.
+        return "save queued" if entry.get("buffered") is True else "save failed"
     if kind == "ready":
         return "memory ready" if ok else "memory unavailable"
     if kind == "consolidated":
@@ -724,9 +725,9 @@ def _result_label(kind: str, entry: dict) -> str:
     if kind == "indexed":
         return "✓ repository indexed" if ok else "indexing failed"
     if kind == "anchored":
-        return "✓ context kept"
+        return "✓ context kept" if ok else "context not kept"
     if kind == "synced":
-        return "✓ session saved"
+        return "✓ session saved" if ok else "session sync failed"
     return ""
 
 
@@ -926,13 +927,14 @@ def _credits_segment() -> str:
     normal weight and carries a ``~``: spend aggregates asynchronously
     server-side, so the delta is an attribution, not an invoice.
     """
-    if os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower() in (
-        "0",
-        "false",
-        "no",
-        "off",
-    ):
+    choice = os.environ.get("COGNEE_STATUSLINE_CREDITS", "").strip().lower()
+    if choice in ("0", "false", "no", "off"):
         return ""
+    if choice == "exhausted":
+        # A preview of the out-of-credits state, for checking how the segment
+        # and the row's billing link look without an empty balance: never
+        # read from a marker, never written anywhere.
+        return f" · \033[31mcredits: -$0.40\033[0m{_top_up_hint()}"
     if _active_mode() != "cloud":
         return ""
     # The marker is a MAP keyed by tenant id (several terminals can be on
@@ -1076,12 +1078,21 @@ def _classic_line(session_id: str) -> str:
     )
 
 
+def _light_theme() -> bool:
+    """COGNEE_STATUSLINE_THEME first; else Claude Code's own ``theme`` setting
+    (``light``, ``light-daltonized``). ``auto`` cannot be told apart here."""
+    forced = os.environ.get("COGNEE_STATUSLINE_THEME", "").lower()
+    if forced in ("light", "dark"):
+        return forced == "light"
+    try:
+        settings = json.loads((Path.home() / ".claude" / "settings.json").read_text("utf-8"))
+        return str(settings.get("theme") or "").lower().startswith("light")
+    except Exception:
+        return False
+
+
 def _purple() -> str:
-    return (
-        "\033[38;5;93m"
-        if os.environ.get("COGNEE_STATUSLINE_THEME", "").lower() == "light"
-        else "\033[38;5;141m"
-    )
+    return "\033[38;5;93m" if _light_theme() else "\033[38;5;141m"
 
 
 def _unicode_output() -> bool:
@@ -1170,21 +1181,21 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     purple = _purple()
     unicode = _unicode_output()
     columns = _columns()
-    # The connection glyph is the badge's leading square, so it costs no width:
-    # a green ● once the server is confirmed up and authenticated, a dim ○ while
-    # nothing is known yet (warming up, no marker). A failure keeps the square
-    # and leads the line with the red ✕ and its reason, as on the classic line.
+    # The same row the mod draws above the prompt, so the two never look like
+    # different things: the connection glyph (a green ● once the server is
+    # confirmed up and authenticated, a dim ○ while nothing is known yet, the
+    # red ✕ and its reason on a failure), the wordmark in the brand purple, the
+    # dataset plain, the mode in purple.
     health = _status_prefix(session_id)
     if "●" in health:
-        lead, health = f"{_OK_STYLE}●{_RESET}", ""
+        lead, health = f"{_OK_STYLE}●{_RESET} ", ""
     elif health:
-        lead = f"{purple}■{_RESET}"
+        lead, health = health.rstrip() + " ", ""
     else:
-        lead = f"{_DIM}○{_RESET}"
+        lead = f"{_DIM}○{_RESET} "
     dataset = _clean_label(_active_dataset(session_id))
-    color = "93" if os.environ.get("COGNEE_STATUSLINE_THEME", "").lower() == "light" else "141"
-    badge = f"{lead}\033[48;5;{color}m\033[30m cognee {_RESET}{purple}■{_RESET}"
-    brand = f"{badge} {purple}\033[1m{dataset}{_RESET} · {purple}\033[1m{_active_mode()}{_RESET}"
+    badge = f"{lead}{purple}\033[1mcognee{_RESET}"
+    brand = f"{badge} {dataset} · {purple}\033[1m{_active_mode()}{_RESET}"
     stats = (
         _read_json(_SESSIONS_DIR / session_id / "stats.json")
         if _path_safe(session_id) and session_id not in {".", ".."}
@@ -1216,7 +1227,7 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
     else:
         candidates += [
             core.replace(" · ", "·") + credits + update,
-            health + badge + " " + (credits + update).lstrip(" ·"),
+            badge + " " + (credits + update).lstrip(" ·"),
             # Narrowest form with a notice: health plus the notices alone.
             health + (credits + update).lstrip(" ·"),
         ]
@@ -1265,6 +1276,9 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
     # The text line paints the balance green, or red once exhausted or refused;
     # the row above the prompt reads the verdict here rather than the colour.
     credits_exhausted = "\033[31m" in raw_credits
+    # The way out, as a link the row above the prompt can draw: present only
+    # while the text line shows its top-up hint.
+    billing_url = _billing_url() if "top up: " in credits else ""
     update = _plain(_update_segment()).strip(" ·")
     dataset = _active_dataset(session_id)
     mode = _active_mode()
@@ -1280,6 +1294,7 @@ def _snapshot(session_id: str, enabled: bool) -> dict:
         "mode": mode,
         "credits": credits,
         "credits_exhausted": credits_exhausted,
+        "billing_url": billing_url,
         "activity": activity,
         "counts": counts,
         "update": update,

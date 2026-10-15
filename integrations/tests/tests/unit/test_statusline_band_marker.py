@@ -51,7 +51,7 @@ def _mark(sl, session: str) -> None:
 
 
 def test_without_a_marker_the_line_renders(sl, monkeypatch, capsys):
-    # The default style is the badge line ("■ cognee ■"); classic says "cognee:".
+    # The default style is the band-style line ("● cognee <dataset>"); classic says "cognee:".
     assert "cognee" in _render(sl, monkeypatch, capsys, _SESSION)
 
 
@@ -75,3 +75,12 @@ def test_the_json_mode_the_module_uses_is_unaffected(sl, monkeypatch, capsys):
 def test_a_session_id_that_is_not_a_safe_path_never_matches(sl):
     assert sl._band_draws_row("../../etc/passwd") is False
     assert sl._band_draws_row("") is False
+
+
+def test_the_exhausted_preview_switch_renders_the_segment_without_a_marker(sl, monkeypatch):
+    monkeypatch.setenv("COGNEE_STATUSLINE_CREDITS", "exhausted")
+    seg = sl._credits_segment()
+    assert "credits: -$0.40" in seg and "top up: " in seg
+    snap = sl._snapshot(_SESSION, enabled=True)
+    assert snap["credits_exhausted"] is True
+    assert snap["billing_url"] and snap["billing_url"] in snap["credits"]

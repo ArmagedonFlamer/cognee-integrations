@@ -67,9 +67,15 @@ def log(event: str, **detail) -> None:
 
 
 def target() -> dict:
+    from _env_file import refresh_env_file
     from _plugin_common import _local_api_url, load_cached_api_key
     from config import load_config
 
+    # The worker outlives any edit of ~/.cognee/.env (a tenant change, a
+    # switch to local): the target is whatever the file says now, so the
+    # sessions pointed there are served instead of starving behind a worker
+    # pinned to the tenant it started with.
+    refresh_env_file()
     url = _local_api_url().rstrip("/")
     key = (
         os.environ.get("COGNEE_PRINCIPAL_API_KEY")
@@ -247,6 +253,19 @@ def improve_wait_detail(path: Path, *, now: float = None) -> str:
     return f"Last result: {error}; next retry in {remaining}s."
 
 
+def _mark_capture_unsaved(item: dict, *, buffered: bool) -> None:
+    """The status row's word for a capture that did not land this pass: queued
+    for replay, or dropped for good. Never raises."""
+    if not item:
+        return
+    try:
+        from _plugin_common import phase_end
+
+        phase_end("saving", count=0, ok=False, buffered=buffered, session_key=item.get("host_key"))
+    except Exception:
+        pass
+
+
 def _expire(path: Path, kind: str) -> None:
     expired = path.parent / "expired"
     expired.mkdir(parents=True, exist_ok=True)
@@ -287,6 +306,7 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
         item = read(path)
         if not item or now - item.get("created_at", 0) > MAX_AGE:
             _expire(path, "capture")
+            _mark_capture_unsaved(item, buffered=False)
             continue
         # With capture off nothing is sent, but old events still age out above.
         if not capturing or item.get("target") != identity:
@@ -303,11 +323,13 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                 item.get("entry", {}).get("method_params", {}),
             ):
                 _expire(path, "capture_disabled_by_policy")
+                _mark_capture_unsaved(item, buffered=False)
                 continue
             redacted = redact(item["entry"])
             if item.get("request") and redacted != item["entry"]:
                 # Never change a payload after its event ID may have committed.
                 _expire(path, "capture_policy_changed")
+                _mark_capture_unsaved(item, buffered=False)
                 continue
             item["entry"] = redacted
             item.setdefault("client_event_id", str(uuid.uuid4()))
@@ -342,17 +364,20 @@ def drain(send, *, now: float = None, verify=None, prepare=None) -> int:
                     conflict = False
                 if conflict:
                     _expire(path, "capture_payload_conflict")
+                    _mark_capture_unsaved(item, buffered=False)
                     continue
             code = getattr(exc, "code", None)
             if code in PERMANENT_REJECTIONS:
                 log("cloud_capture_rejected", session=session, status=code)
                 _expire(path, "capture_rejected")
+                _mark_capture_unsaved(item, buffered=False)
                 continue
             if code == 402:
                 from _plugin_common import record_payment_required
 
                 record_payment_required("save")
             _retry(path, item, now, type(exc).__name__ + ": " + str(exc)[:160])
+            _mark_capture_unsaved(item, buffered=True)
             if not isinstance(code, int) or code >= 500 or code in SERVER_WIDE_FAILURES:
                 break
             held.add(session)
@@ -366,9 +391,11 @@ def _after_delivery(item: dict, verified: bool) -> None:
     not send the event through the retry path, which would write it back.
     """
     try:
-        from _plugin_common import bump_turn_counter, clear_payment_required
+        from _plugin_common import bump_turn_counter, clear_payment_required, phase_end
         from _session_stats import update
 
+        # The status row: the turn's save landed (the Stop hook only spooled it).
+        phase_end("saving", count=1, session_key=item["host_key"])
         update(item["host_key"], saves=1, metadata={"session_id": item["session_id"]})
         count, every_n = bump_turn_counter(item["session_id"])
         clear_payment_required()

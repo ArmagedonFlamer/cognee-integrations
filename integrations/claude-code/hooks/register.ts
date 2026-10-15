@@ -58,6 +58,7 @@ type Snapshot = {
   mode: string
   credits: string
   credits_exhausted?: boolean
+  billing_url?: string
   update: string
   text: string
   counts?: Counts
@@ -68,7 +69,7 @@ type Snapshot = {
 const PURPLE_DARK = '#bc9bff'
 const PURPLE_LIGHT = '#7c4dff'
 
-type PhaseResult = { count?: unknown; at?: unknown; ok?: unknown }
+type PhaseResult = { count?: unknown; at?: unknown; ok?: unknown; buffered?: unknown }
 type PhaseMarker = {
   active?: { phase?: unknown; detail?: unknown; updated_at?: unknown } | null
   results?: Record<string, PhaseResult>
@@ -118,6 +119,13 @@ const OWN_PHASES = ['searching', 'remembering', 'switching']
 
 const SEARCH_TIMEOUT_MS = 60_000
 const REMEMBER_TIMEOUT_MS = 90_000
+// What the remember tool takes in one call. Each call runs a cognify on the
+// tenant's key (an LLM pass per chunk plus embeddings), and a typed tool
+// whose description invites a whole file lowers the bar for a large one.
+// Past these the call is refused with a pointer to the cognee-remember
+// skill, which has no cap.
+const REMEMBER_MAX_CHARS = 16_000
+const REMEMBER_MAX_FILE_BYTES = 64_000
 const LIST_TIMEOUT_MS = 20_000
 // A switch syncs the session it leaves first; that can take minutes.
 const SWITCH_TIMEOUT_MS = 600_000
@@ -136,6 +144,12 @@ let rendererFailures = 0
 let snapshot: Snapshot | null = null
 let active: Activity | null = null
 let result: Activity | null = null
+// When the shown activity was set, and whether the marker itself says one is
+// running: a 'saving' the Stop hook announced but nothing ever reported (a
+// cloud capture the worker could not deliver, no marker at all) expires
+// after the marker's own stale window instead of spinning for the session.
+let activeSince = 0
+let markerActive = false
 let frame = 0
 let spin: { cancel: () => void } | null = null
 let poll: { cancel: () => void } | null = null
@@ -162,13 +176,16 @@ let switching = false
 // make the value one no dataset can be named, so it never collides.
 const NEW_DATASET = '+ new dataset…'
 let namingDataset = false
+// In a terminal the picker stays closed until asked for: a click anywhere on
+// the band gives the band the keys, and a focused picker shows its list.
+let pickerOpen = false
 
 // The first-run tour: one hint line under the row per step, about what is
 // right above it. Shown once per machine (the store key survives sessions);
 // bump TOUR_VERSION to show a rewritten tour once more. -1 is "not showing".
 const TOUR_VERSION = 1
 const TOUR_STEPS = [
-  '↑ the dataset name is a picker: pick another dataset, or "+ new dataset…" to create one',
+  'The dataset name is a picker ↑: pick another dataset, or "+ new dataset…" to create one',
   '↑ ● means memory is connected · local/cloud shows you where your memory lives · the end of the row says what memory is doing',
   'Claude uses memories recalled by Cognee on every prompt · /cognee-dataset <name> switches by name · /cognee-tour replays this tutorial',
 ]
@@ -294,8 +311,9 @@ function resultLabel(kind: string, entry: PhaseResult): string {
       if (!count) return 'nothing relevant'
       return `${plural(count, 'memory')} used`
     case 'saved':
-      if (!ok && !count) return 'save failed'
-      return '✓ saved'
+      if (ok || count) return '✓ memory saved'
+      // Nothing landed this turn: spooled for replay, or dropped for good.
+      return entry.buffered === true ? 'save queued' : 'save failed'
     case 'ready':
       return ok ? 'memory ready' : 'memory unavailable'
     case 'consolidated':
@@ -303,9 +321,9 @@ function resultLabel(kind: string, entry: PhaseResult): string {
     case 'indexed':
       return ok ? '✓ repository indexed' : 'indexing failed'
     case 'anchored':
-      return '✓ context kept'
+      return ok ? '✓ context kept' : 'context not kept'
     case 'synced':
-      return '✓ session saved'
+      return ok ? '✓ session saved' : 'session sync failed'
     default:
       return ''
   }
@@ -357,6 +375,34 @@ function activity(phase: Phase): Activity {
 // Whether a tree draws anything: text that is not blank, or a control. The
 // engine's own band is often an empty element, which still takes a row in a
 // terminal when stacked under ours, so an empty one is left out.
+// The credit line at the end of an answer, as the recall hook's instruction
+// has the model write it: "> 🧠 Cognee memory [m4, m5]: what it remembered".
+// Returns the text without it, the tags and the note; null when the text
+// does not end with one.
+const CREDIT_LINE = /^(?:>\s*)?🧠\s*Cognee memory \[([^\]]+)\]:\s*(.*)$/u
+function splitCredit(text: string): { body: string; tags: string; note: string } | null {
+  const lines = text.replace(/\s+$/u, '').split('\n')
+  const last = lines[lines.length - 1] ?? ''
+  const m = CREDIT_LINE.exec(last.trim())
+  if (!m) return null
+  return { body: lines.slice(0, -1).join('\n').replace(/\s+$/u, ''), tags: (m[1] ?? '').trim(), note: (m[2] ?? '').trim() }
+}
+
+// Whether the row should use the light-background purple: the env override
+// first, then Claude Code's theme row ("light", "light-daltonized", ...).
+async function lightTheme($: any): Promise<boolean> {
+  const forced = ((await $.env.get('COGNEE_STATUSLINE_THEME')) ?? '').toLowerCase()
+  if (forced === 'light') return true
+  if (forced === 'dark') return false
+  try {
+    const rows = (await $.config.list()) as { key?: string; value?: unknown }[]
+    const theme = String(rows.find(r => r.key === 'theme')?.value ?? '').toLowerCase()
+    return theme.startsWith('light')
+  } catch {
+    return false
+  }
+}
+
 function drawsSomething(tree: unknown): boolean {
   if (tree === null || tree === undefined || tree === false) return false
   if (typeof tree === 'string') return tree.trim().length > 0
@@ -508,15 +554,21 @@ function clearActive($: any): void {
 
 async function readPhase($: any): Promise<void> {
   if (!phasePath) return
+  markerActive = false
   let marker: PhaseMarker
   try {
     marker = JSON.parse(await $.fs.read(phasePath)) as PhaseMarker
   } catch {
     return
   }
-  const shown = pickActivity(marker, await $.clock.now())
+  const now = await $.clock.now()
+  const shown = pickActivity(marker, now)
   if (shown?.kind === 'active') {
-    if (!active || active.phase !== shown.phase) setActive($, shown)
+    markerActive = true
+    if (!active || active.phase !== shown.phase) {
+      setActive($, shown)
+      activeSince = now
+    }
     return
   }
   result = shown
@@ -534,6 +586,7 @@ async function startPoll($: any, windowMs: number): Promise<void> {
     await readPhase($)
     const at = await $.clock.now()
     pollTicks += 1
+    if (active?.phase === 'saving' && !markerActive && at - activeSince > STALE_MS) clearActive($)
     // Warming up: the connection is unconfirmed until the SessionStart hook
     // writes its marker; retake the snapshot every few ticks until it is.
     if (at < warmupUntil && snapshot?.state !== 'ok' && pollTicks % WARMUP_RETRY_TICKS === 0) {
@@ -777,7 +830,11 @@ export const register: Register = (on, options) => {
       spin = null
     }
     pollTicks = 0
-    purple = (await $.env.get('COGNEE_STATUSLINE_THEME'))?.toLowerCase() === 'light' ? PURPLE_LIGHT : PURPLE_DARK
+    // The brand lavender reads on a dark background; a light one gets the
+    // darker purple. COGNEE_STATUSLINE_THEME says which; without it, Claude
+    // Code's own theme does (a light theme, or auto on a light system, is
+    // only known to Claude Code when the theme is set explicitly).
+    purple = (await lightTheme($)) ? PURPLE_LIGHT : PURPLE_DARK
     if (markOn && !waveSvg) {
       try {
         const source = await $.fs.read(`${$.plugin.root}/assets/icon-lavender.svg`)
@@ -857,7 +914,7 @@ export const register: Register = (on, options) => {
   })
 
   // /cognee-dataset <name> switches from the prompt, on every surface; alone
-  // it lists the datasets the picker offers.
+  // it lists the datasets the picker offers and opens the terminal's picker.
   on('command.run', { command: 'cognee-dataset' }, async ($, e) => {
     const name = e.args.trim()
     if (!name) {
@@ -865,7 +922,11 @@ export const register: Register = (on, options) => {
       await loadDatasets($)
       if (switchTargets.length === 0) return { text: 'Cognee: no datasets listed (is memory connected?).' }
       const rows = switchTargets.map(r => (r.current ? `  * ${r.name} (current)` : `  - ${r.name}`)).join('\n')
-      return { text: `Cognee datasets you can write to:\n${rows}\n\n/cognee-dataset <name> switches this session.` }
+      pickerOpen = true
+      redraw($)
+      return {
+        text: `Cognee datasets you can write to:\n${rows}\n\n/cognee-dataset <name> switches this session; the picker on the status row is open too (ctrl+x tab reaches it, arrows move, Enter picks).`,
+      }
     }
     const line = await switchDataset($, name)
     return { text: `Cognee: ${line}.` }
@@ -901,6 +962,20 @@ export const register: Register = (on, options) => {
     const content = asText(e.content).trim()
     const file = asText(e.file).trim()
     if (!content && !file) return { deny: 'content or file is required' }
+    if (content.length > REMEMBER_MAX_CHARS) {
+      return {
+        deny: `content is ${content.length} characters; the remember tool takes up to ${REMEMBER_MAX_CHARS}. Store a longer text with the cognee-remember skill.`,
+      }
+    }
+    if (file) {
+      const stat = await $.fs.stat(file)
+      if (stat.kind !== 'file') return { deny: `${file} is not a file` }
+      if (stat.size > REMEMBER_MAX_FILE_BYTES) {
+        return {
+          deny: `${file} is ${stat.size} bytes; the remember tool takes files up to ${REMEMBER_MAX_FILE_BYTES}. Store a larger file with the cognee-remember skill.`,
+        }
+      }
+    }
     const nodeSet = NODE_SETS[asText(e.category)] ?? 'user_context'
     setActive($, activity('remembering'))
     let shown
@@ -967,6 +1042,7 @@ export const register: Register = (on, options) => {
       result = null
       snapshot = null
       namingDataset = false
+      pickerOpen = false
       sessionId = ''
     }
     return next(e)
@@ -979,6 +1055,7 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     if (e.agentId) return ran
     setActive($, activity('saving'))
+    activeSince = await $.clock.now()
     await startPoll($, POLL_WINDOW_MS)
     return ran
   })
@@ -1027,14 +1104,15 @@ export const register: Register = (on, options) => {
 
   // The status row, above the prompt on the desktop and in a terminal (where
   // the settings-file status line is told to stay quiet for this session), the
-  // dataset name a picker. Focus the band with its focus chord (ctrl+x tab) or
-  // a click; arrows move, Enter picks, Escape returns to the prompt.
+  // dataset name a picker: open on the desktop; in a terminal a button that
+  // opens it (or /cognee-dataset alone). Once open, ctrl+x tab or a click
+  // reaches it; arrows move, Enter picks, Escape returns to the prompt.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const theirs = await next(e)
     if (!bandOn || e.props.hasSurvey) return theirs
     if (e.surface !== 'desktop' && e.surface !== 'terminal') return theirs
     const els = $.ui.resolve(e) as any
-    const { Box, Text, Select, Input, Button } = els
+    const { Box, Text, Select, Input, Button, Link } = els
     const snap = snapshot
     const parts: RenderElement[] = []
     if (!datasetsListed && !datasetsListing) void loadDatasets($)
@@ -1046,13 +1124,27 @@ export const register: Register = (on, options) => {
         key: 'dataset',
         options: [...switchTargets.map(r => ({ value: r.name, label: r.name })), { value: NEW_DATASET, label: NEW_DATASET }],
         value: current,
+        ...(e.surface === 'terminal' ? { autoFocus: true as const } : {}),
         onSelect: (value: string) => {
+          pickerOpen = false
           if (value === NEW_DATASET) {
             namingDataset = true
             redraw($)
             return
           }
           if (value !== current) void switchDataset($, value)
+          else redraw($)
+        },
+      })
+    // The terminal's closed form: the name as a button that opens the picker.
+    const closedPicker = () =>
+      Button({
+        key: 'dataset',
+        label: `${current} ▾`,
+        plain: true,
+        onPress: () => {
+          pickerOpen = true
+          redraw($)
         },
       })
     // The text field the "new dataset…" entry turns the picker into. Enter
@@ -1119,9 +1211,10 @@ export const register: Register = (on, options) => {
     }
     parts.push(Text({ bold: true, color: purple, children: ['cognee '] }))
     if (canPick) {
-      parts.push(namingDataset ? namer() : picker())
+      const open = e.surface !== 'terminal' || pickerOpen
+      parts.push(namingDataset ? namer() : open ? picker() : closedPicker())
     } else {
-      parts.push(Text({ color: purple, bold: true, children: [snap?.dataset ?? 'memory'] }))
+      parts.push(Text({ children: [snap?.dataset ?? 'memory'] }))
     }
     parts.push(Text({ children: [' · '] }))
     parts.push(Text({ bold: true, color: purple, children: [snap?.mode ?? '…'] }))
@@ -1131,10 +1224,19 @@ export const register: Register = (on, options) => {
     }
     if (snap?.credits) {
       // As on the text line: the balance green, red once exhausted or a
-      // request was refused; the last-operation cost after it at normal weight.
+      // request was refused; the last-operation cost after it at normal
+      // weight. The text line's "top up: <url>" becomes a link here, the way
+      // out one click away (an anchor on the desktop, OSC 8 in a terminal).
       const [balance, ...rest] = snap.credits.split(' · ')
       parts.push(Text({ color: snap.credits_exhausted ? 'red' : 'green', children: [` · ${balance}`] }))
-      if (rest.length > 0) parts.push(Text({ children: [` · ${rest.join(' · ')}`] }))
+      for (const part of rest) {
+        if (part.startsWith('top up:') && snap.billing_url && Link) {
+          parts.push(Text({ children: [' · '] }))
+          parts.push(Link({ href: snap.billing_url, label: 'top up' }))
+        } else {
+          parts.push(Text({ children: [` · ${part}`] }))
+        }
+      }
     }
     if (active) {
       parts.push(Text({ color: 'yellow', children: [` · ${active.text}`] }))
@@ -1179,6 +1281,45 @@ export const register: Register = (on, options) => {
   // While Claude works: "Thinking · 🧠 recalling…". On the desktop for every
   // phase; in a terminal only for the async phases, whose settings hooks show
   // no statusMessage of their own there.
+  // The credit line under an answer that used memory ("> 🧠 Cognee memory
+  // [m4]: …", written by the model on the recall hook's instruction): on the
+  // desktop the brain gives way to the wave mark. The engine still draws the
+  // reply, with the line taken off its text; the line is drawn under it as a
+  // row of its own. A terminal draws no Svg and keeps the line as written,
+  // and the stored message is never changed (ctrl+o, the Stop hook's check).
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    if (e.surface !== 'desktop' || !markOn || !waveSvg || e.props.isSummary) return next(e)
+    const split = splitCredit(e.props.text)
+    if (!split) return next(e)
+    const els = $.ui.resolve(e) as any
+    const { Box, Text } = els
+    if (!els.Svg) return next(e)
+    const theirs = await next({ ...e, props: { ...e.props, text: split.body } })
+    // Set off from the reply the way a quote is: two blank lines above and a
+    // rule down its left edge (a one-cell box with a background; a row's
+    // items stretch to its height), so it reads as the plugin's note, not
+    // the answer.
+    const credit = Box({
+      flexDirection: 'row',
+      marginTop: 2,
+      children: [
+        Box({ width: 1, flexShrink: 0, backgroundColor: 'gray' }),
+        Text({ children: ['  '] }),
+        els.Svg({ source: waveSvg, alt: 'cognee', width: 30, height: 30 }),
+        Text({ children: [' '] }),
+        // The mark says whose memory it is; the tags are bookkeeping the Stop
+        // hook reads from the stored line, not something to show. One text,
+        // so the note wraps as one paragraph beside the mark; lighter than the
+        // reply, as a quote reads.
+        Text({ dimColor: true, children: [split.note] }),
+      ],
+    })
+    const rows: RenderElement[] = []
+    if (drawsSomething(theirs)) rows.push(theirs as RenderElement)
+    rows.push(credit)
+    return Box({ flexDirection: 'column', children: rows })
+  }).catch(($, e, next) => next(e))
+
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {
     if (!spinnerOn || !active) return next(e)
     if (e.surface !== 'desktop' && !ASYNC_PHASES.includes(active.phase) && !OWN_PHASES.includes(active.phase)) return next(e)

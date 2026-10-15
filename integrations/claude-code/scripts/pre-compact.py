@@ -266,12 +266,14 @@ def main():
         set_session_key(session_key_candidate)
 
     phase_begin("anchoring")
+    ok = False
     try:
         asyncio.run(_run())
+        ok = True
     except Exception as exc:
         hook_log("precompact_run_exception", {"error": str(exc)[:200]})
     finally:
-        phase_end("anchoring")
+        phase_end("anchoring", ok=ok)
 
 
 if __name__ == "__main__":

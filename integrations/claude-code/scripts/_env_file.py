@@ -149,6 +149,12 @@ def parse_env_file(path: Path) -> dict:
 
 
 _loaded = False
+# What this loader put into the environment (from the file, or the backend
+# switch), key to value: what a refresh may change again. A real export is
+# never among them, and a value changed by anything else since is left alone.
+_injected: dict = {}
+# The file as last parsed by a refresh (path, mtime, size): unchanged, it is not parsed again.
+_seen: tuple = ()
 
 
 def load_env_file() -> None:
@@ -172,9 +178,54 @@ def load_env_file() -> None:
             for key, value in parse_env_file(path).items():
                 if _blocked(key):
                     continue
-                os.environ.setdefault(key, value)
+                if key not in os.environ:
+                    os.environ[key] = value
+                    _injected[key] = value
     except Exception:
         pass
+    _apply_backend_switch()
+
+
+def refresh_env_file() -> None:
+    """Re-read the file in a long-lived process. Never raises.
+
+    Hooks are short processes and load the file at start, so an edit reaches
+    the next hook. The cloud worker lives for hours: without this it kept the
+    tenant it started with and never served a session pointed elsewhere.
+    Values the file put in the environment follow the file (changed or gone);
+    a real export still wins, as at load.
+    """
+    global _seen
+    if not _loaded:
+        load_env_file()
+        return
+    try:
+        path = env_file_path()
+        # One stat per call; the file is parsed again only when it changed.
+        stamp = (
+            (str(path), path.stat().st_mtime_ns, path.stat().st_size)
+            if path.is_file()
+            else (str(path), 0, 0)
+        )
+        if stamp == _seen:
+            return
+        fresh = parse_env_file(path) if path.is_file() else {}
+        _seen = stamp
+    except Exception:
+        return
+    for key, last in list(_injected.items()):
+        if os.environ.get(key) != last:
+            # Set by something else since (an export, a test): theirs now.
+            _injected.pop(key)
+        elif key not in fresh:
+            os.environ.pop(key, None)
+            _injected.pop(key)
+    for key, value in fresh.items():
+        if _blocked(key):
+            continue
+        if key in _injected or key not in os.environ:
+            os.environ[key] = value
+            _injected[key] = value
     _apply_backend_switch()
 
 
@@ -216,6 +267,9 @@ def _apply_backend_switch() -> None:
         return
     os.environ["COGNEE_BASE_URL"] = ""
     os.environ["COGNEE_API_KEY"] = ""
+    # The loader's doing, so a refresh may undo it when the switch is lifted.
+    _injected["COGNEE_BASE_URL"] = ""
+    _injected["COGNEE_API_KEY"] = ""
 
 
 def _tighten_permissions(path: Path) -> None:

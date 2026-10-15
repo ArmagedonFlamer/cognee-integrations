@@ -324,7 +324,6 @@ async def _store_tool_call(payload: dict) -> None:
     try:
         result = remember_entry_via_http(dataset, session_id, entry)
     except Exception as exc:
-        phase_end("saving", count=0)
         # Same reasoning as the Stop path: the server_usable() guard above only
         # catches an outage already known about, so a server that dies inside the
         # ready marker's 30s TTL lands here with a real, failed write. Buffer the
@@ -333,6 +332,9 @@ async def _store_tool_call(payload: dict) -> None:
         # rejected one would block every entry behind it.
         status_code = exc.code if isinstance(exc, urllib.error.HTTPError) else None
         retryable = status_code is None or status_code >= 500
+        # Not saved: the row says "save queued" for a buffered write, "save
+        # failed" for one dropped for good.
+        phase_end("saving", count=0, ok=False, buffered=retryable)
         if retryable:
             # A timeout or gateway error may have landed server-side; mark the
             # buffered copy so the drain verifies before re-sending —
@@ -360,7 +362,7 @@ async def _store_tool_call(payload: dict) -> None:
             notify(f"trace store failed ({exc})")
         return
 
-    phase_end("saving", count=1 if result else 0)
+    phase_end("saving", count=1 if result else 0, ok=bool(result))
     if result:
         clear_payment_required()
         trace_id = (
@@ -477,7 +479,6 @@ async def _store_assistant_stop(payload: dict) -> None:
     try:
         result = remember_entry_via_http(dataset, session_id, entry)
     except Exception as exc:
-        phase_end("saving", count=0)
         # A write that FAILED must still be buffered, or the turn is simply lost.
         # The `server_usable()` guard above only catches an outage the plugin
         # already knows about: the ready marker has a 30s TTL, so a server that
@@ -493,6 +494,7 @@ async def _store_assistant_stop(payload: dict) -> None:
         # retryable, so those are buffered and anything else is dropped loudly.
         status = exc.code if isinstance(exc, urllib.error.HTTPError) else None
         retryable = status is None or status >= 500
+        phase_end("saving", count=0, ok=False, buffered=retryable)
         if retryable:
             # Ambiguous outcomes (timeout / gateway error after the request
             # went out) are verified against the server before replay — see
@@ -514,7 +516,7 @@ async def _store_assistant_stop(payload: dict) -> None:
             notify(f"stop store failed ({exc})")
         return
 
-    phase_end("saving", count=1 if result else 0)
+    phase_end("saving", count=1 if result else 0, ok=bool(result))
     if result:
         clear_payment_required()
         qa_id = (

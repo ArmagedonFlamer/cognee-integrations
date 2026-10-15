@@ -837,13 +837,14 @@ square, with bold dataset and location, the estimated tokens saved and what
 memory is doing. As a text line it can read:
 
 ```text
-● cognee ■ manual · cloud · ~2.4k tokens saved · 3 memories used
+● cognee manual · cloud · ~2.4k tokens saved · 3 memories used
 ```
 
 The glyph in front of `cognee` is the connection: a green `●` once the server is
 confirmed up and authenticated, a dim `○` while nothing is known yet (warming up),
-and on a failure the badge keeps its square and the line leads with the red
-`✕ (<reason>)`; see the health rules below.
+and on a failure the line leads with the red `✕ (<reason>)`; see the health
+rules below. The wordmark is bold in the brand purple, the dataset plain and the
+mode purple, the same row the mod draws above the prompt.
 
 - **No counters.** What the latest prompt recalled is the activity segment's
   (`3 memories used`); a session total, a per-prompt hit count and a turn
@@ -863,7 +864,7 @@ recall hook without additional requests.
 
 The palette is xterm 141, or xterm 93 with `COGNEE_STATUSLINE_THEME=light`.
 Failures remain red, update notices amber, and credits retain their semantic
-colours. Unknown connection health appears as a dim `○` in the badge.
+colours. Unknown connection health appears as a dim `○` before the wordmark.
 
 When `COLUMNS` is set, the line is fitted to that width; Claude Code does not
 normally export it, and then the full line is shown as in classic mode. When
@@ -877,7 +878,7 @@ to classic output.
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_STATUSLINE_STYLE` | `tetris` | `classic` restores the byte-compatible 1.6.21 presentation |
-| `COGNEE_STATUSLINE_THEME` | dark | `light` uses the darker purple palette |
+| `COGNEE_STATUSLINE_THEME` | from Claude Code's `theme` | `light` uses the darker purple palette, `dark` the brand lavender; unset, a `light` or `light-daltonized` Claude Code theme picks the darker one (`auto` cannot be told apart, so set this or the theme on a light terminal) |
 | `COGNEE_STATUSLINE_COUNTS` | `true` | Classic line only: its memory-hit counters; `full` shows per-scope recall/saved diagnostics; `false` hides them |
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` for localhost and
@@ -925,12 +926,12 @@ Both cases show the same reason — the fix is the same either way, and `llm-sta
 what it did:
 
 ```
-● cognee ■ agent_sessions · local · ~1.1k tokens saved · recalling…
-● cognee ■ agent_sessions · local · ~1.4k tokens saved · 3 memories used
-● cognee ■ agent_sessions · local · ~1.4k tokens saved · saving…
-● cognee ■ agent_sessions · local · ~1.4k tokens saved · ✓ saved
-● cognee ■ agent_sessions · local · ~1.4k tokens saved · learning from this session…
-○ cognee ■ agent_sessions · local · tokens saved n/a · setting up memory · starting memory server…
+● cognee agent_sessions · local · ~1.1k tokens saved · recalling…
+● cognee agent_sessions · local · ~1.4k tokens saved · 3 memories used
+● cognee agent_sessions · local · ~1.4k tokens saved · saving…
+● cognee agent_sessions · local · ~1.4k tokens saved · ✓ memory saved
+● cognee agent_sessions · local · ~1.4k tokens saved · learning from this session…
+○ cognee agent_sessions · local · tokens saved n/a · setting up memory · starting memory server…
 ```
 
 (`COGNEE_STATUSLINE_STYLE=classic` keeps the activity segment too, at the end of
@@ -940,10 +941,14 @@ While an operation runs the segment is present tense and coloured (`connecting�
 `recalling…`, `saving…`, `learning from this session…` for the automatic improve pass,
 `indexing repository…`, `preserving context…` before compaction, `saving session…`
 at exit). When it finishes, the result replaces it in plain words with its number
-(`3 memories used`, `✓ saved` for this turn's tool calls and answer,
+(`3 memories used`, `✓ memory saved` for this turn's tool calls and answer,
 `✓ learned`, `memory ready`, `✓ repository indexed`, `✓ context kept`,
 `✓ session saved`); a recall that found nothing says `nothing relevant` rather
-than counting to zero. The number is recall's alone, since that is what helped
+than counting to zero. Work that failed is never ticked: a recall the server
+could not answer says `recall failed`, a write dropped for good `save failed`,
+one spooled for replay after a transport error `save queued`, an exit sync
+that did not finish `session sync failed`, a compaction anchor that could not
+be built `context not kept`. The number is recall's alone, since that is what helped
 this turn; the save side shows a tick, because what it stored (the captured
 prompt, tool calls and answer of the turn) is bookkeeping nobody can act on. A
 result stays until the next operation begins, turns faint after a minute and
@@ -1034,8 +1039,8 @@ itself (an inline SVG from `assets/icon-lavender.svg`, read once at session
 start), then the wordmark in the brand lavender. A terminal gets the wordmark
 alone: no character looks like the mark, so none stands in for it, there or
 after the spinner or in toasts. The `icon` row in `/config` (`wave` or `none`)
-switches the desktop mark off; the text line's `● cognee ■` chip is a terminal
-device of its own. The module runs the plugin's own
+switches the desktop mark off; the text line has no mark either, only the
+glyph and the wordmark. The module runs the plugin's own
 renderer in `--json` mode and lays the result
 out: the dataset, mode, tokens-saved estimate, credits,
 connection reason and update nudge are the renderer's, so the row and a
@@ -1046,6 +1051,15 @@ marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`) and the
 renderer, run as a settings-file status line, prints nothing for a marked session,
 so the row is never shown twice.
 
+Credits read as on the text line, green, red once exhausted or a request was
+refused; where the text line prints `top up: <url>`, the row draws **top up** as a
+link to billing instead, an anchor in the Desktop app and a terminal hyperlink
+where the terminal supports one (`COGNEE_BILLING_URL` overrides the target). To
+see that state without an empty balance, set `COGNEE_STATUSLINE_CREDITS=exhausted`
+(in `~/.cognee/.env`, or exported): the renderer then shows a preview balance of
+`-$0.40` with the link, reading no marker and writing nothing; `false` hides the
+credits segment altogether.
+
 The dataset name in the row is a **picker**: it lists the datasets you can write to
 (one `switch-dataset.py --list` when the band is first drawn, not awaited, and again
 after each switch), and choosing another one switches the session there at once,
@@ -1055,8 +1069,11 @@ dataset, creating it (the same rules as a typed switch: no spaces or dots), and
 Enter on nothing or the `✕` brings the picker back. The row says `switching
 dataset…` while it runs and a toast reports the outcome, errors included. Until the
 listing lands, or when it fails (no launch record, server down), the name is plain
-text. In a terminal, focus the band with its focus chord (`ctrl+x tab`) or a click;
-arrows move, Enter picks, Escape returns to the prompt.
+text. In a terminal the picker stays closed until asked for, since a focused
+picker shows its list: the dataset name is a button (`agent_sessions ▾`); press
+it, or `/cognee-dataset` alone, to open the list, then `ctrl+x tab` or a click
+reaches it, arrows move, Enter picks and the list closes again. Escape returns
+to the prompt.
 
 The module also adds, on both surfaces:
 
@@ -1095,7 +1112,7 @@ the row, each about what is right above it, with `next` and `skip` buttons:
 
 ```
 cognee [agent_sessions ▾] · local · tokens saved n/a
-↑ the dataset name is a picker: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
+The dataset name is a picker ↑: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
 ```
 
 then that the dot means memory is connected, local/cloud where it lives and the
@@ -1157,7 +1174,17 @@ does not load mods and for the judgement the skill text carries.
 | Tool | Arguments | Runs | Returns |
 |---|---|---|---|
 | `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from the active dataset.` then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
-| `remember` | `content` (the text) or `file` (a path, stored under its real name so code rides the code path), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
+| `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap the call is refused with a pointer to the `cognee-remember` skill, which has none: each call runs a cognify on your key, and a whole file is the expensive case | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
+
+On the desktop, the credit line the model writes under an answer that used
+memory (`> 🧠 Cognee memory [m4, m5]: …`) is drawn as the wave mark and the
+note alone, the label and the tags left to the stored line: the engine still
+draws the reply, with the line taken off its text, and the mod draws the row
+under it. A terminal
+draws no vector image and keeps the line as written. The stored message is
+never changed, so ctrl+o shows the original and the Stop hook's credit check
+reads what the model wrote. The `icon` row in `/config` turns the mark off
+here as in the band.
 
 While a tool runs the spinner says `· searching memory…` or `· remembering…`
 on both surfaces, as it says `· switching dataset…` during a switch. The

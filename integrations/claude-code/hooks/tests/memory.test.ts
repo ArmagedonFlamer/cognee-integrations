@@ -92,6 +92,8 @@ function wire(
     writes.push({ path: e.path, text: e.text })
     return { value: undefined }
   })
+  // The remember tool sizes a file before storing it: a small one by default.
+  on('fs.stat', ($, e) => ({ value: { kind: 'file' as const, size: e.path.includes('huge') ? 500_000 : 1_200, mtimeMs: 0, isLink: false } }))
   on('process.run', ($, e) => {
     calls.push({ argv: e.argv, stdin: e.init?.stdin })
     const script = e.argv.find(a => a.includes('/scripts/')) ?? ''
@@ -244,6 +246,30 @@ test('the remember tool stores a file under its real name', async ($, on) => {
   expect(argsAfter(argvOf(calls, 'cognee-remember.sh')!, 'cognee-remember.sh')).toEqual(['--file', 'src/payments.py', '--node-set', 'project_docs'])
 })
 
+test('the remember tool refuses a text past its cap and points at the skill', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, content: 'x'.repeat(16_001) }))
+  expect(shown.isError).toBe(true)
+  expect(shown.text).toContain('cognee-remember skill')
+  // Nothing ran: no cognify was paid for.
+  expect(argvOf(calls, 'cognee-remember.sh')).toBeUndefined()
+})
+
+test('the remember tool refuses a file past its cap without reading it', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const shown = resultText(await $.tool.call({ tool: `mcp__${PLUGIN}__remember`, file: 'data/huge.csv' }))
+  expect(shown.isError).toBe(true)
+  expect(shown.text).toContain('500000 bytes')
+  expect(shown.text).toContain('cognee-remember skill')
+  expect(argvOf(calls, 'cognee-remember.sh')).toBeUndefined()
+})
+
 test('a write the server never received is reported as not stored', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, { 'cognee-remember.sh': () => ({ value: { exitCode: 1, stdout: 'UNREACHABLE\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }) })
@@ -368,17 +394,20 @@ test('an empty name, or the cancel mark, brings the picker back without a switch
   await ui.unmount()
   const again = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
 
+  // In a terminal the picker opens from its name button and closes again after.
+  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
   calls.length = 0
   await $.ui.input({ plugin: PLUGIN, key: 'newDataset', text: '   ' })
   expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
-  expect(await again.find({ type: 'Select', key: 'dataset' })).toBeDefined()
+  expect(await again.find({ type: 'Button', key: 'dataset' })).toBeDefined()
 
+  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: '+ new dataset…' })
   expect(await again.find({ type: 'Input', key: 'newDataset' })).toBeDefined()
   await $.ui.press({ plugin: PLUGIN, key: 'cancelNew' })
   expect(argvOf(calls, 'switch-dataset.py')).toBeUndefined()
-  expect(await again.find({ type: 'Select', key: 'dataset' })).toBeDefined()
+  expect(await again.find({ type: 'Button', key: 'dataset' })).toBeDefined()
   await again.unmount()
 })
 
@@ -428,7 +457,7 @@ test('the first session on a machine gets the tour under the row, once', async (
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /the dataset name is a picker/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The dataset name is a picker ↑/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
 
@@ -481,7 +510,7 @@ test('/cognee-tour replays it, and the tour row in /config turns it off', async 
   const answer = await $.command.run({ command: 'cognee-tour', args: '' })
   expect(answer.text).toContain('tour')
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /the dataset name is a picker/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The dataset name is a picker ↑/ })).toBeDefined()
   await ui.unmount()
 })
 
@@ -634,6 +663,33 @@ test('credits read green on the row, red once exhausted, the last cost plain', a
   await ui.unmount()
 })
 
+test('out of credits, the row links to billing where the text line prints the URL', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'cognee_statusline_render.py': () =>
+      ok(
+        JSON.stringify({
+          ...SNAPSHOT,
+          mode: 'cloud',
+          credits: 'credits: -$0.40 · top up: https://platform.cognee.ai/billing',
+          credits_exhausted: true,
+          billing_url: 'https://platform.cognee.ai/billing',
+        }),
+      ),
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  for (const surface of ['desktop', 'terminal'] as const) {
+    const ui = await $.ui.mount({ plugin: PLUGIN, surface, ...BAND })
+    const link = await ui.find({ type: 'Link' })
+    expect(link).toBeDefined()
+    expect(link!.props.href).toBe('https://platform.cognee.ai/billing')
+    expect(link!.props.label).toBe('top up')
+    // The URL itself is not repeated as text beside the link.
+    expect(await ui.find({ type: 'Text', text: /platform.cognee.ai/ })).toBeUndefined()
+    await ui.unmount()
+  }
+})
+
 test('a session that reports no surface at start (the Desktop app) lists when the band is first drawn', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls)
@@ -662,11 +718,20 @@ test('in a terminal the band is the whole status row, the dataset name a picker'
   expect(argvOf(calls, 'switch-dataset.py')).toContain('--list')
 
   ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  // Closed until asked for: a focused picker shows its list, and the band
+  // focuses its first control on a click. The name is a button.
+  expect(await ui.find({ type: 'Select', key: 'dataset' })).toBeUndefined()
+  const closed = await ui.find({ type: 'Button', key: 'dataset' })
+  expect(closed).toBeDefined()
+  expect(closed!.text).toContain('agent_sessions ▾')
+  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
+
+  await $.ui.press({ plugin: PLUGIN, key: 'dataset' })
   const picker = await ui.find({ type: 'Select', key: 'dataset' })
   expect(picker).toBeDefined()
   expect(picker!.props.value).toBe('agent_sessions')
-  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
-  
+  expect(picker!.props.autoFocus).toBe(true)
+
   calls.length = 0
   await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'demo' })
   expect(argsAfter(argvOf(calls, 'switch-dataset.py')!, 'switch-dataset.py')).toEqual(['demo', '--json', '--session-key', SESSION])

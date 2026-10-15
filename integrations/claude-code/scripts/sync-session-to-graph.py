@@ -327,6 +327,7 @@ async def _sync(
         },
     )
 
+    ok = False
     try:
         if stop_watcher:
             _stop_idle_watcher()
@@ -334,6 +335,7 @@ async def _sync(
 
         if not targets:
             hook_log("sync_no_target_sessions", {"dataset": dataset})
+            ok = True  # nothing to sync is not a failed sync
             return
 
         if not http_api_ready():
@@ -386,8 +388,11 @@ async def _sync(
             # drain+improve, not silently report success. A busy answer is not
             # in this list on purpose.
             raise RuntimeError(f"final session sync incomplete for: {', '.join(incomplete)}")
+        ok = not incomplete
     finally:
-        phase_end("syncing", session_key=session_key)
+        # ``ok`` is still False after a raise above: the row then says the
+        # sync failed instead of ticking it.
+        phase_end("syncing", session_key=session_key, ok=ok)
         if unregister_on_finish:
             if not (was_registered or has_api_key):
                 hook_log(

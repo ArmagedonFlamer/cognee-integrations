@@ -179,7 +179,55 @@ test('after the turn the band shows saving until the marker says what was saved'
   await clock.advance(1100)
   ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Text', text: /saving…/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /✓ saved/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /✓ memory saved/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('failed work is never ticked: a queued write, a failed sync, an anchor that failed', async ($, on) => {
+  const state = { marker: '' }
+  const clock = wire(on, state)
+  const now = clock.now()
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const cases: [Record<string, unknown>, RegExp][] = [
+    [{ saved: { count: 0, at: now / 1000, ok: false, buffered: true } }, /save queued/],
+    [{ saved: { count: 0, at: now / 1000, ok: false } }, /save failed/],
+    [{ saved: { count: 1, at: now / 1000, ok: false } }, /✓ memory saved/],
+    [{ synced: { at: now / 1000, ok: false } }, /session sync failed/],
+    [{ anchored: { at: now / 1000, ok: false } }, /context not kept/],
+    [{ anchored: { at: now / 1000, ok: true } }, /✓ context kept/],
+  ]
+  for (const [results, text] of cases) {
+    state.marker = marker(now, { active: null, results })
+    await clock.advance(1100)
+    const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
+    expect(await ui.find({ type: 'Text', text })).toBeDefined()
+    await ui.unmount()
+  }
+})
+
+test('a save nothing ever reports stops spinning after the stale window', async ($, on) => {
+  // Cloud mode: the Stop hook only spools the capture and no marker exists
+  // until the worker delivers it. The band must not say saving… for the rest
+  // of the session.
+  const state = { marker: '' }
+  const clock = wire(on, state)
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  await $.turn.complete({ turnId: 't1', answer: 'Done.', durationMs: 900, isAborted: false, reason: 'answer' })
+
+  let ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /saving…/ })).toBeDefined()
+  await ui.unmount()
+
+  await clock.advance(60_000)
+  ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /saving…/ })).toBeDefined()
+  await ui.unmount()
+
+  await clock.advance(31_000)
+  ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /saving…/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
   await ui.unmount()
 })
 
@@ -195,7 +243,7 @@ test('a stale active phase is ignored rather than shown forever', async ($, on) 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
   expect(await ui.find({ type: 'Text', text: /recalling/ })).toBeUndefined()
   // Two minutes old: still shown, faint.
-  const saved = await ui.find({ type: 'Text', text: /✓ saved/ })
+  const saved = await ui.find({ type: 'Text', text: /✓ memory saved/ })
   expect(saved).toBeDefined()
   expect(saved!.props.dimColor).toBe(true)
   await ui.unmount()
@@ -224,5 +272,54 @@ test('the spinner only gains a suffix in a terminal for the async phases', async
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...SPINNER })
   expect(JSON.stringify(await ui.drawn())).toContain('saving…')
+  await ui.unmount()
+})
+
+const CREDIT_ANSWER = {
+  component: 'AssistantMessage' as const,
+  props: {
+    text: 'The lister asks the tenant first.\n\n> 🧠 Cognee memory [m4, m5]: the July notes on /users/me returning 404 on tenants.',
+    isFirstOfReply: true,
+  },
+}
+
+test('on the desktop the credit line under an answer carries the wave mark instead of the brain', async ($, on) => {
+  const state = { marker: '' }
+  wire(on, state)
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...CREDIT_ANSWER })
+  expect(await ui.find({ type: 'Svg' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^the July notes on \/users\/me/ })).toBeDefined()
+  // The label and the tags stay in the stored line only.
+  expect(await ui.find({ type: 'Text', text: /Cognee memory|\[m4, m5\]/ })).toBeUndefined()
+  // The brain is gone from what is drawn; the reply's own text is still the engine's.
+  expect(await ui.find({ type: 'Text', text: /🧠/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an answer without a credit line is left to the engine', async ($, on) => {
+  const state = { marker: '' }
+  wire(on, state)
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+
+  const ui = await $.ui.mount({
+    plugin: 'cognee-memory',
+    surface: 'desktop',
+    component: 'AssistantMessage',
+    props: { text: 'Plain answer, no memory used.', isFirstOfReply: true },
+  })
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a terminal keeps the credit line as the model wrote it', async ($, on) => {
+  const state = { marker: '' }
+  wire(on, state)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+
+  const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'terminal', ...CREDIT_ANSWER })
+  expect(await ui.find({ type: 'Svg' })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^the July notes/ })).toBeUndefined()
   await ui.unmount()
 })
