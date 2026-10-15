@@ -621,14 +621,24 @@ type Ran = { exitCode: number; stdout: string; stderr: string }
 // One of the plugin's Python scripts, under whichever interpreter answers
 // first (python3 on macOS and Linux, python or py on Windows). Null when none
 // could start it.
-async function runPython($: any, args: string[], init: { stdin?: string; timeoutMs: number }): Promise<Ran | null> {
-  const candidates = rendererPython ? [rendererPython] : ['python3', 'python', 'py']
+// 'timeout' when the script ran and was killed at its time: the next
+// interpreter is NOT tried then, since the script did run (a switch killed
+// mid-sync must not be started over; an append must not land twice). Only a
+// spawn that failed (no such interpreter) moves on to the next candidate.
+async function runPython($: any, args: string[], init: { stdin?: string; timeoutMs: number }): Promise<Ran | 'timeout' | null> {
+  // The interpreter that answered last goes first; the others stay as the
+  // fallback for when it can no longer be spawned (a venv gone, a PATH change).
+  const defaults = ['python3', 'python', 'py']
+  const candidates = rendererPython ? [rendererPython, ...defaults.filter(c => c !== rendererPython)] : defaults
   for (const python of candidates) {
     try {
       const ran = (await $.process.run([python, ...args], init)) as Ran
       rendererPython = python
       return ran
-    } catch {
+    } catch (err) {
+      const why = String(err)
+      if (/time|outlast|kill/i.test(why)) return 'timeout'
+      if (!/ENOENT|not found|no such|spawn|cannot (find|run|start)/i.test(why)) return null
       // the next candidate
     }
   }
@@ -655,10 +665,11 @@ async function runSearch($: any, query: string, args: string[]): Promise<Ran | n
   const ran = await runWrapper($, 'cognee-search.sh', [query, ...args], SEARCH_TIMEOUT_MS)
   if (ran === 'timeout') return null
   if (!ran || ran.exitCode !== 0 || !ran.stdout.trimStart().startsWith('[')) return ran
-  const trimmed = await runPython($, [`${$.plugin.root}/scripts/recall-trim.py`, '--query', query], {
+  const trimmedRun = await runPython($, [`${$.plugin.root}/scripts/recall-trim.py`, '--query', query], {
     stdin: ran.stdout,
     timeoutMs: RENDERER_TIMEOUT_MS,
   })
+  const trimmed = trimmedRun === 'timeout' ? null : trimmedRun
   if (!trimmed || trimmed.exitCode !== 0 || !trimmed.stdout.trim()) return ran
   return { ...ran, stdout: trimmed.stdout }
 }
@@ -677,7 +688,7 @@ async function refreshSnapshot($: any): Promise<void> {
     const script = `${$.plugin.root}/scripts/cognee_statusline_render.py`
     const stdin = JSON.stringify({ session_id: sessionId })
     const ran = await runPython($, [script, '--json'], { stdin, timeoutMs: RENDERER_TIMEOUT_MS })
-    if (ran && ran.exitCode === 0 && ran.stdout.trim()) {
+    if (ran && ran !== 'timeout' && ran.exitCode === 0 && ran.stdout.trim()) {
       try {
         snapshot = JSON.parse(ran.stdout) as Snapshot
         rendererFailures = 0
@@ -737,6 +748,11 @@ async function saveEnvValue($: any, name: string, value: string): Promise<void> 
   // hooks read (COGNEE_ENV_FILE, else ~/.cognee/.env) and creates it 0600,
   // which the fs API cannot. The value travels on stdin, never on argv.
   const ran = await runPython($, [`${$.plugin.root}/scripts/_env_file.py`, '--append', name], { stdin: trimmed, timeoutMs: RENDERER_TIMEOUT_MS })
+  if (ran === 'timeout') {
+    fixNote = { text: `saving ${name} took too long; check the env file before trying again`, isError: true }
+    redraw($)
+    return
+  }
   const written = ran && ran.exitCode === 0 ? ran.stdout.trim() : ''
   if (written) fixNote = { text: `${name} saved to ${written}; a new session applies it`, isError: false }
   else fixNote = { text: `could not save ${name}${ran?.stderr.trim() ? `: ${ran.stderr.trim()}` : ''}`, isError: true }
@@ -785,7 +801,7 @@ async function loadDatasets($: any): Promise<void> {
     timeoutMs: LIST_TIMEOUT_MS,
   })
   try {
-    const parsed = switchable && switchable.stdout.trim() ? JSON.parse(switchable.stdout) : {}
+    const parsed = switchable && switchable !== 'timeout' && switchable.stdout.trim() ? JSON.parse(switchable.stdout) : {}
     if (!parsed.error) switchTargets = datasetRows(parsed)
   } catch {
     // the name stays plain text
@@ -810,11 +826,12 @@ async function switchDataset($: any, target: string): Promise<string> {
     })
     let parsed: Record<string, unknown> = {}
     try {
-      parsed = ran && ran.stdout.trim() ? (JSON.parse(ran.stdout) as Record<string, unknown>) : {}
+      parsed = ran && ran !== 'timeout' && ran.stdout.trim() ? (JSON.parse(ran.stdout) as Record<string, unknown>) : {}
     } catch {
       parsed = {}
     }
-    if (!ran) line = 'could not start the switch: no python interpreter found'
+    if (ran === 'timeout') line = `the switch ran past ${SWITCH_TIMEOUT_MS / 60_000} min and was stopped; /cognee-dataset shows where the session is`
+    else if (!ran) line = 'could not start the switch: no python interpreter found'
     else if (parsed.error) line = asText(parsed.error)
     else if (parsed.switched === false) line = `already on ${asText(parsed.dataset) || name}`
     else if (parsed.switched === true) {

@@ -653,6 +653,46 @@ test('a key pasted into the fix pane is appended to ~/.cognee/.env', async ($, o
   await pane.unmount()
 })
 
+test('a switch that runs past its time is stopped once, not started over under another interpreter', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'switch-dataset.py': argv =>
+      argv.includes('--list')
+        ? ok(JSON.stringify(SWITCH_LIST))
+        : // The engine rejects a call whose child outlasts its time; the kit's bottom refuses it the same way.
+          { deny: 'process timed out after 600000 ms' },
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  await $.ui.select({ plugin: PLUGIN, key: 'dataset', value: 'demo' })
+  await ui.unmount()
+
+  // One attempt: the script ran, so no second interpreter is tried.
+  const attempts = calls.filter(c => argvOf([c], 'switch-dataset.py') && !c.argv.includes('--list'))
+  expect(attempts.length).toBe(1)
+  expect(toasts.some(t => t.includes('ran past') && t.includes('stopped'))).toBe(true)
+  expect(toasts.some(t => t.includes('no python interpreter'))).toBe(false)
+})
+
+test('a missing interpreter still moves on to the next candidate', async ($, on) => {
+  const calls: Call[] = []
+  wire(on, calls, {
+    'cognee_statusline_render.py': argv => (argv[0] === 'python3' ? { deny: 'spawn python3 ENOENT' } : ok(JSON.stringify(SNAPSHOT))),
+  })
+  await $.session.start({ cwd: '/work', surface: 'desktop', isInteractive: true })
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'desktop', ...BAND })
+  // The snapshot landed through the second interpreter: the mode is drawn.
+  expect(await ui.find({ type: 'Text', text: /local/ })).toBeDefined()
+  await ui.unmount()
+  const interpreters = calls.filter(c => argvOf([c], 'cognee_statusline_render.py')).map(c => c.argv[0])
+  expect(interpreters.slice(0, 2)).toEqual(['python3', 'python'])
+})
+
 test('a remember call cut off by its timeout is reported as outcome unknown, never as not stored', async ($, on) => {
   const calls: Call[] = []
   wire(on, calls, {

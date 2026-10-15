@@ -253,6 +253,18 @@ project adheres to [Semantic Versioning](https://semver.org/).
   that are not cloud tenants. The switch also takes the principal the dataset
   lister resolved when the launch record carries none. Same fixes in the Codex
   and Antigravity copies.
+- **Lost counts on Windows.** The session stats counter gave up on its lock
+  after 0.2 s, which a burst of parallel store hooks on a slow disk exceeds,
+  so saves went uncounted; it now waits up to 5 s. The stored-item count
+  appended one byte with `O_APPEND`, which Windows emulates as a seek and a
+  write, so parallel hooks lost bytes; on Windows the append now takes the
+  session's lock. Same in the Codex copy.
+- **A script killed at its time limit was run again under the next
+  interpreter.** The mod tries `python3`, `python` and `py` in turn and moved
+  on at any failure, a timeout included, so a dataset switch stopped mid-sync
+  was started over (up to three times, the spinner held for half an hour) and
+  an env-file append could land twice. A timeout now ends the attempt and is
+  reported as such; only a missing interpreter moves on to the next.
 - **A remember call cut off by the mod was reported as not stored.** The
   tool's 90 s limit was shorter than the wrapper's own worst case (a 120 s
   POST plus an 8 s wait), so a slow write was killed and the model told

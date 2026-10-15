@@ -1652,13 +1652,27 @@ def _bump_stored_seq(session_key: str) -> None:
         return
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
-        try:
-            os.write(fd, b".")
-        finally:
-            os.close(fd)
+        if os.name == "nt":
+            # Windows emulates O_APPEND as a seek then a write, two steps that
+            # interleave across handles, so parallel hooks lost bytes there.
+            from _file_lock import file_lock
+
+            with file_lock(path.with_suffix(".lock"), timeout=5.0) as acquired:
+                if not acquired:
+                    raise OSError("stored.log lock busy")
+                _append_one_byte(path)
+        else:
+            _append_one_byte(path)
     except OSError as exc:
         hook_log("stored_seq_write_failed", {"error": str(exc)[:200]})
+
+
+def _append_one_byte(path) -> None:
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    try:
+        os.write(fd, b".")
+    finally:
+        os.close(fd)
 
 
 def read_stored_seq(session_key: str) -> int:
