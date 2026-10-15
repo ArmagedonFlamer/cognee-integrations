@@ -844,7 +844,7 @@ class TestProviderOverHttp(unittest.TestCase):
         body = opener.json_body("/api/v1/recall")
         self.assertEqual(body["scope"], ["graph"])
         self.assertEqual(body["datasets"], ["hermes"])
-        self.assertEqual(body["session_id"], "hermes_sX")
+        self.assertNotIn("session_id", body)
 
     def test_remember_reports_the_server_status(self):
         # The trap: an HTTP dict has no .status attribute, so a bare dict here

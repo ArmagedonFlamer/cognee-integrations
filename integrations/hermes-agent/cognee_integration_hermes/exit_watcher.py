@@ -37,6 +37,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -384,6 +385,15 @@ def fire(state, *, state_path=None, wait_for_parent=0.0):
                 timeout=float(state.get("improve_timeout") or 300.0),
             )
             _log("improve submitted for session %s" % session_id)
+        except urllib.error.HTTPError as exc:
+            if exc.code == 402:
+                # cognee >= 1.6.3: the server's LLM budget is exhausted.
+                _log(
+                    "improve skipped for session %s: the Cognee server's LLM budget "
+                    "is exhausted (402); not retrying" % session_id
+                )
+            else:
+                _log("improve failed for session %s: %s" % (session_id, exc))
         except Exception as exc:
             _log("improve failed for session %s: %s" % (session_id, exc))
     if wait_for_parent:
