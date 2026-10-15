@@ -593,10 +593,15 @@ def _memory_activity(host_id: str) -> str:
 def render_status_for_host(host_id: str) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
     LLM-key verdicts written by this session (the marker is machine-wide)."""
-    from _quality_summary import segment
+    from _quality_summary import cache_scope, segment
+    from _plugin_common import _local_api_url
 
     quality = segment(
-        _SHARED_ROOT / "codex", os.environ.get("COGNEE_BASE_URL", ""), now=time.time(), compact=True
+        _SHARED_ROOT / "codex",
+        _local_api_url(),
+        now=time.time(),
+        compact=True,
+        **cache_scope(str(host_id or "")),
     )
     return (
         f"{_status_prefix(str(host_id or ''))}"

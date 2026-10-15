@@ -638,21 +638,19 @@ def run() -> None:
                         if record.get("target") != identity:
                             continue
                         set_session_key(record["session_key"])
+                        from _quality_summary import refresh_current
+
+                        refresh_current()
                         if health == "ready":
                             mark_server_ready(url)
                         elif health in DEFINITIVE_FAILURE_STATES:
                             write_connection_state(health, url)
                     refresh_credits()
-                    from _quality_summary import refresh as refresh_quality
+                    from _quality_summary import refresh_current
+                    from _evaluation_capture import launch_delivery
 
-                    refresh_quality(
-                        root(),
-                        url,
-                        lambda: _json_http_request(
-                            "/api/v1/evaluations/summary", method="GET", timeout=3
-                        ),
-                        now=last_health,
-                    )
+                    refresh_current()
+                    launch_delivery()
                     maintain_sessions()
                 drain(send, verify=verify, prepare=prepare)
                 process_improves(improve)

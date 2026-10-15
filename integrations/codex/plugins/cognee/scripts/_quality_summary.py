@@ -1,4 +1,4 @@
-"""Tenant-bound benchmark cache. Refresh in the worker; rendering is pure local I/O."""
+"""Credential/dataset-bound evaluation cache. Refresh in the worker; rendering is pure local I/O."""
 
 from __future__ import annotations
 
@@ -12,8 +12,10 @@ REFRESH_SECONDS = 3600
 MAX_AGE_SECONDS = 48 * 3600
 
 
-def cache_path(root: Path, base_url: str) -> Path:
-    identity = hashlib.sha256(base_url.rstrip("/").encode()).hexdigest()
+def cache_path(root: Path, base_url: str, *, dataset_id="", principal="") -> Path:
+    identity = hashlib.sha256(
+        json.dumps([base_url.rstrip("/"), dataset_id, principal]).encode()
+    ).hexdigest()
     return root / "quality" / (identity + ".json")
 
 
@@ -26,11 +28,13 @@ def read(path):
 
 
 def validate(summary, now):
-    if not isinstance(summary, dict) or summary.get("scope") != "benchmark":
+    if not isinstance(summary, dict) or summary.get("scope") not in {"benchmark", "personal"}:
         return "pending"
     if summary.get("status") == "pending":
         return "pending"
-    if summary.get("schema") != 1 or summary.get("source") != "live":
+    if summary.get("schema") not in {1, 2} or summary.get("source") != "live":
+        return "pending"
+    if (summary.get("scope") == "personal") != (summary.get("schema") == 2):
         return "pending"
     keys = ("pairs", "better", "equivalent", "worse", "unjudgeable")
     if any(type(summary.get(k)) is not int or summary[k] < 0 for k in keys):
@@ -55,11 +59,11 @@ def validate(summary, now):
     return "ready" if summary.get("status") == "ready" else "pending"
 
 
-def refresh(root, base_url, fetch, *, now):
+def refresh(root, base_url, fetch, *, now, dataset_id="", principal=""):
     """Never blocks recall; failed/unsupported endpoints are retried after one hour."""
     from _injection_ledger import atomic_json
 
-    path = cache_path(root, base_url)
+    path = cache_path(root, base_url, dataset_id=dataset_id, principal=principal)
     old = read(path)
     checked = old.get("checked_at", 0)
     if type(checked) in (int, float) and 0 <= now - checked < REFRESH_SECONDS:
@@ -75,28 +79,63 @@ def refresh(root, base_url, fetch, *, now):
     atomic_json(path, {"checked_at": now, "summary": summary})
 
 
-def segment(root, base_url, *, now, compact=False, bar=True):
-    summary = read(cache_path(root, base_url)).get("summary", {})
+def cache_scope(session_key=""):
+    from _plugin_common import _api_key, resolve_active_dataset_ids
+    try:
+        dataset_id, _ = resolve_active_dataset_ids(session_key)
+        principal = hashlib.sha256(_api_key().encode()).hexdigest()
+    except (OSError, ValueError, RuntimeError):
+        return {"dataset_id": "unavailable", "principal": "unavailable"}
+    return {"dataset_id": dataset_id, "principal": principal}
+
+
+def refresh_current():
+    import time
+    from urllib.parse import urlencode
+
+    from _cloud_worker import root, target
+    from _plugin_common import _json_http_request
+
+    scope = cache_scope()
+    if not scope["dataset_id"]:
+        return
+    path = "/api/v1/evaluations/summary?" + urlencode({"dataset_id": scope["dataset_id"]})
+    refresh(
+        root(),
+        target()["base_url"],
+        lambda: _json_http_request(path, method="GET", timeout=3),
+        now=time.time(),
+        **scope,
+    )
+
+
+def segment(root, base_url, *, now, compact=False, bar=True, dataset_id="", principal=""):
+    summary = read(cache_path(root, base_url, dataset_id=dataset_id, principal=principal)).get(
+        "summary", {}
+    )
     state = validate(summary, now)
-    label = "Improved" if compact else "Answer improvements"
-    if state != "ready":
-        return f"{label}: {state}"
-    rate, regression = summary["improvement_rate"], summary["regression_rate"]
-    # Five cells share the existing status-line palette. This replaces the imprint bar.
-    filled = round(rate * 5)
+    score = 47
+    if state in {"ready", "stale"}:
+        score = round(
+            47 + 53 * max(0, min(1, (summary["better"] - summary["worse"]) / summary["pairs"]))
+        )
+    filled = round(score / 100 * 5)
     blocks = " " + "▰" * filled + "▱" * (5 - filled) if bar else ""
-    worse = f" · {regression:.0%} worse" if regression else ""
-    return f"{label}{blocks} {rate:.0%} · benchmark{worse}"
+    suffix = " · calibrating" if state == "pending" else " · stale" if state == "stale" else ""
+    return f"Better answers{blocks} {score}%{suffix}"
 
 
 if __name__ == "__main__":
-    import os
     import time
 
     from _env_file import load_env_file
 
     load_env_file()
     host = "codex" if "codex" in Path(__file__).parts else "claude-code"
-    url = os.environ.get("COGNEE_BASE_URL", "")
-    cached = read(cache_path(Path.home() / ".cognee-plugin" / host, url)).get("summary", {})
+    from _plugin_common import _local_api_url
+
+    url = _local_api_url()
+    cached = read(cache_path(Path.home() / ".cognee-plugin" / host, url, **cache_scope())).get(
+        "summary", {}
+    )
     print(json.dumps({**cached, "status": validate(cached, time.time())}, indent=2))

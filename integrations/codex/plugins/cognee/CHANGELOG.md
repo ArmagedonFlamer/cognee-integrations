@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.2
+
+- Opt-in sampled answer traces for local/cloud SDK evaluation APIs.
+- Better answers percentage and one progress bar on the normalized 47–100 scale.
+- Bind quality caches to endpoint, credential and dataset.
+
 All notable changes to the **cognee** Codex CLI plugin are documented here.
 
 The version here matches the `version` field in `.codex-plugin/plugin.json`. Note
