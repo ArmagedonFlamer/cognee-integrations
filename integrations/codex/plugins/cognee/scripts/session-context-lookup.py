@@ -83,32 +83,26 @@ from config import get_dataset, get_session_id, load_config
 _AUDIT_PROMPT_CHARS = 2000
 _AUDIT_CONTEXT_CHARS = 4000
 
-# Codex TUI renders ``systemMessage`` hook output inline. App-server clients can
-# consume the same hook result as hidden developer context instead, leaving the
-# user with no visible indication that Cognee ran. Orca is currently the known
-# host with that behaviour. For it, ask the model to repeat only the compact
-# two-line status header as a one-line receipt; the recalled content itself
-# remains private model context.
+# Some Codex hosts render ``systemMessage`` hook output inline, while others
+# consume the same hook result as hidden developer context. Host detection is
+# not reliable: the same app can report either an app-owned transcript path or
+# a regular ``~/.codex/sessions`` path. Ask Codex to repeat the compact status
+# header by default so every host has a visible receipt; the recalled content
+# itself remains private model context.
 _VISIBLE_STATUS_ENV = "COGNEE_CODEX_VISIBLE_STATUS"
-_ORCA_TRANSCRIPT_MARKER = "/application support/orca/codex-accounts/"
 
 
 def _visible_status_enabled(payload: dict | None = None) -> bool:
-    """Whether this host needs a model-rendered Cognee status receipt.
+    """Whether to request a model-rendered Cognee status receipt.
 
-    An explicit environment value wins. With the default ``auto`` behaviour,
-    enable the fallback only for Orca transcripts, because regular Codex TUI
-    already renders the hook's ``systemMessage`` and would otherwise show the
-    same status twice.
+    Status is visible by default for every Codex host because transcript-path
+    host detection is not stable. Users whose host already renders
+    ``systemMessage`` can explicitly turn the extra receipt off.
     """
     raw = os.environ.get(_VISIBLE_STATUS_ENV, "").strip().lower()
-    if raw in {"1", "true", "yes", "on"}:
-        return True
     if raw in {"0", "false", "no", "off"}:
         return False
-    transcript = str((payload or {}).get("transcript_path") or "")
-    normalized = transcript.replace("\\", "/").lower()
-    return _ORCA_TRANSCRIPT_MARKER in normalized
+    return True
 
 
 def _with_visible_status_receipt(output: dict | None, enabled: bool) -> dict | None:

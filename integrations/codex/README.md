@@ -522,20 +522,18 @@ cognee: agent_sessions · local
 cognee: my-project · cloud
 ```
 
-Codex TUI renders this hook status inline. App-server hosts are not required to expose
-that surface, and Orca currently consumes it as hidden developer context. The plugin
-detects an Orca transcript and asks Codex to end the answer with the same status and
-recall counts as one visible line instead:
+Codex hosts are not required to expose hook status messages consistently. The plugin
+therefore asks Codex to end every answer with the same status and recall counts as one
+visible line:
 
 ```
 > 🧠 ● cognee: agent_sessions · local · Cognee memory: 2 memory hits · 3/4 turns had hits this session · saved last turn 1 prompt / 2 trace / 1 answer
 ```
 
 The receipt contains only the short status header; recalled passages remain private
-model context. Set `COGNEE_CODEX_VISIBLE_STATUS=off` to suppress the Orca fallback, or
-set it to `on` to use the receipt in another Codex host that hides hook messages. The
-default is `auto`: on for Orca transcript paths and off for regular Codex TUI, avoiding
-duplicate status there.
+model context. It is on by default because transcript paths do not reliably identify
+the host. Set `COGNEE_CODEX_VISIBLE_STATUS=off` if your host already renders the hook
+status and you do not want the additional end-of-answer receipt.
 
 `<dataset>` is the active Cognee dataset. `<mode>` is `local` when no `COGNEE_BASE_URL` is set or when it points to localhost, and `cloud` when it points to a remote host; an exported `COGNEE_BACKEND` / `COGNEE_CODEX_BACKEND` switch overrides that, so the status always shows the mode the terminal actually resolved.
 
@@ -544,7 +542,7 @@ A connection glyph precedes the line: `●` once the server is confirmed up **an
 | Env var | Default | Effect |
 |---|---|---|
 | `COGNEE_READY_PROBE_TIMEOUT` | `3.0` | Seconds the per-prompt readiness probe waits before giving up and skipping recall for that turn. It sits on the keystroke→answer path, so the default is deliberately tight; raise it on a slow or loaded server that is otherwise healthy. |
-| `COGNEE_CODEX_VISIBLE_STATUS` | `auto` | `auto` adds a visible per-answer status receipt only in Orca; `on` forces it for any Codex host; `off` keeps status only in the host's hook-message surface. |
+| `COGNEE_CODEX_VISIBLE_STATUS` | `on` | Adds a visible per-answer status receipt in every Codex host; `off` keeps status only in the host's hook-message surface. |
 
 In local mode the plugin also surfaces `LLM_API_KEY` problems (the key the local server uses to call the LLM) **in that same leading glyph slot**: `✕ (incorrect_llm_api_key) cognee: … · local` when the key is missing or the provider rejects it — one reason for both, since the fix is the same either way (`llm-state.json` still records which it was). The slot holds one sign, by precedence: a server-connection failure wins (if the server can't be reached or authenticated, its LLM key isn't the actionable problem), otherwise an LLM-key failure is shown **in place of** the `●` — the `llm_*` reason already tells you the server side itself is fine, so `●` and `✕` never appear together.
 

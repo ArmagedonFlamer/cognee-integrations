@@ -1,9 +1,8 @@
 """Visible Cognee status for Codex app-server clients.
 
-Codex TUI renders a hook's ``systemMessage``. Orca currently consumes that
-field as hidden developer context, so its users see neither the Cognee status
-nor recall counts. The Codex plugin detects Orca from the transcript path and
-adds a compact, model-rendered receipt while leaving the full memory context
+Codex hosts do not expose a reliable capability signal for hook
+``systemMessage`` rendering. The plugin therefore adds a compact,
+model-rendered receipt by default while leaving the full memory context
 unchanged.
 """
 
@@ -31,15 +30,21 @@ def test_orca_transcript_enables_visible_status(hook_module, monkeypatch):
     assert lookup._visible_status_enabled(payload)
 
 
-def test_regular_codex_transcript_does_not_duplicate_visible_status(hook_module, monkeypatch):
+def test_regular_codex_transcript_enables_visible_status_by_default(hook_module, monkeypatch):
     lookup = _lookup(hook_module)
     monkeypatch.delenv("COGNEE_CODEX_VISIBLE_STATUS", raising=False)
-    assert not lookup._visible_status_enabled(
+    assert lookup._visible_status_enabled(
         {"transcript_path": "/Users/me/.codex/sessions/rollout.jsonl"}
     )
 
 
-def test_explicit_setting_overrides_host_detection(hook_module, monkeypatch):
+def test_missing_transcript_enables_visible_status_by_default(hook_module, monkeypatch):
+    lookup = _lookup(hook_module)
+    monkeypatch.delenv("COGNEE_CODEX_VISIBLE_STATUS", raising=False)
+    assert lookup._visible_status_enabled({})
+
+
+def test_explicit_setting_overrides_default(hook_module, monkeypatch):
     lookup = _lookup(hook_module)
     orca = {
         "transcript_path": (
@@ -75,7 +80,7 @@ def test_receipt_is_exact_and_preserves_private_context(hook_module):
     assert actual["systemMessage"].startswith("● cognee:")
 
 
-def test_main_applies_receipt_for_orca_payload(hook_module, monkeypatch):
+def test_main_applies_receipt_for_regular_codex_payload(hook_module, monkeypatch):
     lookup = _lookup(hook_module)
     monkeypatch.delenv("COGNEE_CODEX_VISIBLE_STATUS", raising=False)
     payload = {
@@ -83,9 +88,7 @@ def test_main_applies_receipt_for_orca_payload(hook_module, monkeypatch):
         "turn_id": "turn-1",
         "prompt": "show me the status",
         "cwd": "/repo",
-        "transcript_path": (
-            "/Users/me/Library/Application Support/orca/codex-accounts/account/rollout.jsonl"
-        ),
+        "transcript_path": "/Users/me/.codex/sessions/rollout.jsonl",
     }
     monkeypatch.setattr(sys, "stdin", io.StringIO(__import__("json").dumps(payload)))
     monkeypatch.setattr(
