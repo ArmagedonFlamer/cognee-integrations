@@ -2110,19 +2110,36 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
     }
 
 
+def _module_has_drawn() -> bool:
+    """Whether the hooks module has ever drawn the status row on this machine.
+
+    The module writes ``band/<session>.json`` at every session start it runs in.
+    It does not load on a Claude Code older than the mods API, under
+    ``--safe-mode`` or in an org that allows only its own mods, and there the
+    settings-file status line is all the user has.
+    """
+    band = Path.home() / ".cognee-plugin" / "claude-code" / "band"
+    try:
+        return any(band.glob("*.json"))
+    except OSError:
+        return False
+
+
 def _retire_statusline_entry() -> None:
     """Remove the ``statusLine`` entry earlier plugin versions wrote to
     ``~/.claude/settings.json`` (one-time migration, best-effort).
 
     The status row is drawn above the prompt by the plugin's hooks module now;
-    the settings-file line below the prompt is no longer installed. Only an
-    entry that is recognisably ours (its command runs ``cognee-statusline.sh``)
-    is removed: a status line the user set themselves is never touched, and a
-    settings file that does not parse is left as it is.
+    the settings-file line below the prompt is no longer installed. The entry is
+    retired only once the module has shown it loads here (a band marker exists),
+    so a terminal where it cannot load keeps the line it had. Only an entry that
+    is recognisably ours (its command runs ``cognee-statusline.sh``) is removed:
+    a status line the user set themselves is never touched, and a settings file
+    that does not parse is left as it is.
     """
     settings_path = Path.home() / ".claude" / "settings.json"
     try:
-        if not settings_path.exists():
+        if not settings_path.exists() or not _module_has_drawn():
             return
         text = settings_path.read_text(encoding="utf-8").strip()
         settings = json.loads(text) if text else {}

@@ -64,6 +64,8 @@ function wire(
   answers: Partial<Record<string, (argv: readonly string[]) => { value: unknown }>> = {},
   writes: Write[] = [],
   registrations: { tools: string[]; commands: string[] } = { tools: [], commands: [] },
+  // The tool labels the engine's own row renderer would receive, in order.
+  toolRows: string[] = [],
 ) {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   mock.env(on, { HOME })
@@ -71,6 +73,7 @@ function wire(
   on('turn.complete', () => ({ text: '' }))
   on('session.end', ($, e) => ({ sessionId: e.sessionId }))
   on('ui.render', ($, e) => {
+    if (e.component === 'ToolUse') toolRows.push(e.props.tool)
     const { Text } = $.ui.resolve(e)
     return Text({ children: [''] })
   })
@@ -309,6 +312,26 @@ test('the remember allowance counts bytes too', async ($, on) => {
   expect(fifth.isError).toBe(true)
   expect(fifth.text).toContain('allowance')
   expect(calls.filter(c => argvOf([c], 'cognee-remember.sh')).length).toBe(4)
+})
+
+test('the transcript row of a plugin tool call is labelled plainly, not as an MCP server', async ($, on) => {
+  const calls: Call[] = []
+  const seen: string[] = []
+  wire(on, calls, {}, [], { tools: [], commands: [] }, seen)
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  const row = {
+    component: 'ToolUse' as const,
+    props: { tool_use_id: 'toolu_1', tool: `mcp__${PLUGIN}__remember`, input: { content: 'x' }, isRunning: false, isErrored: false, isInterrupted: false },
+  }
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...row })
+  await ui.unmount()
+  expect(seen).toEqual(['Cognee remember'])
+
+  // A call to any other tool is handed on as it came.
+  seen.length = 0
+  const other = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...row, props: { ...row.props, tool: 'Bash', input: { command: 'ls' } } })
+  await other.unmount()
+  expect(seen).toEqual(['Bash'])
 })
 
 test('a write the server never received is reported as not stored', async ($, on) => {

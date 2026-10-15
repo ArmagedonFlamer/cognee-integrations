@@ -117,6 +117,11 @@ type Phase = keyof typeof ACTIVE_LABELS
 // What the module runs itself shows after a terminal spinner too: the tool row
 // there says only which tool runs.
 const OWN_PHASES = ['searching', 'remembering', 'switching']
+// How a call to each of the plugin's tools is labelled in the transcript.
+const TOOL_ROW_LABELS: Record<string, string> = {
+  'mcp__cognee-memory__search': 'Cognee search',
+  'mcp__cognee-memory__remember': 'Cognee remember',
+}
 
 const SEARCH_TIMEOUT_MS = 60_000
 // Above the wrapper's own worst case (a 120 s POST, an 8 s wait for the
@@ -1383,6 +1388,16 @@ export const register: Register = (on, options) => {
     if (drawsSomething(theirs)) rows.push(theirs as RenderElement)
     rows.push(credit)
     return Box({ flexDirection: 'column', children: rows })
+  }).catch(($, e, next) => next(e))
+
+  // The transcript row of a call to one of the plugin's tools. The engine
+  // labels every registered tool "<plugin> - <tool> (MCP)" from its wire
+  // name; that reads as a separate server to a person, so the row names the
+  // tool plainly. The call and its result are untouched.
+  on('ui.render', { component: 'ToolUse' }, ($, e, next) => {
+    const label = TOOL_ROW_LABELS[e.props.tool]
+    if (!label) return next(e)
+    return next({ ...e, props: { ...e.props, tool: label } })
   }).catch(($, e, next) => next(e))
 
   on('ui.render', { component: 'Spinner' }, async ($, e, next) => {

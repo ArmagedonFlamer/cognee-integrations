@@ -45,6 +45,13 @@ def _read(settings):
     return json.loads(settings.read_text(encoding="utf-8"))
 
 
+def _mark_band(temp_home, session="11111111-2222-4333-8444-555555555555"):
+    """What the hooks module writes at a session start it runs in."""
+    band = temp_home / ".cognee-plugin" / "claude-code" / "band"
+    band.mkdir(parents=True, exist_ok=True)
+    (band / f"{session}.json").write_text(json.dumps({"session_id": session}), encoding="utf-8")
+
+
 OURS = {
     "type": "command",
     "command": '[ -x "/plugins/cognee-memory/scripts/cognee-statusline.sh" && exec '
@@ -53,13 +60,15 @@ OURS = {
 }
 
 
-def test_our_entry_is_removed_and_the_rest_kept(ss, settings):
+def test_our_entry_is_removed_and_the_rest_kept(ss, settings, temp_home):
+    _mark_band(temp_home)
     _write(settings, {"statusLine": OURS, "enabledPlugins": {"cognee-memory@cognee": True}})
     ss._retire_statusline_entry()
     assert _read(settings) == {"enabledPlugins": {"cognee-memory@cognee": True}}
 
 
-def test_a_stale_cache_path_of_ours_is_removed_too(ss, settings):
+def test_a_stale_cache_path_of_ours_is_removed_too(ss, settings, temp_home):
+    _mark_band(temp_home)
     stale = {
         "type": "command",
         "command": "/old/plugin/cache/cognee-memory/0.1.0/scripts/cognee-statusline.sh",
@@ -106,3 +115,21 @@ def test_corrupt_settings_are_preserved(ss, settings):
     _write(settings, original, raw=True)
     ss._retire_statusline_entry()
     assert settings.read_text(encoding="utf-8") == original
+
+
+# ── the gate: only a module that has drawn retires the line ─────────────────
+
+
+def test_the_entry_is_kept_while_the_module_has_never_drawn(ss, settings):
+    """An older Claude Code, --safe-mode or a managed org never loads the hooks
+    module, so there is nothing to draw the row in the line's place."""
+    _write(settings, {"statusLine": OURS, "enabledPlugins": {"cognee-memory@cognee": True}})
+    ss._retire_statusline_entry()
+    assert _read(settings)["statusLine"] == OURS
+
+
+def test_the_entry_is_removed_once_a_band_marker_exists(ss, settings, temp_home):
+    _mark_band(temp_home)
+    _write(settings, {"statusLine": OURS})
+    ss._retire_statusline_entry()
+    assert "statusLine" not in _read(settings)

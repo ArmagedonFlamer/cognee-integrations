@@ -259,6 +259,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   appended one byte with `O_APPEND`, which Windows emulates as a seek and a
   write, so parallel hooks lost bytes; on Windows the append now takes the
   session's lock. Same in the Codex copy.
+- **The settings status line was retired before the row could replace it.**
+  Session start removed the plugin's `statusLine` entry on every launch, even
+  where the hooks module cannot load (a Claude Code older than the mods API,
+  `--safe-mode`, an org that allows only its own mods), leaving those terminals
+  with no status line at all. The entry is now retired only once a band marker
+  shows the module has drawn the row on this machine.
+- **Tool rows no longer read "cognee-memory - remember (MCP)".** Claude Code
+  names every plugin-registered tool that way from its wire name, which reads
+  as a separate server. The transcript row of the plugin's two tools now says
+  `Cognee search` and `Cognee remember`; the wire name the model uses is
+  unchanged.
 - **A script killed at its time limit was run again under the next
   interpreter.** The mod tries `python3`, `python` and `py` in turn and moved
   on at any failure, a timeout included, so a dataset switch stopped mid-sync
