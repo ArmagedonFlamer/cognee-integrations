@@ -12,4 +12,5 @@ pip_dependencies:
   - cognee==1.6.3
 hooks:
   - on_session_end
+  - on_pre_compress
   - on_memory_write

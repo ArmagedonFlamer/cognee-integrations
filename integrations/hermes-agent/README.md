@@ -48,7 +48,12 @@ Python package with the `hermes_agent.plugins` entry point.
 - Recaps recorded sessions with `cognee_recap` and `hermes cognee
   standup|digest|timeline`: what was worked on and left open, the lessons
   distilled into memory, or a dated timeline of one topic.
-- Runs `cognee.improve()` at Hermes session end to bridge session memory into the graph.
+- Runs `cognee.improve()` at Hermes session end to bridge session memory into
+  the graph, and before Hermes compresses a long conversation, so turns
+  compressed away still reach the graph.
+- `cognee_remember` returns as soon as the server has the text; the graph is
+  built in the background, so a slow LLM never turns a stored fact into a
+  reported timeout.
 - Mirrors explicit Hermes memory writes through `on_memory_write`, and steers
   the agent to prefer Cognee over Hermes' built-in memory files.
 - Supports local embedded Cognee and remote Cognee service mode.
@@ -535,8 +540,8 @@ straight to the queue.
 - **Sends** to the cognee server it is configured for (local, or
   `COGNEE_BASE_URL`): each turn and its tool calls (after the capture policy and
   redaction), your prompt as the recall query, mirrored Hermes memory writes,
-  what you ask it to remember, forget or index, and the session-end
-  `improve()`. The server, not the plugin, calls your LLM and embedding
+  what you ask it to remember, forget or index, and `improve()` at session end
+  and before each context compression. The server, not the plugin, calls your LLM and embedding
   providers; what else the cognee server sends is governed by its own settings.
   The plugin's only other request is the CLI's update check, which asks PyPI
   for the latest release version at most once an hour.

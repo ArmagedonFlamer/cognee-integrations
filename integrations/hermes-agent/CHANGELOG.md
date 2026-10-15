@@ -16,7 +16,9 @@ Brings the plugin to cognee 1.6.3 and to parity with the Claude Code, Codex and
 OpenClaw plugins: recall trimmed to what Hermes does not already have, tool-call
 capture under the shared capture policy with secret redaction, a write buffer
 for turns captured while the server is away, the recap tool and commands, and a
-local server that no longer reads a stray `.env`.
+local server that no longer reads a stray `.env`. Also folds in two community
+contributions: the pre-compression improve (#487) and background permanent
+writes (#479).
 
 ### Added
 - **Tool calls are captured as traces, under the capture policy, with secrets
@@ -75,6 +77,20 @@ local server that no longer reads a stray `.env`.
   Sent as `chunk_size` on `cognee_remember` writes, for embedding models whose
   input limit is below the server's default chunk size. Opt-in: unset sends
   nothing, and the server default applies as before.
+- **The session is bridged into the graph before context compression.** Hermes
+  compresses long conversations lossily and calls `on_pre_compress(messages)`
+  first; the plugin did not implement it, so `improve()` ran only at session end
+  and turns compressed away earlier could be lost before reaching the graph if
+  the session never closed cleanly. `on_pre_compress` now starts the same
+  session improve (same dataset and cognee session id, same remote/local
+  transport) on a worker thread, after replaying the session's buffered writes.
+  It is best-effort (Hermes pre-compress checkpoint API v1): compression never
+  waits on it, a failure is logged as a warning and never raised, a compaction
+  while the previous one's improve is still running does not start a second, and
+  it contributes no text to the summary prompt. Gated like the session-end
+  improve (`improve_on_end`, writes enabled, breaker closed); the session-end
+  improve still runs. `on_pre_compress` is declared in both `plugin.yaml` files.
+  Contributed by @rtheron (#487).
 - **"What this plugin runs, stores and sends"** section in the README.
 
 ### Changed
@@ -175,6 +191,13 @@ local server that no longer reads a stray `.env`.
   warning that says what to do (start the server with `DEFAULT_USER_PASSWORD`
   matching `COGNEE_USER_PASSWORD`, or set `COGNEE_API_KEY`), and the first `401`
   that follows carries the same hint. The README documents it.
+- **`cognee_remember` no longer reports a timeout for a write that succeeded.**
+  Permanent writes went to `/api/v1/remember` without `run_in_background`, so the
+  server ran the whole cognify (several LLM calls per document) before answering;
+  on a slow or rate-limited LLM that exceeded `COGNEE_WRITE_TIMEOUT` and the agent
+  saw `Cognee remember failed: ... timed out` for a write the server completed.
+  The write now runs in the background and returns `status: "running"`, the fix
+  the Claude Code plugin got in #96. Contributed by @jstevenjacobs (#479).
 - **Session-end improve says why on an exhausted LLM budget.** cognee 1.6.3
   answers 402 when the server's LLM budget runs out. The exit watcher and the
   in-process close now log that the budget is exhausted and that nothing will

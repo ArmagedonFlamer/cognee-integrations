@@ -720,6 +720,16 @@ class HttpBackend(MemoryBackend):
         fields = {"datasetName": dataset}
         if session_id:
             fields["session_id"] = session_id
+        # A synchronous remember runs the whole cognify pipeline (several LLM
+        # calls per document) before answering, which on a slow or rate-limited
+        # LLM endpoint blows past the client's write timeout: the caller sees
+        # "Cognee remember failed: timed out" while the server finishes the
+        # write anyway — a reported failure for a write that landed, and the
+        # same connection-level timeout the claude-code integration fixed by
+        # backgrounding (#96). Backgrounding returns immediately with
+        # ``status: "running"`` and the pipeline completes server-side; the
+        # provider already surfaces the status field to the caller.
+        fields["run_in_background"] = "true"
         if chunk_size > 0:
             # Opt-in (#428): without it the server chunks at its form default,
             # which can exceed a small embedding model's input limit.
