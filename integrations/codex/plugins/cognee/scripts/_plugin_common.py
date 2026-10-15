@@ -838,7 +838,8 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
     owner match is the only evidence, and ``writable`` stays None when even that
     cannot be judged. Returns::
 
-        {"datasets": [{"name", "id", "owner_id", "writable": True|None}],
+        {"principal_id": str,
+         "datasets": [{"name", "id", "owner_id", "writable": True|None}],
          "readonly": [names], "readonly_ids": [ids], "hidden_readonly": N,
          "filtered": bool}
     """
@@ -881,6 +882,7 @@ def list_writable_datasets(user_id: str = "", *, timeout: float = 15.0) -> dict:
             writable = True if owner and (owner == user_id or via_role) else None
         rows.append({**item, "writable": writable})
     return {
+        "principal_id": user_id,
         "datasets": [row for row in rows if row["writable"] is not False],
         "readonly": [row["name"] for row in rows if row["writable"] is False],
         "readonly_ids": [row["id"] for row in rows if row["writable"] is False],

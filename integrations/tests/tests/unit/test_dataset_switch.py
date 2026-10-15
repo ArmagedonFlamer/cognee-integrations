@@ -223,6 +223,7 @@ def test_cloud_writable_listing_routes_identity_and_permissions_to_platform(
     out = pc.list_writable_datasets("")
 
     assert [row["name"] for row in out["datasets"]] == ["prod"]
+    assert out["principal_id"] == "me"
     assert identity_calls and pc._control_plane_api_url() == "https://api.dev.aws.cognee.ai"
     assert calls == [
         ("/api/v1/datasets/", None),
