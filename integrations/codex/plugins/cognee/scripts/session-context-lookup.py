@@ -83,6 +83,54 @@ from config import get_dataset, get_session_id, load_config
 _AUDIT_PROMPT_CHARS = 2000
 _AUDIT_CONTEXT_CHARS = 4000
 
+# Codex TUI renders ``systemMessage`` hook output inline. App-server clients can
+# consume the same hook result as hidden developer context instead, leaving the
+# user with no visible indication that Cognee ran. Orca is currently the known
+# host with that behaviour. For it, ask the model to repeat only the compact
+# two-line status header as a one-line receipt; the recalled content itself
+# remains private model context.
+_VISIBLE_STATUS_ENV = "COGNEE_CODEX_VISIBLE_STATUS"
+_ORCA_TRANSCRIPT_MARKER = "/application support/orca/codex-accounts/"
+
+
+def _visible_status_enabled(payload: dict | None = None) -> bool:
+    """Whether this host needs a model-rendered Cognee status receipt.
+
+    An explicit environment value wins. With the default ``auto`` behaviour,
+    enable the fallback only for Orca transcripts, because regular Codex TUI
+    already renders the hook's ``systemMessage`` and would otherwise show the
+    same status twice.
+    """
+    raw = os.environ.get(_VISIBLE_STATUS_ENV, "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    transcript = str((payload or {}).get("transcript_path") or "")
+    normalized = transcript.replace("\\", "/").lower()
+    return _ORCA_TRANSCRIPT_MARKER in normalized
+
+
+def _with_visible_status_receipt(output: dict | None, enabled: bool) -> dict | None:
+    """Put hidden hook status into the eventual answer for app-server hosts."""
+    if not enabled or not isinstance(output, dict):
+        return output
+    header = str(output.get("systemMessage") or "").strip()
+    if not header:
+        return output
+    compact = " · ".join(line.strip() for line in header.splitlines() if line.strip())
+    receipt = f"> 🧠 {compact}"
+    instruction = (
+        "Visible Cognee status: this client hides hook status messages. End your answer "
+        "with exactly the following blockquote line, verbatim and without commentary:\n"
+        f"{receipt}\n"
+        "This is a user-facing plugin receipt, not source material for the answer."
+    )
+    hook_output = output.setdefault("hookSpecificOutput", {})
+    context = str(hook_output.get("additionalContext") or "").strip()
+    hook_output["additionalContext"] = instruction + (f"\n\n{context}" if context else "")
+    return output
+
 
 def _audit_clip(value, limit: int) -> str:
     """Head of ``value`` for the audit log, marked when clipped."""
@@ -1026,6 +1074,7 @@ def main():
             output = asyncio.run(_run(prompt, cwd))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
+    output = _with_visible_status_receipt(output, _visible_status_enabled(payload))
     return with_base_url_notice(output, "UserPromptSubmit")
 
 

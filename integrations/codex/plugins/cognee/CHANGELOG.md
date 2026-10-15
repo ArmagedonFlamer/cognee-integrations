@@ -42,6 +42,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   the command text.
 
 ### Fixed
+- **Orca sessions now show Cognee status and memory-hit counts.** Orca consumes Codex
+  hook `systemMessage` output as hidden developer context, so the existing status was
+  working but invisible. The prompt hook now detects Orca from its transcript path and
+  asks Codex to repeat only the compact status header as a one-line receipt at the end
+  of the answer. Regular Codex TUI keeps its native inline status without duplication;
+  `COGNEE_CODEX_VISIBLE_STATUS=on|off` overrides the automatic host detection.
 - **Leaving a resumed chat syncs it again.** The session-end sync's dedupe marker was keyed
   on the session alone and kept for an hour, so a chat that was resumed and left again
   within the hour was skipped as already synced, and its new turns waited for the idle
