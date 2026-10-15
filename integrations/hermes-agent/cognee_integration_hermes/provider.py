@@ -195,6 +195,12 @@ def _llm_budget_exhausted(exc: Exception) -> bool:
     return getattr(exc, "status", None) == 402
 
 
+def _server_unresponsive(exc: Exception) -> bool:
+    """A write that got no answer: it timed out, or the connection broke after it
+    was opened (``CogneeUnreachable`` from the HTTP transport)."""
+    return _is_timeout(exc) or hasattr(exc, "not_connected")
+
+
 def _is_timeout(exc: Exception) -> bool:
     if isinstance(exc, (TimeoutError, concurrent.futures.TimeoutError)):
         return True
@@ -758,29 +764,7 @@ class CogneeMemoryProvider(MemoryProvider):
             return
 
         def _sync() -> None:
-            stored = False
-            for kind, entry in writes:
-                try:
-                    self._send_entry(kind, entry, cognee_session_id, dataset)
-                    stored = True
-                except Exception as exc:
-                    if kind == "trace" and not self._can_buffer():
-                        # The in-process SDK has no typed-entry write; the
-                        # turn itself is still stored below.
-                        logger.debug("Cognee trace capture unavailable: %s", exc)
-                        continue
-                    self._record_failure()
-                    if self._can_buffer() and write_buffer.is_bufferable_write_error(exc):
-                        self._buffer_write(dataset, cognee_session_id, kind, entry)
-                        logger.info(
-                            "Cognee %s buffered until the server is reachable: %s", kind, exc
-                        )
-                    else:
-                        logger.warning("Cognee session sync failed (%s): %s", kind, exc)
-            if stored:
-                self._record_success()
-                # The server answers again: replay anything an outage left behind.
-                self._drain_write_buffer(_DRAIN_BUDGET_SECS)
+            self._write_turn(writes, cognee_session_id, dataset)
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
@@ -792,10 +776,102 @@ class CogneeMemoryProvider(MemoryProvider):
         )
         self._sync_thread.start()
 
-    def _send_entry(
-        self, kind: str, entry: dict[str, Any], cognee_session_id: str, dataset: str
+    def _write_turn(
+        self, writes: list[tuple[str, dict[str, Any]]], cognee_session_id: str, dataset: str
     ) -> None:
-        timeout = self._timeout("write_timeout", 120)
+        """Send one turn's traces and its QA entry under one deadline, one verdict.
+
+        The whole turn gets ``write_timeout``; each write gets what is left of
+        it, so a server that accepts connections but never answers holds this
+        thread for one write timeout, not one per tool call. The first sign that
+        the server is away (a bufferable failure, a timeout or reset, the
+        breaker opening, the deadline passing) ends the turn: what was not sent
+        yet is queued (``write_buffer``), since it certainly never reached the
+        server. A write that timed out is not queued, since the server may have
+        stored it. A write the server answered with an error is dropped and the
+        rest still go, because the server is answering.
+
+        The breaker hears one verdict per turn, as for recall: one failure when
+        the server was away, too slow for the deadline, or refused any write; a
+        success (and a replay of the queue) only when the whole turn was stored.
+        A turn the breaker cut short gives no verdict of its own. A turn whose
+        traces landed but whose QA entry failed is a failure, never a success.
+        """
+        deadline = time.monotonic() + self._timeout("write_timeout", 120)
+        can_buffer = self._can_buffer()
+        pending = list(writes)
+        stored = False
+        refused = False
+        outage: Optional[Exception] = None
+        out_of_time = False
+        while pending:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                out_of_time = True
+                break
+            if self._is_breaker_open():
+                break
+            kind, entry = pending[0]
+            try:
+                self._send_entry(kind, entry, cognee_session_id, dataset, timeout=remaining)
+                pending.pop(0)
+                stored = True
+            except Exception as exc:
+                if kind == "trace" and not can_buffer:
+                    # The in-process SDK has no typed-entry write; the turn
+                    # itself is still stored.
+                    pending.pop(0)
+                    logger.debug("Cognee trace capture unavailable: %s", exc)
+                    continue
+                if can_buffer and write_buffer.is_bufferable_write_error(exc):
+                    outage = exc  # this entry never reached the server: queued below
+                    break
+                pending.pop(0)
+                if _server_unresponsive(exc):
+                    outage = exc
+                    logger.warning(
+                        "Cognee %s write got no answer; not retried, the server may "
+                        "have stored it: %s",
+                        kind,
+                        exc,
+                    )
+                    break
+                refused = True
+                logger.warning("Cognee session sync failed (%s): %s", kind, exc)
+
+        if pending:
+            if can_buffer:
+                for kind, entry in pending:
+                    self._buffer_write(dataset, cognee_session_id, kind, entry)
+                logger.info(
+                    "Cognee buffered %d write(s) until the server is reachable%s",
+                    len(pending),
+                    f": {outage}" if outage else "",
+                )
+            else:
+                logger.warning(
+                    "Cognee dropped %d write(s) of this turn: the server did not answer",
+                    len(pending),
+                )
+
+        if outage is not None or refused or out_of_time:
+            self._record_failure()
+        elif stored and not pending:
+            self._record_success()
+            # The server answers again: replay anything an outage left behind.
+            self._drain_write_buffer(_DRAIN_BUDGET_SECS)
+
+    def _send_entry(
+        self,
+        kind: str,
+        entry: dict[str, Any],
+        cognee_session_id: str,
+        dataset: str,
+        *,
+        timeout: Optional[float] = None,
+    ) -> None:
+        write_timeout = self._timeout("write_timeout", 120)
+        timeout = write_timeout if timeout is None else max(0.1, min(write_timeout, timeout))
         if kind == "qa":
             # Through remember_session, which both transports implement.
             self._backend.remember_session(

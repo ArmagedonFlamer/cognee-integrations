@@ -40,7 +40,9 @@ writes (#479).
   log says why. `capture=false` turns automatic capture off; `cognee_remember` is
   never filtered. Each setting falls back to its `COGNEE_CAPTURE_*` variable.
   Traces need the HTTP transport (the default); the in-process SDK transport keeps
-  storing the turns only. Shared cases:
+  storing the turns only. A turn's writes share one `write_timeout` deadline and give the circuit
+  breaker one verdict: a server that stops answering costs one timeout, not one per
+  tool call, and the turn's unsent entries are queued for replay. Shared cases:
   `integrations/conformance/capture_policy_cases.json`.
 - **Turns captured while the server is away are replayed.** A turn or trace that
   never reached the server (the connection could not be opened: refused while it

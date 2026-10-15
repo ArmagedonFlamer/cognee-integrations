@@ -264,6 +264,103 @@ class TestProviderBuffering(unittest.TestCase):
         self.assertEqual(write_buffer.write_buffer_for(provider._write_buffer_path).size(), 0)
 
 
+class TestOneTurnOneDeadline(unittest.TestCase):
+    """A turn's writes share one deadline and give the breaker one verdict."""
+
+    _CALLS = [("read_file", {"path": f"f{i}.py"}, "{}") for i in range(5)]
+
+    def _backend(self, behaviour):
+        """A server-backed fake whose writes run ``behaviour(kind, kwargs)``."""
+        backend = _ServerBackend()
+        backend.down = False
+
+        def write(kind):
+            def call(**kwargs):
+                backend._recorder.record(kind, kwargs)
+                return behaviour(kind, kwargs)
+
+            return call
+
+        backend.remember_entry = write("remember_entry")
+        backend.remember_session = write("remember_session")
+        return backend
+
+    def _buffered(self, provider):
+        return write_buffer.write_buffer_for(provider._write_buffer_path).size()
+
+    def test_a_hung_server_costs_one_timeout_and_queues_the_rest(self):
+        def hang(kind, kwargs):
+            raise CogneeUnreachable("timed out", not_connected=False)
+
+        backend = self._backend(hang)
+        provider = make_provider(backend=backend)
+        _sync(provider, messages=_turn(*self._CALLS))
+        # One write was tried; the other four traces and the QA entry were never
+        # sent, so they wait for the server. The one that timed out is not queued.
+        self.assertEqual(len(backend.calls), 1)
+        self.assertEqual(self._buffered(provider), 5)
+        self.assertEqual(provider._consecutive_failures, 1)
+
+    def test_every_write_shares_the_turns_deadline(self):
+        def slow(kind, kwargs):
+            time.sleep(0.15)
+
+        backend = self._backend(slow)
+        provider = make_provider(backend=backend, config={"write_timeout": 0.5})
+        started = time.monotonic()
+        _sync(provider, messages=_turn(*self._CALLS))
+        self.assertLess(time.monotonic() - started, 1.0)
+        timeouts = [kwargs["timeout"] for _name, kwargs in backend.calls]
+        self.assertTrue(all(b < a for a, b in zip(timeouts, timeouts[1:])), timeouts)
+        self.assertLessEqual(timeouts[0], 0.5)
+        # What the deadline cut off is queued, not dropped, and not replayed in
+        # the same breath: a server too slow for the deadline is a failure.
+        self.assertEqual(len(backend.calls) + self._buffered(provider), 6)
+        self.assertGreater(self._buffered(provider), 0)
+        self.assertEqual(provider._consecutive_failures, 1)
+
+    def test_a_breaker_that_opens_mid_turn_stops_the_writes(self):
+        backend = self._backend(lambda kind, kwargs: None)
+        provider = make_provider(backend=backend)
+        # sync_turn checks once before starting the writes; then two writes go.
+        checks = iter([False, False, False])
+        provider._is_breaker_open = lambda: next(checks, True)
+        _sync(provider, messages=_turn(*self._CALLS))
+        self.assertEqual(len(backend.calls), 2)
+        self.assertEqual(self._buffered(provider), 4)
+
+    def test_refused_writes_are_one_failure_and_the_rest_still_go(self):
+        def refuse(kind, kwargs):
+            raise CogneeHttpError(400, "bad entry")
+
+        backend = self._backend(refuse)
+        provider = make_provider(backend=backend)
+        _sync(provider, messages=_turn(*self._CALLS))
+        self.assertEqual(len(backend.calls), 6)
+        self.assertEqual(self._buffered(provider), 0)
+        self.assertEqual(provider._consecutive_failures, 1)
+
+    def test_stored_traces_do_not_cover_a_lost_turn(self):
+        def qa_fails(kind, kwargs):
+            if kind == "remember_session":
+                raise CogneeHttpError(500, "boom")
+
+        backend = self._backend(qa_fails)
+        provider = make_provider(backend=backend)
+        provider._consecutive_failures = 2
+        _sync(provider, messages=_turn(*self._CALLS[:2]))
+        # The traces landed, but the turn did not: a failure, not a success.
+        self.assertEqual(provider._consecutive_failures, 3)
+
+    def test_a_clean_turn_is_one_success(self):
+        backend = self._backend(lambda kind, kwargs: None)
+        provider = make_provider(backend=backend)
+        provider._consecutive_failures = 2
+        _sync(provider, messages=_turn(*self._CALLS))
+        self.assertEqual(len(backend.calls), 6)
+        self.assertEqual(provider._consecutive_failures, 0)
+
+
 @pytest.fixture
 def buffer(tmp_path):
     return write_buffer.WriteBuffer(tmp_path / "pending.json")
