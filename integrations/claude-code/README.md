@@ -59,11 +59,15 @@ turns, swept automatically; see [Logs and state](#logs-and-state)),
 `~/.cognee-plugin/venv/`, `~/.cognee-plugin/api_key.json`, and your settings in
 `~/.cognee/.env`.
 
-**Settings it writes.** None. Earlier versions wrote a `statusLine` entry into
-`~/.claude/settings.json`; the status row is drawn above the prompt by the hooks
-module now, so the first session start on this version removes that entry (only
-one whose command runs the plugin's own `cognee-statusline.sh`, never a status line
-you set yourself). Nothing else in your Claude Code settings is touched.
+**Settings it writes.** One entry, and only where it is needed: in a session
+whose status row the hooks module draws above the prompt, nothing is written;
+in a session where the module does not load (an older Claude Code,
+`--safe-mode`, an organisation that allows only its own mods), session start
+installs the `statusLine` entry in `~/.claude/settings.json` that draws the line
+below the prompt, and refreshes it when the plugin moved. Only an entry whose
+command runs the plugin's own `cognee-statusline.sh` is ever written or
+replaced; a status line you set yourself is never touched. Nothing else in your
+Claude Code settings is touched.
 
 **Claude's own files.** The plugin reads the hook payloads Claude Code sends it, not
 your transcript or Claude Code's memory files, and writes to neither.
@@ -825,12 +829,13 @@ event. Irrelevant background recall does not require an announcement.
 
 > **Where it is drawn.** The row sits **above the prompt**, on every surface, with
 > the dataset name as a picker, drawn by the plugin's hooks module (Claude Code
-> 2.1.287+) from the plugin's own renderer. The plugin no longer installs a
-> settings-file `statusLine`. On a Claude Code that does not load the module
-> (older versions, `--safe-mode`, an organisation that allows only its own mods)
-> no row is drawn unless you add the entry yourself; see
-> [A line below the prompt](#a-line-below-the-prompt). Everything in this section
-> describes the row's content, which is the same either way.
+> 2.1.287+) from the plugin's own renderer. On a Claude Code that does not load
+> the module (older versions, `--safe-mode`, an organisation that allows only
+> its own mods) the same renderer draws the line below the prompt instead,
+> through a settings-file `statusLine` that session start installs there; see
+> [A line below the prompt](#a-line-below-the-prompt). One or the other, never
+> both. Everything in this section describes the row's content, which is the
+> same either way.
 
 The status row highlights `cognee` between the connection glyph and a purple
 square, with bold dataset and location, the estimated tokens saved and what
@@ -994,8 +999,9 @@ Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the
 
 The renderer behind the row, `scripts/cognee_statusline_render.py`, is also a
 complete Claude Code `statusLine` command, through `scripts/cognee-statusline.sh`.
-The plugin no longer writes it into your settings, but you can, for a Claude Code
-that does not load the hooks module or if you prefer the line below the prompt:
+Session start writes it into your settings in a session where the hooks module
+does not draw the row, and leaves settings alone where it does. You can also add
+it yourself, for instance if you prefer the line below the prompt:
 
 ```json
 "statusLine": {

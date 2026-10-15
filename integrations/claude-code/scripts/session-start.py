@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -2110,46 +2111,96 @@ def _session_start_guidance(mode: str, dataset: str, session_id: str, ready: boo
     }
 
 
-def _module_has_drawn() -> bool:
-    """Whether the hooks module has ever drawn the status row on this machine.
+def _band_draws_this_session(session_id: str) -> bool:
+    """Whether the hooks module draws this session's status row above the prompt.
 
-    The module writes ``band/<session>.json`` at every session start it runs in.
-    It does not load on a Claude Code older than the mods API, under
-    ``--safe-mode`` or in an org that allows only its own mods, and there the
-    settings-file status line is all the user has.
+    The module writes ``band/<session>.json`` at its own session start, which
+    runs before this hook, so the marker is already there when the module
+    loaded for this session. It is absent where the module cannot load (a
+    Claude Code older than the mods API, ``--safe-mode``, an organisation that
+    allows only its own mods) and where the band is switched off in ``/config``.
     """
-    band = Path.home() / ".cognee-plugin" / "claude-code" / "band"
+    if not session_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", session_id):
+        return False
+    marker = Path.home() / ".cognee-plugin" / "claude-code" / "band" / f"{session_id}.json"
     try:
-        return any(band.glob("*.json"))
+        return marker.is_file()
     except OSError:
         return False
 
 
-def _retire_statusline_entry() -> None:
-    """Remove the ``statusLine`` entry earlier plugin versions wrote to
-    ``~/.claude/settings.json`` (one-time migration, best-effort).
+def _ensure_statusline_configured(session_id: str = "") -> None:
+    """Write the statusLine entry to ~/.claude/settings.json when safe.
 
-    The status row is drawn above the prompt by the plugin's hooks module now;
-    the settings-file line below the prompt is no longer installed. The entry is
-    retired only once the module has shown it loads here (a band marker exists),
-    so a terminal where it cannot load keeps the line it had. Only an entry that
-    is recognisably ours (its command runs ``cognee-statusline.sh``) is removed:
-    a status line the user set themselves is never touched, and a settings file
-    that does not parse is left as it is.
+    One row, whichever can be drawn: where the hooks module draws the row above
+    the prompt for this session, the settings file is left alone (the renderer
+    prints nothing for such a session anyway); where it does not, the line below
+    the prompt is installed, or refreshed when the plugin moved. Claude Code
+    hot-reloads settings.json, so the line becomes active on the next status
+    refresh without a restart.
     """
+    if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
+        hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
+        return
+    if _band_draws_this_session(session_id):
+        hook_log("statusline_setup_skipped", {"reason": "band_draws_row"})
+        return
+
+    plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
+    if plugin_root:
+        statusline_sh = Path(plugin_root) / "scripts" / "cognee-statusline.sh"
+    else:
+        statusline_sh = Path(__file__).resolve().parent / "cognee-statusline.sh"
+
+    if not statusline_sh.exists():
+        hook_log(
+            "statusline_setup_skipped", {"reason": "script_not_found", "path": str(statusline_sh)}
+        )
+        return
+
     settings_path = Path.home() / ".claude" / "settings.json"
+    # Guard on the script's existence at run time. Claude Code does not remove
+    # this statusLine entry when the plugin is uninstalled, and the command runs
+    # through a shell — so if the plugin's files are later purged from the cache,
+    # a bare path would fail on every refresh. The `[ -x ] && exec … || true`
+    # guard degrades to a clean, empty status line instead. (When the files
+    # linger but the plugin is disabled, the renderer self-evicts this entry.)
+    guarded_command = f'[ -x "{statusline_sh}" ] && exec "{statusline_sh}" || true'
+    desired = {"type": "command", "command": guarded_command}
+    # Re-run the (network-free, local-only) renderer on a fixed timer in addition
+    # to Claude's event-driven updates, so the connection glyph reflects a change
+    # (e.g. a bad key detected at SessionStart, or the server dying) while the
+    # session is idle — event triggers go quiet when idle, and settings changes
+    # are not themselves a refresh trigger. Default 2s; COGNEE_STATUSLINE_REFRESH_INTERVAL
+    # overrides, and a value < 1 (e.g. 0) omits it to disable idle polling.
     try:
-        if not settings_path.exists() or not _module_has_drawn():
-            return
-        text = settings_path.read_text(encoding="utf-8").strip()
-        settings = json.loads(text) if text else {}
-        if not isinstance(settings, dict):
-            return
+        _interval = int(float(os.environ.get("COGNEE_STATUSLINE_REFRESH_INTERVAL", "") or 2))
+    except ValueError:
+        _interval = 2
+    if _interval >= 1:
+        desired["refreshInterval"] = _interval
+
+    try:
+        settings: dict = {}
+        if settings_path.exists():
+            text = settings_path.read_text(encoding="utf-8").strip()
+            if text:
+                settings = json.loads(text)
+
         existing = settings.get("statusLine")
-        command = existing.get("command") if isinstance(existing, dict) else None
-        if not (isinstance(command, str) and "cognee-statusline.sh" in command):
+        if existing == desired:
             return
-        settings.pop("statusLine", None)
+
+        existing_command = existing.get("command") if isinstance(existing, dict) else None
+        is_cognee_owned = (
+            isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command
+        )
+        if existing and not is_cognee_owned:
+            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
+            return
+
+        settings["statusLine"] = desired
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -2162,9 +2213,9 @@ def _retire_statusline_entry() -> None:
             except OSError:
                 pass
             raise
-        hook_log("statusline_retired", {"path": str(settings_path)})
+        hook_log("statusline_configured", {"path": str(statusline_sh)})
     except Exception as exc:
-        hook_log("statusline_retire_failed", {"error": str(exc)[:200]})
+        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
 
 
 _MEMORY_PREFERENCE_STEER = (
@@ -2247,9 +2298,9 @@ def _apply_update_nudge(output: dict) -> dict:
 
 
 async def _start(payload: dict | None = None) -> dict:
-    _retire_statusline_entry()
     config = load_config()
     payload = payload or {}
+    _ensure_statusline_configured(str(payload.get("session_id") or ""))
     cwd = str(payload.get("cwd") or os.environ.get("CLAUDE_CWD") or os.getcwd())
     # The service URL is the sole router (api_key is optional auth, with a
     # default-user fallback in registration). COGNEE_AGENT_MODE is NOT decided

@@ -257,8 +257,9 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:skip_self_cognee_bash` | `skip.self_cognee_bash` |
 | `hook:slow_streak_escalated` | `slow.streak_escalated` |
 | `hook:state_sweep` | `state.sweep` |
-| `hook:statusline_retire_failed` | `statusline.retire_failed` |
-| `hook:statusline_retired` | `statusline.retired` |
+| `hook:statusline_configured` | `statusline.configured` |
+| `hook:statusline_setup_failed` | `statusline.setup_failed` |
+| `hook:statusline_setup_skipped` | `statusline.setup_skipped` |
 | `hook:stop_store_error` | `stop.store_error` |
 | `hook:stop_stored` | `stop.stored` |
 | `hook:store_buffered_after_error` | `store.buffered_after_error` |

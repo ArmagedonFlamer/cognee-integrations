@@ -141,17 +141,17 @@ project adheres to [Semantic Versioning](https://semver.org/).
   restores the previous line byte-for-byte.
 
 ### Changed
-- **The plugin no longer installs a settings-file status line.** The status row
-  is the hooks module's, above the prompt, in a terminal and in the Desktop app
-  alike. The first session start on this version removes the `statusLine` entry
-  earlier versions wrote to `~/.claude/settings.json` (only one whose command
-  runs the plugin's own `cognee-statusline.sh`; a status line you set yourself
-  is never touched). `COGNEE_STATUSLINE` and `COGNEE_STATUSLINE_REFRESH_INTERVAL`
-  no longer do anything. The renderer is still a complete `statusLine` command
-  for anyone who adds the entry by hand (the README shows it), and it prints
-  nothing in a session where the module draws the row, so the two never show
-  together. On a Claude Code that does not load mods no row is drawn unless you
-  add that entry.
+- **The settings-file status line is installed only where the row cannot be
+  drawn.** The status row is the hooks module's, above the prompt, in a terminal
+  and in the Desktop app alike. Session start now checks the module's own marker
+  for the session: where the module draws the row, `~/.claude/settings.json` is
+  left alone; where it does not (a Claude Code older than the mods API,
+  `--safe-mode`, an organisation that allows only its own mods, the band
+  switched off), the `statusLine` entry that draws the line below the prompt is
+  installed or refreshed as before. Only an entry whose command runs the
+  plugin's own `cognee-statusline.sh` is ever written; a status line you set
+  yourself is never touched. The renderer prints nothing in a session where the
+  module draws the row, so the two never show together.
 - **Status line branding and counters.** The row and the text line show the
   `cognee` wordmark bold in the brand purple, the dataset plain and the mode in
   purple, led by the connection glyph: a green `●` once confirmed,
@@ -259,12 +259,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   appended one byte with `O_APPEND`, which Windows emulates as a seek and a
   write, so parallel hooks lost bytes; on Windows the append now takes the
   session's lock. Same in the Codex copy.
-- **The settings status line was retired before the row could replace it.**
-  Session start removed the plugin's `statusLine` entry on every launch, even
-  where the hooks module cannot load (a Claude Code older than the mods API,
-  `--safe-mode`, an org that allows only its own mods), leaving those terminals
-  with no status line at all. The entry is now retired only once a band marker
-  shows the module has drawn the row on this machine.
 - **Tool rows no longer read "cognee-memory - remember (MCP)".** Claude Code
   names every plugin-registered tool that way from its wire name, which reads
   as a separate server. The transcript row of the plugin's two tools now says
