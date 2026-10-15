@@ -139,6 +139,12 @@ writes (#479).
   default to `auto`, and the in-process SDK backend forwards `scope` and
   `only_context` to `cognee.recall`. Turns are still written and still promoted
   into the graph by `improve()`; they are just not searched as raw entries.
+- **A turn is stored with its prompt as the question.** Over HTTP the session
+  cache got each turn as one `User: … / Assistant: …` text in the `answer` field
+  with an empty `question`, so recaps listed sessions with no prompts and a
+  timeline could not find a topic in what was asked. Turns are now typed QA
+  entries with the prompt and the answer in their own fields, as the other
+  plugins store them. The in-process SDK transport keeps the framed text.
 - **Captured turns are capped**: each side of a turn at 8,000 characters, tool
   arguments at 4,000 and tool results at 8,000, after redaction, as in OpenClaw.
 - **The local server starts in `~/.cognee-plugin/hermes`, and reads its settings

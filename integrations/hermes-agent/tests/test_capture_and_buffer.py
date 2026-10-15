@@ -225,11 +225,17 @@ class TestProviderBuffering(unittest.TestCase):
         backend.down = False
         _sync(provider, user="second")
         self.assertEqual(buffer.size(), 0)
-        replayed = [
-            kw for kw in backend.kwargs_for("remember_entry") if kw["entry"]["type"] == "qa"
+        # Over HTTP a turn is a typed QA entry: the queued "first" turn was
+        # replayed, and the "second" one stored directly, once each.
+        stored = [
+            kw["entry"]["question"]
+            for kw in backend.kwargs_for("remember_entry")
+            if kw["entry"]["type"] == "qa"
         ]
-        self.assertEqual(len(replayed), 1)
-        self.assertIn("first", replayed[0]["entry"]["answer"])
+        # The trace's refusal ended the first turn, so its QA entry was queued
+        # without being tried: it reaches the server once, by replay.
+        self.assertEqual(stored.count("first"), 1)
+        self.assertEqual(stored.count("second"), 1)
 
     def test_session_end_replays_the_session_before_improve(self):
         backend = _ServerBackend()
@@ -256,10 +262,10 @@ class TestProviderBuffering(unittest.TestCase):
         provider = make_provider(backend=backend)
 
         def timed_out(**kwargs):
-            backend._recorder.record("remember_session", kwargs)
+            backend._recorder.record("remember_entry", kwargs)
             raise CogneeUnreachable("timed out", not_connected=False)
 
-        backend.remember_session = timed_out
+        backend.remember_entry = timed_out
         _sync(provider)
         self.assertEqual(write_buffer.write_buffer_for(provider._write_buffer_path).size(), 0)
 
@@ -342,7 +348,7 @@ class TestOneTurnOneDeadline(unittest.TestCase):
 
     def test_stored_traces_do_not_cover_a_lost_turn(self):
         def qa_fails(kind, kwargs):
-            if kind == "remember_session":
+            if kwargs["entry"]["type"] == "qa":
                 raise CogneeHttpError(500, "boom")
 
         backend = self._backend(qa_fails)

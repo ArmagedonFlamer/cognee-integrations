@@ -748,12 +748,10 @@ class CogneeMemoryProvider(MemoryProvider):
         writes.append(
             (
                 "qa",
-                {
-                    "type": "qa",
-                    "question": "",
-                    "answer": _format_turn(question, answer),
-                    "context": "",
-                },
+                # The prompt and the answer in their own fields, as the other
+                # plugins store them: recaps list the prompts, and the timeline
+                # finds a topic in them.
+                {"type": "qa", "question": question, "answer": answer, "context": ""},
             )
         )
 
@@ -872,10 +870,11 @@ class CogneeMemoryProvider(MemoryProvider):
     ) -> None:
         write_timeout = self._timeout("write_timeout", 120)
         timeout = write_timeout if timeout is None else max(0.1, min(write_timeout, timeout))
-        if kind == "qa":
-            # Through remember_session, which both transports implement.
+        if kind == "qa" and not self._can_buffer():
+            # The in-process SDK has no typed entries: the turn goes in as one
+            # framed text through remember_session.
             self._backend.remember_session(
-                text=str(entry.get("answer") or ""),
+                text=_format_turn(str(entry.get("question") or ""), str(entry.get("answer") or "")),
                 session_id=cognee_session_id,
                 dataset=dataset,
                 timeout=timeout,
