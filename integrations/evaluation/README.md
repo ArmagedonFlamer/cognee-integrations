@@ -105,7 +105,7 @@ prevent accidental reuse locally; the CronJob has `concurrencyPolicy: Forbid` an
 `backoffLimit: 0`. Do not retry a paid job blindly after a partial failure.
 
 The companion cloud-backend change adds an `evaluation_summaries` application table
-and `/api/v1/evaluations/summary`:
+and `/api/v1/evaluations/benchmarks/summary`:
 
 - `POST`: dedicated publisher Bearer secret, independent of ordinary user API keys.
   Accepts only benchmark-scoped live results; immutable run receipts.
@@ -153,3 +153,5 @@ Start with a manual job, inspect results and cost, then enable the daily schedul
 The warehouse stores fixture-generated content only in this MVP. Future personal
 trace sampling needs separate consent, bounded replay capture, retention and
 propagated deletion; the operational anonymous telemetry pipeline is not reused.
+
+Sampled plugin traces use the SDK-owned `/api/v1/evaluations` service; this benchmark job remains a separate controlled-fixture evaluator. Plugins fetch the personal summary and display a normalized 47–100 Better answers score.

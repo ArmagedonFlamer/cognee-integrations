@@ -40,8 +40,8 @@ def test_cache_scope_and_freshness(quality, tmp_path):
     path.parent.mkdir()
     path.write_text(json.dumps({"summary": ready()}))
     label = quality.segment(tmp_path, "https://tenant-a", now=NOW)
-    assert "▰▰▰▱▱ 60%" in label and "benchmark" in label and "10% worse" in label
-    assert "pending" in quality.segment(tmp_path, "https://tenant-b", now=NOW)
+    assert "Better answers ▰▰▰▰▱ 74%" == label
+    assert "47% · calibrating" in quality.segment(tmp_path, "https://tenant-b", now=NOW)
     assert "stale" in quality.segment(tmp_path, "https://tenant-a", now=NOW + 172801)
 
 
@@ -74,3 +74,18 @@ def test_refresh_throttles_and_never_renders_network(quality, suite, tmp_path, m
     for _ in range(4):
         quality.segment(tmp_path, "https://tenant", now=NOW)
     assert len(calls) == 1
+
+
+def test_principal_and_dataset_isolation(quality, tmp_path):
+    a = quality.cache_path(tmp_path, "https://tenant", dataset_id="one", principal="alice")
+    b = quality.cache_path(tmp_path, "https://tenant", dataset_id="one", principal="bob")
+    c = quality.cache_path(tmp_path, "https://tenant", dataset_id="two", principal="alice")
+    assert len({a, b, c}) == 3
+    a.parent.mkdir()
+    a.write_text(json.dumps({"summary": {**ready(), "schema": 2, "scope": "personal"}}))
+    assert "74%" in quality.segment(
+        tmp_path, "https://tenant", now=NOW, dataset_id="one", principal="alice"
+    )
+    assert "47%" in quality.segment(
+        tmp_path, "https://tenant", now=NOW, dataset_id="one", principal="bob"
+    )

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.34
+
+- Opt-in sampled answer traces for local/cloud SDK evaluation APIs.
+- Better answers percentage and one progress bar on the normalized 47–100 scale.
+- Bind quality caches to endpoint, credential and dataset.
+
 All notable changes to the **cognee-memory** Claude Code plugin are documented here.
 
 The version here must match the `version` field in both `.claude-plugin/plugin.json`

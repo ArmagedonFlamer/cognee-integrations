@@ -329,6 +329,12 @@ def _injection_sections(by_source: dict) -> list[dict]:
 
 def _recall_output(context: str, notice: str = "") -> dict:
     """The exact printed envelope, including both user- and model-visible notices."""
+    try:
+        from _evaluation_capture import remember_context
+
+        remember_context(context)
+    except Exception:
+        pass  # Optional evaluation capture cannot interrupt recall.
     header = context.split("\n", 1)[0]
     return with_base_url_notice(
         {

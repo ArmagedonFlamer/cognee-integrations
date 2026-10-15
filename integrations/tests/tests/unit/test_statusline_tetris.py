@@ -60,7 +60,7 @@ def plain(sl, line):
 @pytest.mark.parametrize("theme,color", [("dark", 141), ("light", 93)])
 def test_palette_and_meaning(sl, monkeypatch, theme, color):
     monkeypatch.setenv("COGNEE_STATUSLINE_THEME", theme)
-    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("COLUMNS", "180")
     line = sl._tetris_line(SESSION)
     assert f"\033[38;5;{color}m■" in line
     assert f"\033[48;5;{color}m\033[30m cognee " in line
@@ -71,14 +71,14 @@ def test_palette_and_meaning(sl, monkeypatch, theme, color):
     assert "●" not in line
     assert "manual  ·  cloud  ·  124 reminiscence" in plain(sl, line)
     assert "124 reminiscence" in line and "8 ideas" in line and "34/46 imprints" in line
-    assert "Improved: pending" in plain(sl, line)
-    assert "▰" not in line
+    assert "Better answers ▰▰▱▱▱ 47%" in plain(sl, line)
+    assert "▰" in line
     assert not any(c in plain(sl, line) for c in "[]▁▂▃▄▅▆▇█▔▀")
 
 
 @pytest.mark.parametrize("hits", [0, 1, 8])
 def test_brand_is_constant_across_recall_outcomes(sl, monkeypatch, hits):
-    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("COLUMNS", "180")
     write_json(sl._RECALL_DIR / f"{SESSION}.json", marker(hits={"session": hits}))
     line = sl._tetris_line(SESSION)
     assert "■ cognee ■" in plain(sl, line)
@@ -93,19 +93,20 @@ def test_width(sl, monkeypatch):
         line = sl._tetris_line(SESSION)
         assert sl._width(line) <= width
         if width >= 60:
-            assert "pending" in line and "cognee" in line
-        if width >= 80:
+            assert "calibrating" in line and "cognee" in line
+        if width >= 120:
             assert "saved" in line
-        assert "▰" not in line  # unavailable quality is not a zero-percent score
+        if width >= 60:
+            assert "47%" in line and "▰" in line
 
 
 def test_measured_quality_replaces_imprint_bar(sl, monkeypatch):
     from datetime import datetime, timezone
 
-    from _quality_summary import cache_path
+    from _quality_summary import cache_path, cache_scope
 
     write_json(
-        cache_path(sl._SESSIONS_DIR.parent, "https://memory.example.test"),
+        cache_path(sl._SESSIONS_DIR.parent, "https://memory.example.test", **cache_scope(SESSION)),
         {
             "summary": {
                 "schema": 1,
@@ -127,13 +128,13 @@ def test_measured_quality_replaces_imprint_bar(sl, monkeypatch):
         monkeypatch.setenv("COLUMNS", str(width))
         line = sl._tetris_line(SESSION)
         assert sl._width(line) <= width
-        assert plain(sl, line).count("▰▰▰▱▱") == 1
-        assert "▰▰▰▰▱" not in line
-        assert "60%" in line and "benchmark" in line and "10% worse" in line
+        assert plain(sl, line).count("▰▰▰▰▱") == 1
+        assert "74%" in line and "Better answers" in line and "evaluated" not in line
         assert "cognee" in line
 
 
 def test_stateless_shimmer(sl, monkeypatch):
+    monkeypatch.setenv("COLUMNS", "180")
     write_json(sl._RECALL_DIR / f"{SESSION}.json", marker(ts=NOW))
     initial = sl._tetris_line(SESSION, now=NOW)
     assert initial == sl._tetris_line(SESSION, now=NOW)
@@ -142,7 +143,7 @@ def test_stateless_shimmer(sl, monkeypatch):
     monkeypatch.setenv("COLORTERM", "truecolor")
     assert "\033[38;2;208;180;255m124 reminiscence" in sl._tetris_line(SESSION, now=NOW)
     assert sl._tetris_line(SESSION, now=NOW + 10) == sl._tetris_line(SESSION, now=NOW + 60)
-    assert "pending" in sl._tetris_line(SESSION, now=NOW + 10)
+    assert "calibrating" in sl._tetris_line(SESSION, now=NOW + 10)
     assert sl._animation_phase(marker(hits={"session": 0}, ts=NOW), NOW) is None
 
 
@@ -156,15 +157,15 @@ def test_ratio(sl, turns, hits, expected):
 @pytest.mark.parametrize("mode", ["full", "false"])
 def test_counts_modes(sl, monkeypatch, mode):
     monkeypatch.setenv("COGNEE_STATUSLINE_COUNTS", mode)
-    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("COLUMNS", "180")
     line = sl._tetris_line(SESSION)
     assert "124 reminiscence" in line
     assert ("recall 8s/0t/0g/0a" in line) == (mode == "full")
-    assert "▰" not in line
+    assert "▰" in line
 
 
 def test_failure_and_semantic_colors(sl, monkeypatch):
-    monkeypatch.setenv("COLUMNS", "120")
+    monkeypatch.setenv("COLUMNS", "180")
     monkeypatch.setattr(sl, "_status_prefix", lambda _: sl._fail_glyph("server_error"))
     monkeypatch.setattr(sl, "_credits_segment", lambda: " · \033[32mcredits: $5.00\033[0m")
     monkeypatch.setattr(sl, "_update_segment", lambda: " · \033[33mupdate\033[0m")
@@ -245,7 +246,7 @@ def test_classic_byte_identical_to_1_6_21(sl, suite, temp_home, counts, url):
 @pytest.mark.parametrize("corrupt", ["{partial", "[]", '{"entries_injected":"bad"}'])
 def test_corrupt_stats_keep_bar(sl, corrupt):
     (sl._SESSIONS_DIR / SESSION / "stats.json").write_text(corrupt)
-    assert "0 reminiscence" in sl._tetris_line(SESSION)
+    assert "47%" in sl._tetris_line(SESSION)
 
 
 def test_timestamp_iso_and_no_writes(sl):
@@ -261,7 +262,7 @@ def test_failure_at_60_keeps_identity_and_count(sl, monkeypatch):
     monkeypatch.setattr(sl, "_status_prefix", lambda _: sl._fail_glyph("server_error"))
     line = sl._tetris_line(SESSION)
     assert sl._width(line) <= 60
-    assert all(value in line for value in ("server_error", "cognee", "pending"))
+    assert all(value in line for value in ("server_error", "cognee", "47%"))
 
 
 def test_home_without_markers(sl, suite, tmp_path):
@@ -271,7 +272,7 @@ def test_home_without_markers(sl, suite, tmp_path):
     )
     result = run_renderer(suite, fresh, sl.__file__, "{}")
     assert result.returncode == 0 and result.stderr == b""
-    assert "0 reminiscence" in result.stdout.decode()
+    assert "47%" in result.stdout.decode()
     assert len(result.stdout.splitlines()) == 1
 
 

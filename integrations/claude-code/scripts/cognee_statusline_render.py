@@ -934,7 +934,7 @@ def _width(value: str) -> int:
 
 def _columns() -> int:
     try:
-        return max(1, min(120, int(os.environ.get("COLUMNS", "80"))))
+        return max(1, min(240, int(os.environ.get("COLUMNS", "80"))))
     except (TypeError, ValueError):
         return 80
 
@@ -1046,11 +1046,15 @@ def _tetris_line(session_id: str, *, now: float | None = None) -> str:
                 decoration = _ratio_bar(turns, with_hits)
             if decoration:
                 decoration = f"  {purple}{decoration}{_RESET}"
+    from _plugin_common import _local_api_url
+    from _quality_summary import cache_scope
     from _quality_summary import segment as quality_segment
 
-    quality_args = (_SESSIONS_DIR.parent, os.environ.get("COGNEE_BASE_URL", "").rstrip("/"))
-    quality = quality_segment(*quality_args, now=now, bar=columns > 60)
-    compact_quality = quality_segment(*quality_args, now=now, compact=True, bar=columns > 60)
+    quality_args = (_SESSIONS_DIR.parent, _local_api_url().rstrip("/"))
+    quality = quality_segment(*quality_args, now=now, bar=True, **cache_scope(session_id))
+    compact_quality = quality_segment(
+        *quality_args, now=now, compact=True, bar=True, **cache_scope(session_id)
+    )
     quality = purple + quality + _RESET
     compact_quality = purple + compact_quality + _RESET
     credits, update = _credits_segment(), _update_segment()
