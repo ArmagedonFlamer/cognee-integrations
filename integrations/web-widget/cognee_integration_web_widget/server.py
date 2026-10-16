@@ -23,6 +23,8 @@ widget on your own site::
 Endpoints:
     POST /api/chat    -> {answer, citations, session_id}, or 429 when rate-limited
     POST /api/forget  -> clear one conversation's memory, or 429 when rate-limited
+    POST /api/github/webhook -> apply a GitHub push to the docs corpus (404 unless
+                         WIDGET_GITHUB_WEBHOOK_SECRET is set)
     GET  /            -> demo "ask our docs" page
     GET  /widget.js   -> the embeddable snippet
 """
@@ -41,6 +43,7 @@ from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
 from typing import Optional
+from urllib.parse import parse_qs
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -50,6 +53,14 @@ from pydantic import BaseModel
 from .adapter import ChatMemoryAdapter
 from .docs_drift import drift_for_items
 from .docs_ingest import item_name, render_for_ingest, upload_filename
+from .docs_ingest import safe_relative as _safe_relative
+from .github_sync import (
+    GitHubSyncSettings,
+    apply_push,
+    changes_from_push,
+    fetch_file,
+    verify_signature,
+)
 from .rate_limit import RateLimits, client_ip, parse_trusted_proxies
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -358,6 +369,11 @@ async def _dashboard_data() -> dict:
             "seeds_demo_docs": True,
             "allowed_origins": _origins or ["*"],
             "cloud_reachable": bool(datasets),
+            # Whether pushes to GitHub update the corpus, and what the last one did.
+            "github_sync": {
+                "enabled": GITHUB_SYNC is not None,
+                "last": dict(_github_last) or None,
+            },
         },
         "corpus": {
             "dataset": docs_dataset,
@@ -848,25 +864,6 @@ MAX_INGEST_TOTAL_CHARS = 50_000_000
 # flattens well before a dozen, and a burst large enough to make it answer 503
 # would cost more than it saves.
 INGEST_CONCURRENCY = 4
-
-
-def _safe_relative(path: str) -> Optional[str]:
-    """``path`` as a corpus-safe relative path, or ``None`` if it is not one.
-
-    It never opens a file - nothing here touches the filesystem - but it does
-    become an item name and a citation path, so a value that escapes its root
-    or carries separators cognee would not round-trip is refused rather than
-    normalised into something the operator did not choose.
-    """
-    candidate = (path or "").strip().replace("\\", "/")
-    if not candidate or candidate.startswith("/") or len(candidate) > 300:
-        return None
-    if "\x00" in candidate or "//" in candidate:
-        return None
-    parts = candidate.split("/")
-    if any(p in ("", ".", "..") for p in parts):
-        return None
-    return candidate
 
 
 def _safe_tag(value: str) -> str:
@@ -1631,6 +1628,90 @@ async def dashboard_delete_data(
         raise HTTPException(status_code=502, detail="cognee refused the delete")
     _invalidate_viz_cache()
     return JSONResponse({"deleted": data_id})
+
+
+# GitHub push webhook; see github_sync.py. None turns the route off (404).
+GITHUB_SYNC = GitHubSyncSettings.from_env()
+# One push applied at a time: two overlapping pushes that touch the same page
+# would each read the old item, each upload, and each delete only the old one.
+_github_lock = asyncio.Lock()
+# The last push applied, for the dashboard. In-process, like the rate limits.
+_github_last: dict = {}
+
+
+async def _apply_github_push(changes) -> None:
+    async def fetch(relative: str):
+        return await fetch_file(
+            GITHUB_SYNC,
+            changes.repo,
+            changes.repo_path(relative, GITHUB_SYNC.docs_dir),
+            changes.sha,
+        )
+
+    async with _github_lock:
+        try:
+            result = await apply_push(
+                changes,
+                client=adapter.client,
+                dataset_name=adapter.docs_dataset(DEMO_SITE_ID),
+                fetch=fetch,
+                node_set_for=_node_set_for,
+                docs_url=DOCS_URL,
+            )
+        except Exception as error:  # noqa: BLE001 - background task; nobody else will see it
+            result = {"repo": changes.repo, "sha": changes.sha, "error": str(error)}
+        result["at"] = datetime.now(timezone.utc).isoformat()
+        _github_last.clear()
+        _github_last.update(result)
+        _invalidate_viz_cache()
+    print(f"[web_widget] github sync {changes.sha[:7]}: {json.dumps(result)[:2000]}")
+
+
+@app.post("/api/github/webhook")
+async def github_webhook(request: Request, background: BackgroundTasks) -> JSONResponse:
+    """Apply a GitHub push to the docs corpus.
+
+    Point a repository webhook here (content type JSON or form, "Just the push
+    event") with the same secret as WIDGET_GITHUB_WEBHOOK_SECRET. Only pushes to
+    the tracked branch that touch documentation files under the docs folder do
+    anything; every other delivery is answered 200 with the reason it was
+    ignored, which GitHub shows under Recent Deliveries.
+
+    The work runs after the response: GitHub gives a delivery ten seconds, and
+    one push can mean dozens of fetches and uploads. The 202 lists what was
+    planned; the outcome is in the server log and the dashboard.
+    """
+    if GITHUB_SYNC is None:
+        raise HTTPException(status_code=404)
+    body = await request.body()
+    if not verify_signature(GITHUB_SYNC.secret, body, request.headers.get("x-hub-signature-256")):
+        raise HTTPException(status_code=401, detail="bad or missing signature")
+
+    event = request.headers.get("x-github-event", "")
+    if event == "ping":
+        return JSONResponse({"pong": True})
+    if event != "push":
+        return JSONResponse({"ignored": f"{event or 'unknown'} event"})
+
+    try:
+        if request.headers.get("content-type", "").startswith("application/x-www-form-urlencoded"):
+            form = parse_qs(body.decode("utf-8", errors="replace"))
+            payload = json.loads((form.get("payload") or [""])[0])
+        else:
+            payload = json.loads(body)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="payload is not JSON")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="payload is not an object")
+
+    changes, reason = changes_from_push(payload, GITHUB_SYNC)
+    if changes is None:
+        return JSONResponse({"ignored": reason})
+    background.add_task(_apply_github_push, changes)
+    return JSONResponse(
+        {"sha": changes.sha, "upserts": changes.upserts, "removals": changes.removals},
+        status_code=202,
+    )
 
 
 @app.get("/dashboard", response_class=HTMLResponse)

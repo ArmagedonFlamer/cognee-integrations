@@ -25,6 +25,25 @@ _IMPORTS = re.compile(r"^import\s+.*$", re.M)
 MARKDOWN_SUFFIXES = (".md", ".mdx")
 
 
+def safe_relative(path: str) -> Optional[str]:
+    """``path`` as a corpus-safe relative path, or ``None`` if it is not one.
+
+    It never opens a file - nothing here touches the filesystem - but it does
+    become an item name and a citation path, so a value that escapes its root
+    or carries separators cognee would not round-trip is refused rather than
+    normalised into something the operator did not choose.
+    """
+    candidate = (path or "").strip().replace("\\", "/")
+    if not candidate or candidate.startswith("/") or len(candidate) > 300:
+        return None
+    if "\x00" in candidate or "//" in candidate:
+        return None
+    parts = candidate.split("/")
+    if any(p in ("", ".", "..") for p in parts):
+        return None
+    return candidate
+
+
 def upload_filename(relative_path: str) -> str:
     """The filename to upload ``relative_path`` under: a/b/c.py -> a__b__c.py.
 
