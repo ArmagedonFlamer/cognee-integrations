@@ -212,11 +212,20 @@ class TestHttpRoundTrip(unittest.TestCase):
             provider.handle_tool_call(
                 "cognee_remember", {"content": "Disposable fact about zebras."}
             )
-            found = json.loads(
-                provider.handle_tool_call("cognee_forget", {"action": "find", "terms": "zebras"})
-            )
-            self.assertNotIn("error", found, found)
-            candidates = found.get("candidates") or []
+            # The remember runs in the background (run_in_background=true), so it
+            # returns before the document row exists; wait for it to be listed.
+            deadline = time.monotonic() + _WRITE_TIMEOUT
+            while True:
+                found = json.loads(
+                    provider.handle_tool_call(
+                        "cognee_forget", {"action": "find", "terms": "zebras"}
+                    )
+                )
+                self.assertNotIn("error", found, found)
+                candidates = found.get("candidates") or []
+                if candidates or time.monotonic() > deadline:
+                    break
+                time.sleep(2.0)
             self.assertTrue(candidates, f"the stored document was not listed: {found}")
             data_ids = [candidate["data_id"] for candidate in candidates]
             result = json.loads(
