@@ -389,6 +389,7 @@ def make_provider(
     writes_enabled=True,
     auto_route=True,
     improve_on_end=True,
+    stored_since_improve=1,
     config=None,
 ):
     """A provider with post-``initialize()`` state set and a fake transport.
@@ -412,6 +413,10 @@ def make_provider(
     provider._session_id = session_id
     provider._session_cognee_id = session_cognee_id or f"hermes_{session_id}"
     provider._default_dataset = dataset
+    # Entries stored since the session's last improve. A session that stored
+    # nothing skips its pre-compress and session-end improves, so the default is
+    # a session that has written something; pass 0 to test the skip.
+    provider._stored_since_improve = stored_since_improve
     provider._config = {
         "recall_timeout": 5,
         "write_timeout": 5,

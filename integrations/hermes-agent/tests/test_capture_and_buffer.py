@@ -57,6 +57,16 @@ def _sync(provider, user="hi", answer="hello", messages=None):
     provider.sync_turn(user, answer, messages=messages)
     if provider._sync_thread is not None:
         provider._sync_thread.join(timeout=5.0)
+    _settle_replays()
+
+
+def _settle_replays():
+    """Wait for background replays a successful write started (U5: own thread)."""
+    import threading
+
+    for thread in threading.enumerate():
+        if thread.name == "cognee-hermes-replay":
+            thread.join(timeout=5.0)
 
 
 class TestTraceCapture(unittest.TestCase):
@@ -396,7 +406,7 @@ def test_drain_replays_oldest_first_and_empties_the_file(buffer):
     for n in range(3):
         buffer.enqueue(dataset="d", session_id="s", kind="qa", entry={"n": n})
     sent = []
-    assert buffer.drain(lambda item: sent.append(item["entry"]["n"]), budget_secs=5) == 3
+    assert buffer.drain(lambda item, _timeout: sent.append(item["entry"]["n"]), budget_secs=5) == 3
     assert sent == [0, 1, 2]
     assert buffer.size() == 0
     assert not buffer.maybe_non_empty
@@ -406,7 +416,7 @@ def test_drain_stops_when_the_server_is_still_away(buffer):
     for n in range(3):
         buffer.enqueue(dataset="d", session_id="s", kind="qa", entry={"n": n})
 
-    def send(item):
+    def send(item, _timeout=None):
         raise _bufferable()
 
     assert buffer.drain(send, budget_secs=5) == 0
@@ -418,7 +428,7 @@ def test_drain_drops_an_entry_that_can_never_succeed(buffer):
     buffer.enqueue(dataset="d", session_id="s", kind="qa", entry={"n": 1})
     dropped = []
 
-    def send(item):
+    def send(item, _timeout=None):
         if item["entry"]["n"] == 0:
             raise CogneeHttpError(400, "bad")
 
@@ -433,7 +443,7 @@ def test_a_failed_send_puts_the_entry_back_in_its_place(buffer):
         buffer.enqueue(dataset="d", session_id="s", kind="qa", entry={"n": n})
     sent = []
 
-    def send(item):
+    def send(item, _timeout=None):
         if item["entry"]["n"] == 1:
             raise _bufferable()
         sent.append(item["entry"]["n"])
@@ -459,7 +469,7 @@ def test_two_processes_draining_at_once_send_each_entry_exactly_once(tmp_path):
     lock = threading.Lock()
     start = threading.Barrier(2)
 
-    def send(item):
+    def send(item, _timeout=None):
         time.sleep(0.005)  # a slow server, so the two drains overlap
         with lock:
             sent[item["entry"]["n"]] += 1
@@ -479,10 +489,73 @@ def test_two_processes_draining_at_once_send_each_entry_exactly_once(tmp_path):
     assert seed.size() == 0
 
 
+def test_each_replayed_send_gets_what_is_left_of_the_budget(buffer):
+    for n in range(6):
+        buffer.enqueue(dataset="d", session_id="s", kind="qa", entry={"n": n})
+    timeouts = []
+
+    def send(item, timeout):
+        timeouts.append(timeout)
+        time.sleep(0.15)
+
+    buffer.drain(send, budget_secs=0.5)
+    assert timeouts[0] <= 0.5
+    assert all(b < a for a, b in zip(timeouts, timeouts[1:])), timeouts
+    # The budget bounds the drain: what it could not reach stays queued.
+    assert buffer.size() == 6 - len(timeouts) > 0
+
+
+def test_a_session_drain_waits_only_briefly_for_a_running_one(buffer, monkeypatch):
+    import threading
+
+    monkeypatch.setattr(write_buffer, "SESSION_DRAIN_LOCK_WAIT_SECS", 0.2)
+    buffer.enqueue(dataset="d", session_id="s", kind="qa", entry={})
+    release = threading.Event()
+
+    def stuck(item, timeout):
+        release.wait(5)
+
+    runner = threading.Thread(target=buffer.drain, args=(stuck,), kwargs={"budget_secs": 5})
+    runner.start()
+    time.sleep(0.05)
+    started = time.monotonic()
+    assert buffer.drain(lambda item, _timeout: None, budget_secs=5, session_id="s") == 0
+    assert time.monotonic() - started < 1.0
+    release.set()
+    runner.join(timeout=5)
+
+
+def test_the_replay_runs_off_the_turns_thread():
+    import threading
+
+    backend = _ServerBackend()
+    backend.down = False
+    provider = make_provider(backend=backend)
+    write_buffer.write_buffer_for(provider._write_buffer_path).enqueue(
+        dataset="d", session_id="old", kind="qa", entry={"type": "qa"}
+    )
+    seen = {}
+    gate = threading.Event()
+
+    def slow_drain(budget_secs, session_id=""):
+        seen["thread"] = threading.current_thread().name
+        gate.wait(5)
+        return 0
+
+    provider._drain_write_buffer = slow_drain
+    provider.sync_turn("q", "a")
+    provider._sync_thread.join(timeout=1.0)
+    # The turn's thread is done while the replay is still running.
+    assert not provider._sync_thread.is_alive()
+    gate.set()
+    _settle_replays()
+    assert seen["thread"] == "cognee-hermes-replay"
+
+
 def test_drain_for_one_session_leaves_the_others(buffer):
     buffer.enqueue(dataset="d", session_id="a", kind="qa", entry={})
     buffer.enqueue(dataset="d", session_id="b", kind="qa", entry={})
-    assert buffer.drain(lambda item: None, budget_secs=5, session_id="a") == 1
+    assert buffer.drain(lambda item, _timeout: None, budget_secs=5, session_id="a") == 1
     assert buffer.size("a") == 0
     assert buffer.size("b") == 1
 
@@ -497,7 +570,7 @@ def test_the_buffer_keeps_the_newest_week(buffer, monkeypatch):
     data["entries"][0]["queued_at"] = stale
     buffer.path.write_text(json.dumps(data))
     sent = []
-    buffer.drain(lambda item: sent.append(item["entry"]["n"]), budget_secs=5)
+    buffer.drain(lambda item, _timeout: sent.append(item["entry"]["n"]), budget_secs=5)
     assert sent == [3, 4]
 
 

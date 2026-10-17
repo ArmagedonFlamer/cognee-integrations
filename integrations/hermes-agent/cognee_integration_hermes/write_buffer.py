@@ -46,7 +46,13 @@ WRITE_BUFFER_PATH = SHARED_PLUGIN_STATE_DIR / "hermes" / "pending-entries.json"
 MAX_BUFFERED_ENTRIES = 500
 MAX_BUFFERED_AGE_SECS = 7 * 24 * 60 * 60
 
-SendFn = Callable[[dict[str, Any]], None]
+#: ``send(item, timeout)``: store one entry within ``timeout`` seconds, the part
+#: of the drain's budget that is left.
+SendFn = Callable[[dict[str, Any], float], None]
+#: How long a session-scoped drain (session end, pre-compress) waits for a drain
+#: already running in this process. That drain is sending the same entries, so
+#: waiting longer only delays the caller.
+SESSION_DRAIN_LOCK_WAIT_SECS = 5.0
 
 
 def is_bufferable_write_error(exc: BaseException) -> bool:
@@ -181,20 +187,30 @@ class WriteBuffer:
         it is sent, so a drain running in another process never sends it too. A
         send that fails with a bufferable error puts the entry back and ends the
         drain; any other failure drops it, since replaying it can never succeed
-        (a 4xx) or may duplicate it (a timeout). Single-flight per process: a
-        drain already running is not joined.
+        (a 4xx) or may duplicate it (a timeout). Each send gets what is left of
+        ``budget_secs``, so the budget bounds the whole drain. Single-flight per
+        process: a drain already running is not joined, and a session-scoped one
+        waits for it at most ``SESSION_DRAIN_LOCK_WAIT_SECS``.
         """
-        if not self._drain_lock.acquire(blocking=bool(session_id)):
+        acquired = (
+            self._drain_lock.acquire(timeout=SESSION_DRAIN_LOCK_WAIT_SECS)
+            if session_id
+            else self._drain_lock.acquire(blocking=False)
+        )
+        if not acquired:
             return 0
         try:
             deadline = time.monotonic() + budget_secs
             stored = 0
-            while time.monotonic() < deadline:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 item = self._claim(session_id)
                 if item is None:
                     break
                 try:
-                    send(item)
+                    send(item, remaining)
                     stored += 1
                 except Exception as exc:
                     if is_bufferable_write_error(exc):

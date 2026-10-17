@@ -353,6 +353,8 @@ def _make_provider():
     """A provider on a fake transport, plus a recorder of what it was asked to do."""
     backend = FakeBackend()
     p = provider_mod.CogneeMemoryProvider(backend=backend)
+    # A session that has stored something, so its close has something to improve.
+    p._stored_since_improve = 1
     return p, _Recorder(backend)
 
 

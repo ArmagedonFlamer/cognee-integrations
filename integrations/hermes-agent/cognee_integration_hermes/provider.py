@@ -322,6 +322,12 @@ class CogneeMemoryProvider(MemoryProvider):
         self._write_buffer_path = write_buffer.WRITE_BUFFER_PATH
         # The last capture-settings error logged, so it is logged once.
         self._capture_error_logged = ""
+        # Entries stored for the current cognee session since its last
+        # successful improve. A pre-compress or session-end improve with nothing
+        # new is skipped (claude-code's "nothing new" rule): the server's persist
+        # watermark already makes improve incremental, but each call still costs.
+        self._stored_lock = threading.Lock()
+        self._stored_since_improve = 0
 
     @property
     def name(self) -> str:
@@ -575,12 +581,7 @@ class CogneeMemoryProvider(MemoryProvider):
             self._warn_capture_error(ValueError(problem))
         if self._can_buffer() and self._writes_enabled:
             # Writes an earlier run could not deliver; replayed off the startup path.
-            threading.Thread(
-                target=self._drain_write_buffer,
-                args=(_DRAIN_BUDGET_SECS,),
-                daemon=True,
-                name="cognee-hermes-replay",
-            ).start()
+            self._replay_in_background()
 
     def _ensure_dataset(self) -> None:
         """Create-or-return the dataset up front, like the other plugins do.
@@ -814,6 +815,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._send_entry(kind, entry, cognee_session_id, dataset, timeout=remaining)
                 pending.pop(0)
                 stored = True
+                self._note_stored(cognee_session_id)
             except Exception as exc:
                 if kind == "trace" and not can_buffer:
                     # The in-process SDK has no typed-entry write; the turn
@@ -856,8 +858,10 @@ class CogneeMemoryProvider(MemoryProvider):
             self._record_failure()
         elif stored and not pending:
             self._record_success()
-            # The server answers again: replay anything an outage left behind.
-            self._drain_write_buffer(_DRAIN_BUDGET_SECS)
+            # The server answers again: replay anything an outage left behind,
+            # on its own thread, so this turn's thread (which sync_turn, forget
+            # and the switches join) is free again at once.
+            self._replay_in_background()
 
     def _send_entry(
         self,
@@ -975,13 +979,16 @@ class CogneeMemoryProvider(MemoryProvider):
         if not session_id and not buffer.maybe_non_empty:
             return 0
 
-        def send(item: dict[str, Any]) -> None:
+        def send(item: dict[str, Any], remaining: float) -> None:
+            item_session = str(item.get("session_id") or "")
+            # What is left of the drain's budget, never more than one write's.
             self._backend.remember_entry(
                 entry=item.get("entry") or {},
-                session_id=str(item.get("session_id") or ""),
+                session_id=item_session,
                 dataset=str(item.get("dataset") or self._dataset),
-                timeout=self._timeout("write_timeout", 120),
+                timeout=max(0.1, min(self._timeout("write_timeout", 120), remaining)),
             )
+            self._note_stored(item_session)
 
         def dropped(item: dict[str, Any], exc: BaseException) -> None:
             logger.warning(
@@ -1040,6 +1047,39 @@ class CogneeMemoryProvider(MemoryProvider):
             return self._handle_recap(args)
         return json.dumps({"error": f"Unknown Cognee tool: {tool_name}"})
 
+    def _replay_in_background(self) -> None:
+        """Replay the write buffer on a daemon thread; ``drain`` is single-flight."""
+        if not self._can_buffer():
+            return
+        if not write_buffer.write_buffer_for(self._write_buffer_path).maybe_non_empty:
+            return
+        threading.Thread(
+            target=self._drain_write_buffer,
+            args=(_DRAIN_BUDGET_SECS,),
+            daemon=True,
+            name="cognee-hermes-replay",
+        ).start()
+
+    def _note_stored(self, cognee_session_id: str, count: int = 1) -> None:
+        """Count an entry that reached the current session's cache."""
+        if cognee_session_id and cognee_session_id == self._session_cognee_id:
+            with self._stored_lock:
+                self._stored_since_improve += count
+
+    def _stored_snapshot(self) -> int:
+        with self._stored_lock:
+            return self._stored_since_improve
+
+    def _mark_improved(self, snapshot: int) -> None:
+        """An improve bridged ``snapshot`` entries; later ones still count."""
+        with self._stored_lock:
+            self._stored_since_improve = max(0, self._stored_since_improve - snapshot)
+
+    def _reset_stored(self) -> None:
+        """A different cognee session: nothing of it has been stored yet."""
+        with self._stored_lock:
+            self._stored_since_improve = 0
+
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=10.0)
@@ -1056,9 +1096,16 @@ class CogneeMemoryProvider(MemoryProvider):
         # Sessions retired by a forced dataset switch get their deferred bridge
         # before the current session's own close.
         self._bridge_retired_sessions()
-        if self._hand_off_session_close():
+        # Nothing stored since the last improve (a compaction just bridged it,
+        # or the session wrote nothing): the close still unregisters, but no
+        # improve is paid for.
+        nothing_new = self._stored_snapshot() == 0
+        if nothing_new:
+            logger.debug("Cognee session-end improve skipped: nothing new since the last one")
+        if self._hand_off_session_close(improve=not nothing_new):
             return
-        self._improve_inline()
+        if not nothing_new:
+            self._improve_inline()
 
     def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         """Bridge the session into the graph before Hermes compresses it away.
@@ -1093,6 +1140,11 @@ class CogneeMemoryProvider(MemoryProvider):
                     sync_thread.join(timeout=10.0)
                 # So must the turns buffered while the server was away.
                 self._drain_write_buffer(_DRAIN_BUDGET_SECS, session_id=session_id)
+                snapshot = self._stored_snapshot()
+                if snapshot == 0:
+                    # Nothing stored since the last improve: nothing to bridge.
+                    logger.debug("Cognee pre-compress improve skipped: nothing new")
+                    return
                 try:
                     self._backend.improve(
                         dataset=dataset,
@@ -1101,6 +1153,7 @@ class CogneeMemoryProvider(MemoryProvider):
                         timeout=self._timeout("improve_timeout", 300),
                     )
                     self._record_success()
+                    self._mark_improved(snapshot)
                 except Exception as exc:
                     if _llm_budget_exhausted(exc):
                         logger.warning(_BUDGET_EXHAUSTED_MESSAGE, "pre-compress")
@@ -1116,7 +1169,7 @@ class CogneeMemoryProvider(MemoryProvider):
             logger.warning("Cognee pre-compress improve failed: %s", exc)
         return ""
 
-    def _hand_off_session_close(self) -> bool:
+    def _hand_off_session_close(self, *, improve: bool = True) -> bool:
         """Give improve-then-unregister to a detached worker. True when it took them.
 
         Two requirements that cannot both hold in this process: the user's exit
@@ -1138,7 +1191,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 api_key=str(info.get("api_key") or ""),
                 session_id=self._session_cognee_id,
                 dataset=self._dataset,
-                improve=True,
+                improve=improve,
                 improve_timeout=self._timeout("improve_timeout", 300),
             )
         except Exception as exc:
@@ -1157,6 +1210,7 @@ class CogneeMemoryProvider(MemoryProvider):
         shut down.
         """
         background = str_to_bool(self._config.get("improve_background"), False)
+        snapshot = self._stored_snapshot()
         try:
             self._backend.improve(
                 dataset=self._dataset,
@@ -1165,6 +1219,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 timeout=self._timeout("improve_timeout", 300),
             )
             self._record_success()
+            self._mark_improved(snapshot)
             # The bridge ran; a crash after this point should not improve again.
             # The watcher stays armed for the unregister half.
             if self._watcher_state_path is not None:
@@ -1192,6 +1247,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._dataset = self._default_dataset
         self._switch_counter = 0
         self._session_cognee_id = self._build_cognee_session_id(new_session_id, **kwargs)
+        self._reset_stored()
         self._apply_dataset_override()
         if self._watcher_state_path is not None and not self._close_handed_off:
             # Re-point the crash insurance at the new session (and re-enable the
@@ -1903,6 +1959,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._dataset = dataset
         self._switch_counter = counter
         self._session_cognee_id = f"{self._session_cognee_id}__{counter}"
+        self._reset_stored()
 
     def _handle_switch_dataset(self, args: dict[str, Any]) -> str:
         action = str(args.get("action") or "").strip().lower()
@@ -2007,6 +2064,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._switch_counter += 1
         base = self._build_cognee_session_id(self._session_id)
         self._session_cognee_id = f"{base}__{self._switch_counter}"
+        self._reset_stored()
         self._dataset = target
         dataset_overrides.save_override(self._session_id, target, self._switch_counter)
         with self._prefetch_lock:

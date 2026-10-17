@@ -54,7 +54,10 @@ writes (#479).
   timed out, was cut off mid-request, or failed otherwise is not replayed, since
   the server may already have stored it. The file is shared by every Hermes
   process and locked around each change, and a replay claims each entry before
-  sending it, so two processes replaying at once never send the same one twice. Until now such writes were logged and
+  sending it, so two processes replaying at once never send the same one twice.
+  A replay's budget bounds it as a whole (each send gets what is left of it), a
+  session-end replay waits at most 5 s for one already running, and the replay
+  after a successful write runs on its own thread instead of the turn's. Until now such writes were logged and
   lost, and every turn of a cold boot with them.
 - **`cognee_recap` tool and `hermes cognee standup|digest|timeline`**, a port of
   the Claude Code and Codex recap skills (and OpenClaw's `memory_recap`): what was
@@ -93,7 +96,10 @@ writes (#479).
   it contributes no text to the summary prompt. Gated like the session-end
   improve (`improve_on_end`, writes enabled, breaker closed); the session-end
   improve still runs. `on_pre_compress` is declared in both `plugin.yaml` files.
-  Contributed by @rtheron (#487).
+  Like the Claude Code plugin's, a pre-compress or session-end improve is skipped
+  when nothing was stored for the session since its last improve, so a session
+  that compacted and then ended pays for one improve, not two; the close still
+  unregisters. Contributed by @rtheron (#487).
 - **"What this plugin runs, stores and sends"** section in the README.
 
 ### Changed
