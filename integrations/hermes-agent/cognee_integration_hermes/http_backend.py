@@ -60,10 +60,12 @@ null — so omitting the key costs both auto-routing and every session read.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import logging
 import os
+import socket
 import ssl
 import urllib.error
 import urllib.parse
@@ -158,7 +160,32 @@ class CogneeLoginRejected(CogneeHttpError):
 
 
 class CogneeUnreachable(RuntimeError):
-    """The server could not be reached at all (DNS, connection, timeout)."""
+    """The server could not be reached at all (DNS, connection, timeout).
+
+    ``not_connected`` is True when no connection was ever opened (refused,
+    unreachable, DNS failure), so the request certainly never reached the
+    server and a capture write can be safely replayed later. A timeout or a
+    reset is not: the server may have stored it already.
+    """
+
+    def __init__(self, message: str, *, not_connected: bool = False):
+        super().__init__(message)
+        self.not_connected = not_connected
+
+
+_NOT_CONNECTED_ERRNOS = {
+    getattr(errno, name)
+    for name in ("ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EADDRNOTAVAIL")
+    if hasattr(errno, name)
+}
+
+
+def _never_connected(exc: BaseException) -> bool:
+    """Whether a urllib failure happened before any byte reached the server."""
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    if isinstance(reason, (ConnectionRefusedError, socket.gaierror)):
+        return True
+    return isinstance(reason, OSError) and reason.errno in _NOT_CONNECTED_ERRNOS
 
 
 def _is_local_url(url: str) -> bool:
@@ -320,7 +347,10 @@ class HttpBackend(MemoryBackend):
                 message = f"{message}. No API key was sent because {self._auth_hint}"
             raise CogneeHttpError(exc.code, message) from exc
         except Exception as exc:  # URLError / timeout / OSError
-            raise CogneeUnreachable(f"cognee unreachable at {url}: {str(exc)[:200]}") from exc
+            raise CogneeUnreachable(
+                f"cognee unreachable at {url}: {str(exc)[:200]}",
+                not_connected=_never_connected(exc),
+            ) from exc
 
         if not parse_json:
             return raw
@@ -383,6 +413,15 @@ class HttpBackend(MemoryBackend):
             "api_key": self.api_key,
             "agent_session_name": self._agent_session_name,
         }
+
+    def probe_health(self, *, timeout: float) -> bool:
+        if not self.url:
+            return False
+        try:
+            self._request("GET", "/health", timeout=timeout)
+            return True
+        except Exception:
+            return False
 
     def ensure_dataset(self, *, dataset: str, timeout: float) -> None:
         """Create-or-return the dataset, as the other plugins do at bootstrap.
@@ -676,7 +715,7 @@ class HttpBackend(MemoryBackend):
         return result or []
 
     def _remember(
-        self, *, text: str, dataset: str, session_id: str, timeout: float
+        self, *, text: str, dataset: str, session_id: str, timeout: float, chunk_size: int = 0
     ) -> RememberResponse:
         fields = {"datasetName": dataset}
         if session_id:
@@ -691,6 +730,10 @@ class HttpBackend(MemoryBackend):
         # ``status: "running"`` and the pipeline completes server-side; the
         # provider already surfaces the status field to the caller.
         fields["run_in_background"] = "true"
+        if chunk_size > 0:
+            # Opt-in (#428): without it the server chunks at its form default,
+            # which can exceed a small embedding model's input limit.
+            fields["chunk_size"] = str(int(chunk_size))
         # The upload filename is the document's identity server-side, and cognee
         # >= 1.6.0 refuses (HTTP 409) to add a document whose name already exists
         # in the dataset with *different* content — so one fixed name meant the
@@ -725,19 +768,26 @@ class HttpBackend(MemoryBackend):
         what cognee's own SDK does for a session write (``add_qa`` with an empty
         question).
         """
+        return self.remember_entry(
+            entry={"type": "qa", "question": "", "answer": text, "context": ""},
+            session_id=session_id,
+            dataset=dataset,
+            timeout=timeout,
+        )
+
+    def remember_entry(self, *, entry, session_id, dataset, timeout) -> RememberResponse:
+        """Store one typed session entry (``qa`` or ``trace``) as-is."""
         payload = self._request(
             "POST",
             "/api/v1/remember/entry",
             timeout=timeout,
-            json_body={
-                "entry": {"type": "qa", "question": "", "answer": text, "context": ""},
-                "dataset_name": dataset,
-                "session_id": session_id,
-            },
+            json_body={"entry": entry, "dataset_name": dataset, "session_id": session_id},
         )
         return RememberResponse(payload if isinstance(payload, dict) else {})
 
-    def remember_permanent(self, *, text, dataset, session_ids, timeout) -> RememberResponse:
+    def remember_permanent(
+        self, *, text, dataset, session_ids, timeout, chunk_size=0
+    ) -> RememberResponse:
         if session_ids:
             self._warn_once(
                 "remember_session_ids",
@@ -746,7 +796,9 @@ class HttpBackend(MemoryBackend):
                 "to the session. The session-to-graph bridge (improve) is unaffected.",
             )
         # No session_id -> the server does a direct add + cognify.
-        return self._remember(text=text, dataset=dataset, session_id="", timeout=timeout)
+        return self._remember(
+            text=text, dataset=dataset, session_id="", timeout=timeout, chunk_size=chunk_size
+        )
 
     def forget(self, *, dataset, everything, memory_only, timeout) -> dict[str, Any]:
         body: dict[str, Any] = {"everything": everything, "memory_only": memory_only}
@@ -774,11 +826,46 @@ class HttpBackend(MemoryBackend):
         result = self._request("GET", "/api/v1/datasets", timeout=timeout)
         return [row for row in result if isinstance(row, dict)] if isinstance(result, list) else []
 
-    def list_dataset_data(self, *, dataset_id: str, timeout: float) -> list[dict[str, Any]]:
-        """The data items (documents) stored in one dataset."""
+    def list_dataset_data(
+        self,
+        *,
+        dataset_id: str,
+        timeout: float,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
+    ) -> list[dict[str, Any]]:
+        """The data items (documents) stored in one dataset, newest first.
+
+        ``limit`` / ``offset`` page through a large dataset (the recap's lesson
+        listing); unset, the server's default page is returned.
+        """
         dataset_id = _require_uuid(dataset_id, "dataset id")
-        result = self._request("GET", f"/api/v1/datasets/{dataset_id}/data", timeout=timeout)
+        path = f"/api/v1/datasets/{dataset_id}/data"
+        if limit is not None or offset is not None:
+            query = {"limit": int(limit or 0), "offset": int(offset or 0)}
+            path += "?" + urllib.parse.urlencode(
+                {key: value for key, value in query.items() if value or key == "offset"}
+            )
+        result = self._request("GET", path, timeout=timeout)
         return [row for row in result if isinstance(row, dict)] if isinstance(result, list) else []
+
+    # -- sessions (recaps) ----------------------------------------------------
+
+    def list_sessions(self, *, range: str, limit: int, offset: int, timeout: float) -> Any:
+        """``GET /api/v1/sessions``: the sessions active in ``range`` (24h|7d|30d|all)."""
+        query = urllib.parse.urlencode({"range": range, "limit": int(limit), "offset": int(offset)})
+        return self._request("GET", f"/api/v1/sessions?{query}", timeout=timeout)
+
+    def get_session(self, *, session_id: str, timeout: float) -> Optional[dict[str, Any]]:
+        """``GET /api/v1/sessions/{id}``: recent prompts and tool calls; None on 404."""
+        path = "/api/v1/sessions/" + urllib.parse.quote(str(session_id), safe="")
+        try:
+            result = self._request("GET", path, timeout=timeout)
+        except CogneeHttpError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return result if isinstance(result, dict) else {}
 
     def read_raw_data(self, *, dataset_id: str, data_id: str, timeout: float) -> str:
         """One data item's raw stored content, as text."""
