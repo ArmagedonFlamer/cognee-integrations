@@ -34,6 +34,10 @@ from .config import (
 
 logger = logging.getLogger(__name__)
 
+# LLM providers cognee can reach without an API key (a local model server).
+_KEYLESS_LLM_PROVIDERS = frozenset({"ollama"})
+_warned_no_llm_key = False
+
 
 def health_ok(url, timeout=2.0):
     """True when GET {url}/health returns a 2xx."""
@@ -115,14 +119,37 @@ def server_workdir():
     return str(workdir)
 
 
+def _warn_no_llm_key(env):
+    """Say once, at boot, that the server will have no LLM key.
+
+    Without it cognify and improve fail later, and only server.log says so. A
+    keyless provider (Ollama) needs none, so it gets no warning.
+    """
+    global _warned_no_llm_key
+    provider = str(env.get("LLM_PROVIDER") or "").strip().lower()
+    if _warned_no_llm_key or provider in _KEYLESS_LLM_PROVIDERS:
+        return
+    _warned_no_llm_key = True
+    logger.warning(
+        "Starting the local cognee server without an LLM key: memory will not be "
+        "built. Run `hermes memory setup` (or set LLM_API_KEY in Hermes' .env); "
+        "keys kept only for the other cognee plugins are not read by this one."
+    )
+
+
 def _spawn(port, data_root, system_root, log_path):
     env = dict(os.environ)
     # The server's LLM key comes from Hermes (the profile's secret scope), never
     # from a file the plugin reads itself: the plugin-catalog rules forbid that,
     # and under a multi-profile gateway os.environ may not hold this profile's key.
+    # Dropped first, so a profile with no key never boots the server on a key the
+    # gateway's environment holds for another profile.
+    env.pop("LLM_API_KEY", None)
     llm_key = secret("LLM_API_KEY")
     if llm_key:
         env["LLM_API_KEY"] = llm_key
+    else:
+        _warn_no_llm_key(env)
     env["COGNEE_AGENT_MODE"] = "true"  # server tears itself down once idle / no clients
     env["HTTP_API_PORT"] = str(port)
     # The server must behave identically no matter which cognee plugin booted it,

@@ -83,6 +83,12 @@ from .config import (  # noqa: F401 — DEFAULT_USER_* re-exported for callers/t
 logger = logging.getLogger(__name__)
 
 _API_KEY_NAME = "hermes-owner-bootstrap"
+# The login and key listing are quick on a healthy local server; this keeps a
+# stalled one from holding session start for the caller's full timeout per call.
+_AUTH_STEP_TIMEOUT = 10.0
+# Keys looked up on a local server, by URL, for this process only (never a file):
+# a second connect in the same process skips the login.
+_RESOLVED_KEYS: dict[str, str] = {}
 
 # How the server's login route phrases the two rejections a default-user login
 # can get (cognee 1.6.0 ``/api/v1/auth/login``, both HTTP 400). Matched
@@ -518,7 +524,7 @@ class HttpBackend(MemoryBackend):
     def _resolve_api_key(self, provided: str, *, timeout: float) -> str:
         """Configured key, else — locally only — the server's own key.
 
-        No key file is consulted: the key lives in this process for the session.
+        No key file is consulted: the key lives in this process (``_RESOLVED_KEYS``).
         For a local server, "minting" first lists the default user's existing
         keys and reuses the first, so every session (and every sibling cognee
         plugin on the machine) ends up on the same key without a shared cache,
@@ -542,8 +548,12 @@ class HttpBackend(MemoryBackend):
                 "request authenticates via X-Api-Key. Set COGNEE_API_KEY, or unset "
                 "COGNEE_BASE_URL to use the local server."
             )
+        cache_key = self.url.strip().rstrip("/")
+        key = _RESOLVED_KEYS.get(cache_key, "")
+        if key:
+            return key
         try:
-            key = self._mint_api_key(timeout=timeout)
+            key = self._mint_api_key(timeout=min(timeout, _AUTH_STEP_TIMEOUT))
         except CogneeLoginRejected as exc:
             # The server answered the login and refused it for a reason the user
             # can act on. Still not fatal here — the server may not require a
@@ -558,6 +568,8 @@ class HttpBackend(MemoryBackend):
             # call report a 401 if the server does want one.
             logger.debug("could not mint a cognee API key (continuing without): %s", exc)
             return ""
+        if key:
+            _RESOLVED_KEYS[cache_key] = key
         return key
 
     def _mint_api_key(self, *, timeout: float) -> str:

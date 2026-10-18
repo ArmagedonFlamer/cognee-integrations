@@ -37,15 +37,25 @@ the plugin no longer opens a `.env` file or a key file on its own.
   fell back to `~/.cognee-plugin/api_key.json`. It now uses only the key the
   plugin resolved and handed it at spawn time, and never one inherited from
   Hermes' environment. The plugin arms the watcher after connecting, so that key
-  is always the one the session uses.
+  is the one the session uses; when the session has none (auth off, or a failed
+  mint) the watcher logs that its close may be rejected, in `exit-watcher.log`.
 - **No API key file is read or written.** For a local server the plugin cached
   the key it minted in `~/.cognee-plugin/api_key.json` and reused a key another
-  cognee plugin had left there. It now keeps the key in memory for the session
-  and, at each session start, logs in to the local server and reuses the key the
-  server already has (creating one only when none exists), so it still lands on
-  the same key as the Claude Code, Codex and OpenClaw plugins and keys do not
-  pile up. **A remote server or Cognee Cloud now always needs `COGNEE_API_KEY`
+  cognee plugin had left there. It now keeps the key in memory for the process
+  and, at a process's first connect, logs in to the local server and reuses the
+  key the server already has (creating one only when none exists), so it still
+  lands on the same key as the Claude Code, Codex and OpenClaw plugins and keys
+  do not pile up. The login and key lookup are capped at 10 s each, so a stalled
+  server cannot hold session start for the full connect timeout. **A remote server or Cognee Cloud now always needs `COGNEE_API_KEY`
   configured in Hermes**; a key cached by another plugin no longer stands in.
+- **The spawned server never inherits another profile's LLM key.** An
+  `LLM_API_KEY` in Hermes' process environment is dropped before the profile's
+  own (from `get_secret`) is set, so a profile with no key no longer boots the
+  server on a key the gateway holds for another profile.
+- **Starting the server without an LLM key is logged**, once per process, as a
+  warning naming `hermes memory setup`; before, the first sign was a failed
+  cognify in `server.log`. A keyless provider (`LLM_PROVIDER=ollama`) is not
+  warned about.
 
 ### Removed
 - `cognee_integration_hermes/env_file.py`.

@@ -271,7 +271,9 @@ Hermes, and vice versa. To keep Hermes (or one Hermes profile) apart instead, gi
 it its own `COGNEE_PLUGIN_DATASET`, or for full isolation its own
 `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` *and* `COGNEE_LOCAL_PORT` — a server
 belongs to whoever reaches its port first, so a private store needs a private
-port.
+port. The same goes for its LLM key: a server shared by several profiles keeps
+the key of the profile that started it, so profiles that must not share an LLM
+bill need their own `COGNEE_LOCAL_PORT` too.
 
 The per-mode settings below live in `~/.hermes/.env` (the wizard puts them
 there; you can also edit the file by hand).

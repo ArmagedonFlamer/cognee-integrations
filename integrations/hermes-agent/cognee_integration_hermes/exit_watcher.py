@@ -214,7 +214,9 @@ def arm(
 
     The state file deliberately carries no API key — the key goes through the
     child's environment instead. The provider arms the watcher after connecting,
-    so the key is already resolved (configured, cached or minted) by then.
+    so it hands over the key the session resolved. That key is empty when the
+    session runs without one (a server with auth off, or a failed mint); the
+    watcher then logs that its calls may be rejected.
     """
     # State files are keyed on the Hermes pid, and pids recycle. A marker left by
     # whoever held this pid last would silently no-op this session's close.
@@ -354,6 +356,8 @@ def fire(state, *, state_path=None, wait_for_parent=0.0):
     url = str(state.get("url") or "")
     # Only the key the provider put in this process's environment at spawn time.
     api_key = os.environ.get("COGNEE_API_KEY", "").strip()
+    if not api_key:
+        _log("no API key was handed over; a server that requires one will reject this close")
     session_id = str(state.get("session_id") or "")
     if state.get("improve") and session_id:
         try:

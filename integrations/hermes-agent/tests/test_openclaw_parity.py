@@ -129,6 +129,28 @@ class TestServerSpawn(unittest.TestCase):
         kwargs, _ = self._spawn({"LLM_API_KEY": "another-profile"}, scope={"LLM_API_KEY": "mine"})
         self.assertEqual(kwargs["env"]["LLM_API_KEY"], "mine")
 
+    def test_an_inherited_llm_key_never_reaches_the_server(self):
+        # The active profile has no key; the gateway's environment holds another's.
+        kwargs, _ = self._spawn({"LLM_API_KEY": "another-profile"}, scope={})
+        self.assertNotIn("LLM_API_KEY", kwargs["env"])
+
+    def test_a_missing_llm_key_is_warned_about_once(self):
+        with self.assertLogs("cognee_integration_hermes.server_bootstrap", "WARNING") as logs:
+            self._spawn({}, scope={})
+            self._spawn({}, scope={})
+        self.assertEqual(len(logs.output), 1)
+        self.assertIn("hermes memory setup", logs.output[0])
+
+    def test_a_keyless_provider_gets_no_warning(self):
+        with mock.patch.object(sb.logger, "warning") as warning:
+            self._spawn({"LLM_PROVIDER": "ollama"}, scope={})
+        warning.assert_not_called()
+
+    def test_no_warning_when_the_key_is_there(self):
+        with mock.patch.object(sb.logger, "warning") as warning:
+            self._spawn({}, scope={"LLM_API_KEY": "mine"})
+        warning.assert_not_called()
+
     def test_no_dotenv_file_reaches_the_server(self):
         # ~/.cognee/.env is no longer read: a value only in such a file stays out.
         tmp = tempfile.TemporaryDirectory()
@@ -173,6 +195,18 @@ class TestExitWatcherKey(unittest.TestCase):
             ew.fire(state)
         self.assertTrue(sent)
         self.assertEqual(set(sent), {"ck_env"})
+
+    def test_fire_without_a_key_says_so(self):
+        logged = []
+        state = {"url": "http://127.0.0.1:1", "session_id": "s", "improve": False}
+        with (
+            mock.patch.dict(os.environ, {}, clear=False),
+            mock.patch.object(ew, "_post", return_value=200),
+            mock.patch.object(ew, "_log", side_effect=logged.append),
+        ):
+            os.environ.pop("COGNEE_API_KEY", None)
+            ew.fire(state)
+        self.assertTrue(any("no API key was handed over" in line for line in logged), logged)
 
     def test_the_watcher_reads_no_key_file(self):
         source = Path(ew.__file__).read_text(encoding="utf-8")

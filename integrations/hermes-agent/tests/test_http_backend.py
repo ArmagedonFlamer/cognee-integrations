@@ -569,14 +569,47 @@ class TestApiKeyResolution(unittest.TestCase):
         self.assertEqual(backend.api_key, "existing-key")
 
     def test_every_session_looks_the_key_up_on_the_server(self):
-        # No key file: a second session logs in again and reuses the server's key.
+        # No key file: a new process logs in again and reuses the server's key.
+        import cognee_integration_hermes.http_backend as hb
+
         first = self._mint_opener()
         first.responses["/api/v1/auth/api-keys"] = [{"key": "claude-minted"}]
         self.assertEqual(self._connect(first).api_key, "claude-minted")
+        hb._RESOLVED_KEYS.clear()  # a new Hermes process
         second = self._mint_opener()
         second.responses["/api/v1/auth/api-keys"] = [{"key": "claude-minted"}]
         self.assertEqual(self._connect(second).api_key, "claude-minted")
         self.assertIn("/api/v1/auth/login", second.paths())
+
+    def test_a_second_connect_in_one_process_skips_the_login(self):
+        self.assertEqual(self._connect(self._mint_opener()).api_key, "minted-key")
+        again = self._mint_opener()
+        self.assertEqual(self._connect(again).api_key, "minted-key")
+        self.assertNotIn("/api/v1/auth/login", again.paths())
+
+    def test_the_remembered_key_is_per_server(self):
+        self._connect(self._mint_opener())
+        other = self._mint_opener()
+        self._connect(other, url="http://127.0.0.1:9999")
+        self.assertIn("/api/v1/auth/login", other.paths())
+
+    def test_a_failed_lookup_is_not_remembered(self):
+        failing = self._mint_opener()
+        failing.responses["/api/v1/auth/login"] = urllib.error.HTTPError(
+            _URL, 404, "no auth", {}, None
+        )
+        self.assertEqual(self._connect(failing).api_key, "")
+        retry = self._mint_opener()
+        self.assertEqual(self._connect(retry).api_key, "minted-key")
+
+    def test_the_login_and_key_lookup_have_a_short_timeout(self):
+        opener = self._mint_opener()
+        backend = HttpBackend(opener=opener)
+        backend.connect(url=_URL, api_key="", timeout=30)
+        auth = [r for r in opener.requests if r["path"].startswith("/api/v1/auth/")]
+        self.assertEqual(len(auth), 3)  # login, list keys, create the key
+        for request in auth:
+            self.assertLessEqual(request["timeout"], 10.0, request["path"])
 
     def test_no_key_file_is_read_or_written(self):
         import cognee_integration_hermes.http_backend as hb

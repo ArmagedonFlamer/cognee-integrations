@@ -90,3 +90,16 @@ def hermetic_env(request, monkeypatch, tmp_path):
     monkeypatch.setattr(dataset_overrides, "_OVERRIDES_PATH", tmp_path / "dataset-overrides.json")
     monkeypatch.setattr(update_check, "_CACHE_PATH", tmp_path / "update-check.json")
     monkeypatch.setattr(write_buffer, "WRITE_BUFFER_PATH", tmp_path / "pending-entries.json")
+
+
+@pytest.fixture(autouse=True)
+def fresh_process_state(monkeypatch):
+    """Per-process state starts empty in every test, as in a new Hermes process.
+
+    The keys a local server handed out (http_backend._RESOLVED_KEYS) and the
+    one-time "no LLM key" warning would otherwise carry from one test to the next.
+    """
+    from cognee_integration_hermes import http_backend, server_bootstrap
+
+    monkeypatch.setattr(http_backend, "_RESOLVED_KEYS", {})
+    monkeypatch.setattr(server_bootstrap, "_warned_no_llm_key", False)
