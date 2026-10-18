@@ -86,9 +86,12 @@ _API_KEY_NAME = "hermes-owner-bootstrap"
 # The login and key listing are quick on a healthy local server; this keeps a
 # stalled one from holding session start for the caller's full timeout per call.
 _AUTH_STEP_TIMEOUT = 10.0
-# Keys looked up on a local server, by URL, for this process only (never a file):
-# a second connect in the same process skips the login.
-_RESOLVED_KEYS: dict[str, str] = {}
+# Keys looked up on a local server, for this process only (never a file): a
+# second connect in the same process skips the login. Keyed on the server *and*
+# the login (email plus a digest of the password), because one gateway process
+# can serve several profiles with different cognee users: a profile must never be
+# handed a key minted for another user, nor skip a login whose password is wrong.
+_RESOLVED_KEYS: dict[tuple[str, str, str], str] = {}
 
 # How the server's login route phrases the two rejections a default-user login
 # can get (cognee 1.6.0 ``/api/v1/auth/login``, both HTTP 400). Matched
@@ -548,12 +551,20 @@ class HttpBackend(MemoryBackend):
                 "request authenticates via X-Api-Key. Set COGNEE_API_KEY, or unset "
                 "COGNEE_BASE_URL to use the local server."
             )
-        cache_key = self.url.strip().rstrip("/")
+        email = secret("COGNEE_USER_EMAIL") or DEFAULT_USER_EMAIL
+        password = secret("COGNEE_USER_PASSWORD") or DEFAULT_USER_PASSWORD
+        cache_key = (
+            self.url.strip().rstrip("/"),
+            email,
+            hashlib.sha256(password.encode("utf-8")).hexdigest(),
+        )
         key = _RESOLVED_KEYS.get(cache_key, "")
         if key:
             return key
         try:
-            key = self._mint_api_key(timeout=min(timeout, _AUTH_STEP_TIMEOUT))
+            key = self._mint_api_key(
+                email=email, password=password, timeout=min(timeout, _AUTH_STEP_TIMEOUT)
+            )
         except CogneeLoginRejected as exc:
             # The server answered the login and refused it for a reason the user
             # can act on. Still not fatal here — the server may not require a
@@ -572,10 +583,8 @@ class HttpBackend(MemoryBackend):
             _RESOLVED_KEYS[cache_key] = key
         return key
 
-    def _mint_api_key(self, *, timeout: float) -> str:
-        """Log in as the default user and reuse or create an owner API key."""
-        email = secret("COGNEE_USER_EMAIL") or DEFAULT_USER_EMAIL
-        password = secret("COGNEE_USER_PASSWORD") or DEFAULT_USER_PASSWORD
+    def _mint_api_key(self, *, email: str, password: str, timeout: float) -> str:
+        """Log in as *email* and reuse or create that user's owner API key."""
 
         try:
             login = self._request(

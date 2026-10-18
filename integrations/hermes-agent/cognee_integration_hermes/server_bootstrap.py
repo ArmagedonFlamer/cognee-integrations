@@ -37,6 +37,17 @@ logger = logging.getLogger(__name__)
 # LLM providers cognee can reach without an API key (a local model server).
 _KEYLESS_LLM_PROVIDERS = frozenset({"ollama"})
 _warned_no_llm_key = False
+# Every API key cognee's LLM and embedding clients read. The server gets each one
+# from the profile's secret scope only, so a profile never bills its calls to a
+# key the gateway's environment holds for another profile. Non-secret settings
+# (provider, model, endpoint) are inherited as before: calls bill to the key.
+_PROFILE_SECRETS = (
+    "LLM_API_KEY",
+    "EMBEDDING_API_KEY",
+    "LLM_EXTRACTION_API_KEY",
+    "LLM_QUERY_API_KEY",
+    "LLM_SUMMARIZATION_API_KEY",
+)
 
 
 def health_ok(url, timeout=2.0):
@@ -139,16 +150,17 @@ def _warn_no_llm_key(env):
 
 def _spawn(port, data_root, system_root, log_path):
     env = dict(os.environ)
-    # The server's LLM key comes from Hermes (the profile's secret scope), never
+    # The server's API keys come from Hermes (the profile's secret scope), never
     # from a file the plugin reads itself: the plugin-catalog rules forbid that,
-    # and under a multi-profile gateway os.environ may not hold this profile's key.
-    # Dropped first, so a profile with no key never boots the server on a key the
-    # gateway's environment holds for another profile.
-    env.pop("LLM_API_KEY", None)
-    llm_key = secret("LLM_API_KEY")
-    if llm_key:
-        env["LLM_API_KEY"] = llm_key
-    else:
+    # and under a multi-profile gateway os.environ may hold another profile's.
+    # Each is dropped first, so a profile without one never boots the server on
+    # the inherited value.
+    for name in _PROFILE_SECRETS:
+        env.pop(name, None)
+        value = secret(name)
+        if value:
+            env[name] = value
+    if "LLM_API_KEY" not in env:
         _warn_no_llm_key(env)
     env["COGNEE_AGENT_MODE"] = "true"  # server tears itself down once idle / no clients
     env["HTTP_API_PORT"] = str(port)

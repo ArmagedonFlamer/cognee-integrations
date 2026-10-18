@@ -593,6 +593,42 @@ class TestApiKeyResolution(unittest.TestCase):
         self._connect(other, url="http://127.0.0.1:9999")
         self.assertIn("/api/v1/auth/login", other.paths())
 
+    def _connect_as(self, scope, opener):
+        import cognee_integration_hermes.config as config_mod
+
+        with mock.patch.object(config_mod, "_hermes_get_secret", scope.get):
+            return self._connect(opener)
+
+    def test_two_profiles_with_different_users_get_their_own_keys(self):
+        a = self._mint_opener()
+        a.responses["/api/v1/auth/api-keys"] = [{"key": "key-of-a"}]
+        b = self._mint_opener()
+        b.responses["/api/v1/auth/api-keys"] = [{"key": "key-of-b"}]
+        profile_a = {"COGNEE_USER_EMAIL": "a@x", "COGNEE_USER_PASSWORD": "pa"}
+        profile_b = {"COGNEE_USER_EMAIL": "b@x", "COGNEE_USER_PASSWORD": "pb"}
+        self.assertEqual(self._connect_as(profile_a, a).api_key, "key-of-a")
+        self.assertEqual(self._connect_as(profile_b, b).api_key, "key-of-b")
+        self.assertIn(b"username=b%40x", b.request_for("/api/v1/auth/login")["body"])
+
+    def test_a_wrong_password_does_not_reuse_the_users_key(self):
+        good = {"COGNEE_USER_EMAIL": "a@x", "COGNEE_USER_PASSWORD": "right"}
+        bad = {"COGNEE_USER_EMAIL": "a@x", "COGNEE_USER_PASSWORD": "wrong"}
+        self.assertEqual(self._connect_as(good, self._mint_opener()).api_key, "minted-key")
+        rejected = self._mint_opener()
+        rejected.responses["/api/v1/auth/login"] = urllib.error.HTTPError(
+            _URL, 404, "bad login", {}, None
+        )
+        self.assertEqual(self._connect_as(bad, rejected).api_key, "")
+        self.assertIn("/api/v1/auth/login", rejected.paths())
+
+    def test_the_password_is_not_kept_in_the_cache(self):
+        import cognee_integration_hermes.http_backend as hb
+
+        self._connect_as({"COGNEE_USER_PASSWORD": "s3cret"}, self._mint_opener())
+        self.assertTrue(hb._RESOLVED_KEYS)
+        for cache_key in hb._RESOLVED_KEYS:
+            self.assertNotIn("s3cret", cache_key)
+
     def test_a_failed_lookup_is_not_remembered(self):
         failing = self._mint_opener()
         failing.responses["/api/v1/auth/login"] = urllib.error.HTTPError(

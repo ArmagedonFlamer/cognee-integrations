@@ -134,6 +134,30 @@ class TestServerSpawn(unittest.TestCase):
         kwargs, _ = self._spawn({"LLM_API_KEY": "another-profile"}, scope={})
         self.assertNotIn("LLM_API_KEY", kwargs["env"])
 
+    def test_every_api_key_comes_from_the_scope_and_none_is_inherited(self):
+        inherited = {name: "another-profile" for name in sb._PROFILE_SECRETS}
+        kwargs, _ = self._spawn(inherited, scope={"EMBEDDING_API_KEY": "mine"})
+        env = kwargs["env"]
+        self.assertEqual(env["EMBEDDING_API_KEY"], "mine")
+        for name in sb._PROFILE_SECRETS:
+            if name != "EMBEDDING_API_KEY":
+                self.assertNotIn(name, env, name)
+
+    def test_the_list_covers_cognees_embedding_and_per_task_keys(self):
+        for name in (
+            "EMBEDDING_API_KEY",
+            "LLM_EXTRACTION_API_KEY",
+            "LLM_QUERY_API_KEY",
+            "LLM_SUMMARIZATION_API_KEY",
+        ):
+            self.assertIn(name, sb._PROFILE_SECRETS)
+
+    def test_non_secret_llm_settings_are_still_inherited(self):
+        kwargs, _ = self._spawn({"LLM_MODEL": "gpt-x", "LLM_PROVIDER": "openai"}, scope={})
+        self.assertEqual(
+            (kwargs["env"]["LLM_MODEL"], kwargs["env"]["LLM_PROVIDER"]), ("gpt-x", "openai")
+        )
+
     def test_a_missing_llm_key_is_warned_about_once(self):
         with self.assertLogs("cognee_integration_hermes.server_bootstrap", "WARNING") as logs:
             self._spawn({}, scope={})

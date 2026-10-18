@@ -45,13 +45,20 @@ the plugin no longer opens a `.env` file or a key file on its own.
   and, at a process's first connect, logs in to the local server and reuses the
   key the server already has (creating one only when none exists), so it still
   lands on the same key as the Claude Code, Codex and OpenClaw plugins and keys
-  do not pile up. The login and key lookup are capped at 10 s each, so a stalled
-  server cannot hold session start for the full connect timeout. **A remote server or Cognee Cloud now always needs `COGNEE_API_KEY`
+  do not pile up. The remembered key is tied to the server and the login
+  (`COGNEE_USER_EMAIL` plus a digest of the password, never the password), so a
+  gateway serving profiles with different cognee users never hands one profile
+  another's key, and a wrong password is not skipped past. The login and key
+  lookup are capped at 10 s each, so a stalled server cannot hold session start
+  for the full connect timeout. **A remote server or Cognee Cloud now always needs `COGNEE_API_KEY`
   configured in Hermes**; a key cached by another plugin no longer stands in.
-- **The spawned server never inherits another profile's LLM key.** An
-  `LLM_API_KEY` in Hermes' process environment is dropped before the profile's
-  own (from `get_secret`) is set, so a profile with no key no longer boots the
-  server on a key the gateway holds for another profile.
+- **The spawned server never inherits another profile's API keys.** Each key
+  cognee's LLM and embedding clients read (`LLM_API_KEY`, `EMBEDDING_API_KEY`,
+  `LLM_EXTRACTION_API_KEY`, `LLM_QUERY_API_KEY`, `LLM_SUMMARIZATION_API_KEY`) is
+  dropped from the inherited environment and set from the profile's own scope
+  (`get_secret`), so a profile no longer boots the server on, or bills its
+  embeddings to, a key the gateway holds for another profile. Non-secret
+  settings (provider, model, endpoint) are inherited as before.
 - **Starting the server without an LLM key is logged**, once per process, as a
   warning naming `hermes memory setup`; before, the first sign was a failed
   cognify in `server.log`. A keyless provider (`LLM_PROVIDER=ollama`) is not
