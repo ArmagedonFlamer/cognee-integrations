@@ -856,7 +856,7 @@ class TestProviderOverHttp(unittest.TestCase):
         body = opener.json_body("/api/v1/recall")
         self.assertEqual(body["scope"], ["graph"])
         self.assertEqual(body["datasets"], ["hermes"])
-        self.assertEqual(body["session_id"], "hermes_sX")
+        self.assertNotIn("session_id", body)
 
     def test_remember_reports_the_server_status(self):
         # The trap: an HTTP dict has no .status attribute, so a bare dict here
@@ -874,7 +874,11 @@ class TestProviderOverHttp(unittest.TestCase):
         provider._sync_thread.join(timeout=2.0)
         body = opener.json_body("/api/v1/remember/entry")
         self.assertEqual(body["session_id"], "hermes_sY")
-        self.assertEqual(body["entry"]["answer"], "User: hello\nAssistant: hi there")
+        # The prompt and the answer in their own fields, as the other plugins
+        # send them: recaps list the prompts and the timeline searches them.
+        self.assertEqual(body["entry"]["type"], "qa")
+        self.assertEqual(body["entry"]["question"], "hello")
+        self.assertEqual(body["entry"]["answer"], "hi there")
 
     def test_session_end_bridges_the_session_into_the_graph(self):
         """End-to-end proof that finding #2 is fixed."""

@@ -30,6 +30,7 @@ from .config import (
     SHARED_PLUGIN_STATE_DIR,
     ollama_embedding_pins,
 )
+from .env_file import apply_env_file
 
 logger = logging.getLogger(__name__)
 
@@ -98,8 +99,28 @@ def rotate_oversized_log(log_path, max_bytes=None):
         return False
 
 
+def server_workdir():
+    """Where the spawned server runs: the plugin's own state directory.
+
+    cognee >= 1.6.2 loads the first ``.env`` found walking up from its working
+    directory and lets it override the environment, so a server started in the
+    directory Hermes was launched from could pick up an unrelated project's
+    ``.env``. Its settings come from ``~/.cognee/.env`` instead (``_spawn``).
+    """
+    workdir = SHARED_PLUGIN_STATE_DIR / "hermes"
+    try:
+        workdir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    return str(workdir)
+
+
 def _spawn(port, data_root, system_root, log_path):
     env = dict(os.environ)
+    # ~/.cognee/.env (or COGNEE_ENV_FILE) acts like exports for the server: a
+    # variable already in the environment wins, and PATH/HOME/LD_* are skipped.
+    # Applied before the plugin defaults below so the file can override those.
+    apply_env_file(env)
     env["COGNEE_AGENT_MODE"] = "true"  # server tears itself down once idle / no clients
     env["HTTP_API_PORT"] = str(port)
     # The server must behave identically no matter which cognee plugin booted it,
@@ -160,6 +181,7 @@ def _spawn(port, data_root, system_root, log_path):
                 str(port),
             ],
             env=env,
+            cwd=server_workdir(),
             stdout=log,
             stderr=log,
             start_new_session=True,  # detach: outlive the spawning call
