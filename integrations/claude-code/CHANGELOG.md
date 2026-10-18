@@ -28,6 +28,16 @@ project adheres to [Semantic Versioning](https://semver.org/).
   end of the `Cognee memory [mN]:` sentence; drawn without that label, on the desktop
   and in a terminal, its first letter is now capitalised.
 
+### Fixed
+- **Install on Claude Code older than 2.1.271.** 1.7.0 declared the status row's
+  `icon` option with an `options` list, a manifest key those versions do not know,
+  so `claude plugin install` failed with `userConfig.icon: Invalid input`. The list
+  is gone; the option is a plain string (`wave`, the default, or `none`) and the mark
+  draws exactly as before. The plugin installs again on every Claude Code that reads
+  `userConfig`; on versions that do not load the hooks module the memory pipeline
+  runs unchanged and only the status row is absent, as documented under
+  [Status line](README.md#status-line).
+
 ## [1.7.0]
 
 ### Added

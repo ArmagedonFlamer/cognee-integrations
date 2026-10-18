@@ -26,11 +26,7 @@
       "type": "string",
       "title": "Cognee mark",
       "description": "The cognee mark: the waveform icon on the status row and the credit line in the Desktop app (the official SVG), and the display logotype on the credit line in a terminal. none turns both off.",
-      "default": "wave",
-      "options": [
-        "wave",
-        "none"
-      ]
+      "default": "wave"
     },
     "band": {
       "type": "boolean",
