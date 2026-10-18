@@ -71,15 +71,13 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 from .backend import MemoryBackend
 from .config import (  # noqa: F401 — DEFAULT_USER_* re-exported for callers/tests
     DEFAULT_USER_EMAIL,
     DEFAULT_USER_PASSWORD,
-    SHARED_PLUGIN_STATE_DIR,
+    secret,
 )
 
 logger = logging.getLogger(__name__)
@@ -250,16 +248,14 @@ def _multipart_body(fields: dict[str, str], files: dict[str, tuple[str, bytes]])
 class HttpBackend(MemoryBackend):
     """Talks to a cognee server over its REST API.
 
-    ``cache_dir`` is where a minted API key is remembered. It defaults to
-    ``~/.cognee-plugin``, the state dir the claude-code/codex/openclaw plugins
-    share — one principal key (``api_key.json``) serves every cognee plugin on
-    the machine, in their exact file format. Override it only in tests.
+    The API key lives in memory only: configured through Hermes, or, for a local
+    server, looked up on the server itself at connect time. No key file is read
+    or written (plugin-catalog rule 11).
     """
 
     def __init__(
         self,
         *,
-        cache_dir: Optional[str] = None,
         opener=None,
         agent_session_name: str = "hermes",
         server_log_path: Optional[str] = None,
@@ -267,7 +263,6 @@ class HttpBackend(MemoryBackend):
         self.url = ""
         self.api_key = ""
         self.registered = False
-        self._cache_dir = Path(cache_dir).expanduser() if cache_dir else SHARED_PLUGIN_STATE_DIR
         self._opener = opener
         self._agent_session_name = agent_session_name
         self._ssl_context: Optional[ssl.SSLContext] = None
@@ -520,56 +515,14 @@ class HttpBackend(MemoryBackend):
 
     # -- auth --------------------------------------------------------------
 
-    def _key_cache_path(self) -> Path:
-        # Name and shape are shared with the other cognee plugins (claude-code's
-        # ``_API_KEY_CACHE``): whichever plugin mints first, the rest reuse.
-        return self._cache_dir / "api_key.json"
-
-    @staticmethod
-    def _normalize_url(value: str) -> str:
-        return str(value or "").strip().rstrip("/")
-
-    def _cached_key(self) -> str:
-        path = self._key_cache_path()
-        if not path.exists():
-            return ""
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return ""
-        if not isinstance(data, dict):
-            return ""
-        key = str(data.get("api_key") or "").strip()
-        if not key:
-            return ""
-        # Same match rule as the other plugins: a recorded base_url only
-        # invalidates the key when both sides are non-empty and differ.
-        cached_url = self._normalize_url(str(data.get("base_url") or ""))
-        wanted = self._normalize_url(self.url)
-        if wanted and cached_url and cached_url != wanted:
-            return ""
-        return key
-
-    def _cache_key(self, api_key: str) -> None:
-        path = self._key_cache_path()
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                json.dumps(
-                    {
-                        "base_url": self._normalize_url(self.url),
-                        "api_key": api_key.strip(),
-                        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                    }
-                ),
-                encoding="utf-8",
-            )
-            path.chmod(0o600)
-        except OSError as exc:
-            logger.debug("could not cache the cognee API key: %s", exc)
-
     def _resolve_api_key(self, provided: str, *, timeout: float) -> str:
-        """Configured key, else a cached one, else — locally only — mint one.
+        """Configured key, else — locally only — the server's own key.
+
+        No key file is consulted: the key lives in this process for the session.
+        For a local server, "minting" first lists the default user's existing
+        keys and reuses the first, so every session (and every sibling cognee
+        plugin on the machine) ends up on the same key without a shared cache,
+        and keys never pile up; a new one is created only when none exists.
 
         Minting logs in as the default user, which only a server this plugin (or a
         sibling plugin) bootstrapped is known to allow. A *remote* server — Cognee
@@ -579,10 +532,7 @@ class HttpBackend(MemoryBackend):
         proceeding unauthenticated would only smear one clear startup error into
         a 401 on every later call.
         """
-        key = (provided or os.environ.get("COGNEE_API_KEY", "")).strip()
-        if key:
-            return key
-        key = self._cached_key()
+        key = (provided or secret("COGNEE_API_KEY")).strip()
         if key:
             return key
         if not _is_local_url(self.url):
@@ -608,14 +558,12 @@ class HttpBackend(MemoryBackend):
             # call report a 401 if the server does want one.
             logger.debug("could not mint a cognee API key (continuing without): %s", exc)
             return ""
-        if key:
-            self._cache_key(key)
         return key
 
     def _mint_api_key(self, *, timeout: float) -> str:
         """Log in as the default user and reuse or create an owner API key."""
-        email = os.environ.get("COGNEE_USER_EMAIL", DEFAULT_USER_EMAIL)
-        password = os.environ.get("COGNEE_USER_PASSWORD", DEFAULT_USER_PASSWORD)
+        email = secret("COGNEE_USER_EMAIL") or DEFAULT_USER_EMAIL
+        password = secret("COGNEE_USER_PASSWORD") or DEFAULT_USER_PASSWORD
 
         try:
             login = self._request(

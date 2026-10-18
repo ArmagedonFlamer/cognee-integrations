@@ -1,5 +1,6 @@
-"""The smaller openclaw-parity changes: config keys, chunk size, 402, the env file
-and the spawned server's working directory."""
+"""The smaller openclaw-parity changes: config keys, chunk size, 402, where the
+spawned server and exit watcher get their credentials, and the server's working
+directory."""
 
 import io
 import os
@@ -18,7 +19,6 @@ for path in (ROOT, TESTS):
 
 from _char_helpers import fake_backend, make_provider  # noqa: E402
 from cognee_integration_hermes import config as config_mod  # noqa: E402
-from cognee_integration_hermes import env_file  # noqa: E402
 from cognee_integration_hermes import exit_watcher as ew  # noqa: E402
 from cognee_integration_hermes import server_bootstrap as sb  # noqa: E402
 from cognee_integration_hermes.http_backend import CogneeHttpError  # noqa: E402
@@ -104,48 +104,16 @@ class TestLlmBudgetExhausted(unittest.TestCase):
         self.assertTrue(any("budget is exhausted (402)" in line for line in logged), logged)
 
 
-class TestEnvFile(unittest.TestCase):
-    def setUp(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.path = Path(tmp.name) / ".env"
-
-    def test_parse(self):
-        self.path.write_text(
-            "# comment\nexport LLM_API_KEY='sk-1'\nLLM_MODEL=\"gpt\"\nBAD LINE\n=x\nA-B=1\n",
-            encoding="utf-8",
-        )
-        self.assertEqual(
-            env_file.parse_env_file(self.path), {"LLM_API_KEY": "sk-1", "LLM_MODEL": "gpt"}
-        )
-
-    def test_exports_win_and_dangerous_names_are_skipped(self):
-        self.path.write_text("LLM_API_KEY=file\nLLM_MODEL=m\nPATH=/evil\nLD_PRELOAD=x\n")
-        env = {"LLM_API_KEY": "exported"}
-        added = env_file.apply_env_file(env, self.path)
-        self.assertEqual(env, {"LLM_API_KEY": "exported", "LLM_MODEL": "m"})
-        self.assertEqual(added, ["LLM_MODEL"])
-
-    def test_cognee_env_file_overrides_the_location(self):
-        with mock.patch.dict(os.environ, {"COGNEE_ENV_FILE": str(self.path)}):
-            self.assertEqual(env_file.env_file_path(), self.path)
-
-    def test_a_missing_file_adds_nothing(self):
-        env = {}
-        self.assertEqual(env_file.apply_env_file(env, self.path), [])
-        self.assertEqual(env, {})
-
-
 class TestServerSpawn(unittest.TestCase):
-    def _spawn(self, environ, env_text):
+    def _spawn(self, environ, scope=None):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        env_path = Path(tmp.name) / ".env"
-        env_path.write_text(env_text, encoding="utf-8")
         workdir = Path(tmp.name) / "state"
-        environ = {**environ, "COGNEE_ENV_FILE": str(env_path)}
         with (
             mock.patch.dict(os.environ, environ, clear=False),
+            mock.patch.object(
+                config_mod, "_hermes_get_secret", (scope or {}).get if scope is not None else None
+            ),
             mock.patch.object(sb, "server_workdir", return_value=str(workdir)),
             mock.patch.object(sb.subprocess, "Popen") as popen,
         ):
@@ -153,22 +121,63 @@ class TestServerSpawn(unittest.TestCase):
         return popen.call_args.kwargs, workdir
 
     def test_the_server_runs_in_the_plugin_state_dir(self):
-        kwargs, workdir = self._spawn({}, "")
+        kwargs, workdir = self._spawn({})
         self.assertEqual(kwargs["cwd"], str(workdir))
         self.assertNotEqual(kwargs["cwd"], os.getcwd())
 
-    def test_the_env_file_reaches_the_server_but_exports_win(self):
-        os.environ.pop("CACHING", None)
-        kwargs, _ = self._spawn(
-            {"LLM_MODEL": "exported"},
-            "LLM_MODEL=file\nLLM_API_KEY=from-file\nCACHING=false\nPATH=/evil\n",
-        )
-        env = kwargs["env"]
-        self.assertEqual(env["LLM_MODEL"], "exported")
-        self.assertEqual(env["LLM_API_KEY"], "from-file")
-        # The file outranks the plugin's own defaults, like an export would.
-        self.assertEqual(env["CACHING"], "false")
-        self.assertNotEqual(env["PATH"], "/evil")
+    def test_the_llm_key_comes_from_the_hermes_secret_scope(self):
+        kwargs, _ = self._spawn({"LLM_API_KEY": "another-profile"}, scope={"LLM_API_KEY": "mine"})
+        self.assertEqual(kwargs["env"]["LLM_API_KEY"], "mine")
+
+    def test_no_dotenv_file_reaches_the_server(self):
+        # ~/.cognee/.env is no longer read: a value only in such a file stays out.
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        env_path = Path(tmp.name) / ".env"
+        env_path.write_text("LLM_MODEL=from-file\n", encoding="utf-8")
+        os.environ.pop("LLM_MODEL", None)
+        kwargs, _ = self._spawn({"COGNEE_ENV_FILE": str(env_path)})
+        self.assertNotIn("LLM_MODEL", kwargs["env"])
+
+
+class TestExitWatcherKey(unittest.TestCase):
+    def _spawned_env(self, environ, api_key):
+        with (
+            mock.patch.dict(os.environ, environ, clear=False),
+            mock.patch.object(ew.subprocess, "Popen") as popen,
+        ):
+            ew._spawn("/tmp/state.json", [], api_key=api_key, log_path="")
+        return popen.call_args.kwargs["env"]
+
+    def test_the_provider_resolved_key_is_handed_over(self):
+        env = self._spawned_env({}, "ck_resolved")
+        self.assertEqual(env["COGNEE_API_KEY"], "ck_resolved")
+
+    def test_an_inherited_key_never_stands_in(self):
+        env = self._spawned_env({"COGNEE_API_KEY": "inherited"}, "")
+        self.assertNotIn("COGNEE_API_KEY", env)
+
+    def test_fire_uses_only_the_environment_key(self):
+        sent = []
+
+        def post(url, path, payload, *, api_key, timeout):
+            sent.append(api_key)
+            return 200
+
+        state = {"url": "http://127.0.0.1:1", "session_id": "s", "improve": True}
+        with (
+            mock.patch.dict(os.environ, {"COGNEE_API_KEY": "ck_env"}),
+            mock.patch.object(ew, "_post", side_effect=post),
+            mock.patch.object(ew, "_log"),
+        ):
+            ew.fire(state)
+        self.assertTrue(sent)
+        self.assertEqual(set(sent), {"ck_env"})
+
+    def test_the_watcher_reads_no_key_file(self):
+        source = Path(ew.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("api_key.json", source)
+        self.assertFalse(hasattr(ew, "_cached_api_key"))
 
     def test_the_default_workdir_is_under_the_shared_state_dir(self):
         with mock.patch.object(sb, "SHARED_PLUGIN_STATE_DIR", Path(tempfile.mkdtemp())) as root:

@@ -15,7 +15,6 @@ Runs standalone with ``python3 tests/test_http_backend.py``; needs no cognee.
 import io
 import json
 import sys
-import tempfile
 import unittest
 import urllib.error
 from pathlib import Path
@@ -109,8 +108,8 @@ class FakeOpener:
         return fields
 
 
-def _backend(opener, *, api_key="k", url=_URL, cache_dir=None):
-    backend = HttpBackend(opener=opener, cache_dir=cache_dir)
+def _backend(opener, *, api_key="k", url=_URL):
+    backend = HttpBackend(opener=opener)
     backend.url = url
     backend.api_key = api_key
     return backend
@@ -533,13 +532,6 @@ class TestConnect(unittest.TestCase):
 
 
 class TestApiKeyResolution(unittest.TestCase):
-    def setUp(self):
-        # An unset cache_dir means the real shared ~/.cognee-plugin — tests must
-        # never read a developer's actual key or overwrite it with a fake one.
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.cache_dir = tmp.name
-
     def _mint_opener(self):
         return FakeOpener(
             {
@@ -550,15 +542,11 @@ class TestApiKeyResolution(unittest.TestCase):
             }
         )
 
-    def _connect(self, opener, *, api_key="", url=_URL, cache_dir=None):
-        backend = HttpBackend(opener=opener, cache_dir=cache_dir or self.cache_dir)
-        backend.connect(url=url, api_key=api_key, timeout=_TIMEOUT)
+    def _connect(self, opener, *, api_key="", url=_URL):
+        backend = HttpBackend(opener=opener)
+        with mock.patch("pathlib.Path.read_text", side_effect=AssertionError("read a file")):
+            backend.connect(url=url, api_key=api_key, timeout=_TIMEOUT)
         return backend
-
-    def test_the_default_cache_is_the_shared_plugin_state_dir(self):
-        from cognee_integration_hermes.config import SHARED_PLUGIN_STATE_DIR
-
-        self.assertEqual(HttpBackend()._cache_dir, SHARED_PLUGIN_STATE_DIR)
 
     def test_a_configured_key_is_used_as_is(self):
         opener = self._mint_opener()
@@ -580,40 +568,23 @@ class TestApiKeyResolution(unittest.TestCase):
         backend = self._connect(opener)
         self.assertEqual(backend.api_key, "existing-key")
 
-    def test_a_minted_key_is_cached_and_reused(self):
+    def test_every_session_looks_the_key_up_on_the_server(self):
+        # No key file: a second session logs in again and reuses the server's key.
         first = self._mint_opener()
-        self._connect(first)
-        self.assertIn("/api/v1/auth/login", first.paths())
-
+        first.responses["/api/v1/auth/api-keys"] = [{"key": "claude-minted"}]
+        self.assertEqual(self._connect(first).api_key, "claude-minted")
         second = self._mint_opener()
-        backend = self._connect(second)
-        self.assertEqual(backend.api_key, "minted-key")
-        self.assertNotIn("/api/v1/auth/login", second.paths())
+        second.responses["/api/v1/auth/api-keys"] = [{"key": "claude-minted"}]
+        self.assertEqual(self._connect(second).api_key, "claude-minted")
+        self.assertIn("/api/v1/auth/login", second.paths())
 
-    def test_the_cache_file_is_the_shared_plugin_format(self):
-        # The cache is shared with claude-code/codex/openclaw — same filename,
-        # same fields — so whichever plugin mints first, the rest reuse.
-        self._connect(self._mint_opener())
-        data = json.loads((Path(self.cache_dir) / "api_key.json").read_text(encoding="utf-8"))
-        self.assertEqual(data["api_key"], "minted-key")
-        self.assertEqual(data["base_url"], _URL)
-        self.assertIn("updated_at", data)
+    def test_no_key_file_is_read_or_written(self):
+        import cognee_integration_hermes.http_backend as hb
 
-    def test_a_key_cached_by_another_plugin_is_reused(self):
-        (Path(self.cache_dir) / "api_key.json").write_text(
-            json.dumps({"base_url": _URL, "api_key": "claude-minted", "updated_at": "x"}),
-            encoding="utf-8",
-        )
-        opener = self._mint_opener()
-        backend = self._connect(opener)
-        self.assertEqual(backend.api_key, "claude-minted")
-        self.assertNotIn("/api/v1/auth/login", opener.paths())
-
-    def test_a_cached_key_for_a_different_url_is_ignored(self):
-        self._connect(self._mint_opener())
-        other = self._mint_opener()
-        self._connect(other, url="http://127.0.0.1:9999")
-        self.assertIn("/api/v1/auth/login", other.paths())
+        source = Path(hb.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("api_key.json", source)
+        with mock.patch("pathlib.Path.write_text", side_effect=AssertionError("wrote a file")):
+            self.assertEqual(self._connect(self._mint_opener()).api_key, "minted-key")
 
     def test_failed_minting_proceeds_without_a_key(self):
         # A LOCAL server with authentication disabled needs no key at all.
@@ -713,14 +684,11 @@ class TestApiKeyResolution(unittest.TestCase):
         self.assertEqual(backend.api_key, "cloud-key")
         self.assertNotIn("/api/v1/auth/login", opener.paths())
 
-    def test_a_remote_target_with_a_cached_key_connects(self):
-        (Path(self.cache_dir) / "api_key.json").write_text(
-            json.dumps({"base_url": _REMOTE_URL, "api_key": "cached-cloud"}),
-            encoding="utf-8",
-        )
+    def test_a_remote_target_without_a_configured_key_still_fails(self):
+        # A key left behind by another plugin no longer stands in for COGNEE_API_KEY.
         with mock.patch.dict("os.environ", {"COGNEE_API_KEY": ""}, clear=False):
-            backend = self._connect(self._mint_opener(), url=_REMOTE_URL)
-        self.assertEqual(backend.api_key, "cached-cloud")
+            with self.assertRaises(RuntimeError):
+                self._connect(self._mint_opener(), url=_REMOTE_URL)
 
 
 class TestEnsureDatasetWireFormat(unittest.TestCase):

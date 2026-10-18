@@ -255,7 +255,7 @@ class TestHttpConnectAgainstRealServer(unittest.TestCase):
     is the one to run first when something looks wrong.
     """
 
-    def test_connect_mints_a_key_registers_and_caches(self):
+    def test_connect_finds_the_servers_key_and_registers(self):
         from cognee_integration_hermes.http_backend import HttpBackend
         from cognee_integration_hermes.server_bootstrap import ensure_local_server
 
@@ -268,19 +268,21 @@ class TestHttpConnectAgainstRealServer(unittest.TestCase):
                 system_root=str(Path(home) / "system"),
                 boot_timeout=_BOOT_TIMEOUT,
             )
-            backend = HttpBackend(cache_dir=home)
+            backend = HttpBackend()
             try:
                 backend.connect(url=url, api_key="", timeout=60.0)
                 self.assertEqual(backend.url, url)
                 self.assertTrue(backend.registered, "agent connection should register")
-                # A server with auth enabled hands back a key, which we cache; one
-                # with auth disabled needs none. Either is fine — but if a key was
-                # resolved it must have been written through for the next session.
+                # A server with auth enabled hands back a key; one with auth
+                # disabled needs none. A second connection must land on the same
+                # key, looked up on the server rather than in a file.
                 if backend.api_key:
-                    self.assertTrue(
-                        (Path(home) / "api_key.json").exists(),
-                        "a resolved key should be cached in the shared-format file",
-                    )
+                    again = HttpBackend()
+                    again.connect(url=url, api_key="", timeout=60.0)
+                    try:
+                        self.assertEqual(again.api_key, backend.api_key)
+                    finally:
+                        again.close(timeout=15.0)
             finally:
                 backend.close(timeout=15.0)
             self.assertFalse(backend.registered, "close() should unregister")

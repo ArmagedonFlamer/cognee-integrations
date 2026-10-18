@@ -29,8 +29,8 @@ from .config import (
     SHARED_COGNEE_HOME,
     SHARED_PLUGIN_STATE_DIR,
     ollama_embedding_pins,
+    secret,
 )
-from .env_file import apply_env_file
 
 logger = logging.getLogger(__name__)
 
@@ -105,7 +105,7 @@ def server_workdir():
     cognee >= 1.6.2 loads the first ``.env`` found walking up from its working
     directory and lets it override the environment, so a server started in the
     directory Hermes was launched from could pick up an unrelated project's
-    ``.env``. Its settings come from ``~/.cognee/.env`` instead (``_spawn``).
+    ``.env``. Its settings come from Hermes instead (``_spawn``).
     """
     workdir = SHARED_PLUGIN_STATE_DIR / "hermes"
     try:
@@ -117,10 +117,12 @@ def server_workdir():
 
 def _spawn(port, data_root, system_root, log_path):
     env = dict(os.environ)
-    # ~/.cognee/.env (or COGNEE_ENV_FILE) acts like exports for the server: a
-    # variable already in the environment wins, and PATH/HOME/LD_* are skipped.
-    # Applied before the plugin defaults below so the file can override those.
-    apply_env_file(env)
+    # The server's LLM key comes from Hermes (the profile's secret scope), never
+    # from a file the plugin reads itself: the plugin-catalog rules forbid that,
+    # and under a multi-profile gateway os.environ may not hold this profile's key.
+    llm_key = secret("LLM_API_KEY")
+    if llm_key:
+        env["LLM_API_KEY"] = llm_key
     env["COGNEE_AGENT_MODE"] = "true"  # server tears itself down once idle / no clients
     env["HTTP_API_PORT"] = str(port)
     # The server must behave identically no matter which cognee plugin booted it,
