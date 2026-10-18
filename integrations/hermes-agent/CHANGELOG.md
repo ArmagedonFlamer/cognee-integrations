@@ -10,6 +10,63 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.1]
+
+Credentials come through Hermes only, as the plugin catalog's rule 11 requires:
+the plugin no longer opens a `.env` file or a key file on its own.
+
+### Changed
+- **`~/.cognee/.env` is no longer read.** 1.3.0 handed that file's values to the
+  local server it starts. The server now gets its settings from Hermes: its LLM
+  key through Hermes' `get_secret` (the active profile's), the rest from the
+  environment Hermes runs in. It still starts in `~/.cognee-plugin/hermes`, so a
+  `.env` in the directory Hermes was started from still never reaches it. **If
+  your keys live only in `~/.cognee/.env` (shared with the Claude Code, Codex and
+  OpenClaw plugins), run `hermes memory setup` once or put them in Hermes'
+  `.env`.**
+- **Keys are read through Hermes' `get_secret`.** `COGNEE_API_KEY`,
+  `LLM_API_KEY`, `COGNEE_BASE_URL` (and its `COGNEE_SERVICE_URL` alias) and
+  `COGNEE_USER_EMAIL` / `COGNEE_USER_PASSWORD` were read straight from
+  `os.environ`, which under a multi-profile gateway can hold another profile's
+  key. On a Hermes without `get_secret` the environment is read as before.
+- **`hermes memory setup` saves through Hermes' own `.env` writer**
+  (`hermes_cli.config.save_env_value`, under the profile's home) instead of
+  rewriting the file itself, so names and values get Hermes' validation and the
+  0600 atomic write.
+- **The exit watcher reads no key file.** It used the key in its environment and
+  fell back to `~/.cognee-plugin/api_key.json`. It now uses only the key the
+  plugin resolved and handed it at spawn time, and never one inherited from
+  Hermes' environment. The plugin arms the watcher after connecting, so that key
+  is the one the session uses; when the session has none (auth off, or a failed
+  mint) the watcher logs that its close may be rejected, in `exit-watcher.log`.
+- **No API key file is read or written.** For a local server the plugin cached
+  the key it minted in `~/.cognee-plugin/api_key.json` and reused a key another
+  cognee plugin had left there. It now keeps the key in memory for the process
+  and, at a process's first connect, logs in to the local server and reuses the
+  key the server already has (creating one only when none exists), so it still
+  lands on the same key as the Claude Code, Codex and OpenClaw plugins and keys
+  do not pile up. The remembered key is tied to the server and the login
+  (`COGNEE_USER_EMAIL` plus a digest of the password, never the password), so a
+  gateway serving profiles with different cognee users never hands one profile
+  another's key, and a wrong password is not skipped past. The login and key
+  lookup are capped at 10 s each, so a stalled server cannot hold session start
+  for the full connect timeout. **A remote server or Cognee Cloud now always needs `COGNEE_API_KEY`
+  configured in Hermes**; a key cached by another plugin no longer stands in.
+- **The spawned server never inherits another profile's API keys.** Each key
+  cognee's LLM and embedding clients read (`LLM_API_KEY`, `EMBEDDING_API_KEY`,
+  `LLM_EXTRACTION_API_KEY`, `LLM_QUERY_API_KEY`, `LLM_SUMMARIZATION_API_KEY`) is
+  dropped from the inherited environment and set from the profile's own scope
+  (`get_secret`), so a profile no longer boots the server on, or bills its
+  embeddings to, a key the gateway holds for another profile. Non-secret
+  settings (provider, model, endpoint) are inherited as before.
+- **Starting the server without an LLM key is logged**, once per process, as a
+  warning naming `hermes memory setup`; before, the first sign was a failed
+  cognify in `server.log`. A keyless provider (`LLM_PROVIDER=ollama`) is not
+  warned about.
+
+### Removed
+- `cognee_integration_hermes/env_file.py`.
+
 ## [1.3.0]
 
 Brings the plugin to cognee 1.6.3 and to parity with the Claude Code, Codex and

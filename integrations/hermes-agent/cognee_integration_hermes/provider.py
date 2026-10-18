@@ -32,8 +32,8 @@ from .config import (
     load_config,
     resolve_hermes_home,
     resolve_local_roots,
+    save_env_vars,
     str_to_bool,
-    write_env_vars,
 )
 from .config import (
     save_config as save_plugin_config,
@@ -444,7 +444,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 env_values["LLM_MODEL"] = llm_model
 
         save_plugin_config(file_values, hermes_home)
-        write_env_vars(Path(hermes_home) / ".env", env_values)
+        save_env_vars(env_values, hermes_home)
 
         if not isinstance(config.get("memory"), dict):
             config["memory"] = {}

@@ -263,14 +263,17 @@ turns into the permanent graph. Two consequences worth knowing:
 
 By default this plugin joins the same memory the Claude Code, Codex and OpenClaw
 cognee plugins share: the same dataset (`agent_sessions`), the same local storage
-(`~/.cognee/{data,system}`), the same server port (8011) and the same minted API
-key (`~/.cognee-plugin/api_key.json`). Whichever plugin boots the server first,
+(`~/.cognee/{data,system}`), the same server port (8011) and the same API key —
+which this plugin looks up on the local server at each session start rather than
+reading the others' key file. Whichever plugin boots the server first,
 the rest attach to it — and a fact remembered in Claude Code is recallable in
 Hermes, and vice versa. To keep Hermes (or one Hermes profile) apart instead, give
 it its own `COGNEE_PLUGIN_DATASET`, or for full isolation its own
 `COGNEE_DATA_ROOT` / `COGNEE_SYSTEM_ROOT` *and* `COGNEE_LOCAL_PORT` — a server
 belongs to whoever reaches its port first, so a private store needs a private
-port.
+port. The same goes for its LLM key: a server shared by several profiles keeps
+the key of the profile that started it, so profiles that must not share an LLM
+bill need their own `COGNEE_LOCAL_PORT` too.
 
 The per-mode settings below live in `~/.hermes/.env` (the wizard puts them
 there; you can also edit the file by hand).
@@ -529,12 +532,12 @@ straight to the queue.
   `127.0.0.1:8011` from the installed `cognee` package, in
   `~/.cognee-plugin/hermes/`, with its output in
   `~/.cognee-plugin/hermes/server.log`; a detached exit watcher per Hermes
-  process that closes the session if Hermes cannot. The server reads its
-  settings from your environment and `~/.cognee/.env` (or `COGNEE_ENV_FILE`), not
-  from a `.env` in the directory you start Hermes from.
+  process that closes the session if Hermes cannot. The server gets its
+  settings from Hermes (the active profile's secrets and environment), not from a
+  `.env` in the directory you start Hermes from; the watcher gets the API key
+  from the plugin when it starts and reads no key file.
 - **Stores locally**: `~/.cognee/` (the shared cognee data, unless you move it),
-  `~/.cognee-plugin/api_key.json` (the minted API key, shared with the other
-  plugins), and under `~/.cognee-plugin/hermes/`: the write queue, dataset
+  and under `~/.cognee-plugin/hermes/`: the write queue, dataset
   switches, indexed code graphs, exit-watcher state and the update-check cache.
   Plugin settings are in `$HERMES_HOME/cognee.json`.
 - **Sends** to the cognee server it is configured for (local, or
@@ -550,12 +553,17 @@ straight to the queue.
 
 cognee >= 1.6.2 loads the first `.env` it finds walking up from its working
 directory and lets it override the environment. The server this plugin starts
-therefore runs in `~/.cognee-plugin/hermes/` and gets its settings from
-`~/.cognee/.env` (or `COGNEE_ENV_FILE`), the file the other cognee plugins read:
-its values act like exports, a variable already in the environment wins, and
-names such as `PATH` or `LD_*` are skipped. **If you kept `LLM_API_KEY` (or
-other server settings) in a `.env` in the directory you start Hermes from, move
-them to `~/.cognee/.env`** or to Hermes' own `.env`.
+therefore runs in `~/.cognee-plugin/hermes/`, so a `.env` in the directory you
+start Hermes from never reaches it.
+
+Keys and settings come through Hermes only: `hermes memory setup` stores
+`COGNEE_API_KEY`, `LLM_API_KEY` and `COGNEE_BASE_URL` in the profile's `.env`
+through Hermes' own writer, and the plugin reads them back with Hermes'
+`get_secret`, which picks the right profile when one gateway serves several.
+The plugin never opens a `.env` file itself. **`~/.cognee/.env`, the file the
+Claude Code, Codex and OpenClaw plugins share, is not read by this plugin:** if
+your keys live only there, run `hermes memory setup` once, or put them in
+Hermes' `.env`.
 
 ## Code graph: index a repository
 
