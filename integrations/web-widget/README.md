@@ -83,6 +83,15 @@ Three settings control the recall each chat message runs against cognee:
 | `WIDGET_RECALL_SCOPE` | `graph,code` | Memory sources to recall from, comma-separated. `graph` is the docs answer; `code` adds results from the code graph of any repository ingested into the same dataset, returned next to the answer rather than in it; `session` adds the conversation's own history. |
 | `WIDGET_SEARCH_TYPE` | `GRAPH_COMPLETION` | How the dataset is searched. Empty or `auto` lets cognee choose per question (usually `HYBRID_COMPLETION`). |
 | `WIDGET_SYSTEM_PROMPT` | unset | The instruction the answering model gets. Unset, cognee's own default prompt is used ("Answer the question using the provided context. Be as brief as possible."). A value replaces that default; citations are unaffected. |
+| `WIDGET_CODE_BASE_URL` | unset | Where the ingested repository can be browsed, e.g. `https://github.com/topoteretes/cognee/blob/main`. Set, related code links to its file and line. |
+
+**Related code.** cognee's code graph only resolves exact names, so besides the
+answer's own recall the backend picks up to three names out of the message
+(class names, `Class.method`, dotted module paths from a log line, file paths
+from a traceback) and looks each up with a code-only recall: no LLM, no session.
+Whatever resolves comes back in the reply's `code` list and the widget shows it
+under the answer as "Related code". A message that names no code makes no
+lookup, and a failed lookup only leaves the list empty.
 
 ### Rate limits
 
@@ -106,6 +115,28 @@ would share one per-IP limit. Set `WIDGET_TRUSTED_PROXIES` to the proxy's IPs
 or CIDR ranges (comma-separated), or `*` to believe whichever peer connects, and
 the visitor's IP is read from `X-Forwarded-For`. Leave it unset when the backend
 is reached directly: anyone can send that header.
+
+### Contact form
+
+When the assistant cannot answer reliably, it can hand the visitor over to your
+team. Tell the answering model when to do it in `WIDGET_SYSTEM_PROMPT`, and to end
+such a reply with the marker `[[contact_form]]`. The backend removes the marker
+from the answer and the widget shows a short form under it: the visitor's email,
+an optional note, and the chat transcript go to `POST /api/contact`, which emails
+them to you with the visitor as `Reply-To`.
+
+| Variable | Default | Effect |
+| -------- | ------- | ------ |
+| `WIDGET_CONTACT_TO` | unset | Address the requests are sent to. |
+| `WIDGET_SMTP_HOST` | unset | SMTP server. With this or `WIDGET_CONTACT_TO` unset the form is off: no form is offered and `/api/contact` returns `404`. |
+| `WIDGET_SMTP_PORT` | `587` | SMTP port. |
+| `WIDGET_SMTP_USER` / `WIDGET_SMTP_PASSWORD` | unset | Login, if the server needs one. |
+| `WIDGET_SMTP_FROM` | `WIDGET_SMTP_USER` | Sender address. |
+| `WIDGET_SMTP_SECURITY` | `starttls` | `starttls`, `ssl` (implicit TLS, usually port 465) or `none`. |
+
+`/api/contact` counts against the per-visitor [rate limits](#rate-limits), like
+`/api/forget`. The transcript comes from the visitor's browser and is capped at its
+last 60 messages.
 
 ### Seed your real docs
 
@@ -153,13 +184,17 @@ or by name for items ingested before paths were recorded.
 
 | Method | Path          | Body                                                                | Returns                          |
 | ------ | ------------- | ------------------------------------------------------------------- | -------------------------------- |
-| POST   | `/api/chat`   | `{message, conversation_id, visitor_id, site_id, opt_in, use_docs}` | `{answer, citations, session_id}`, or `429` over a [rate limit](#rate-limits) |
+| POST   | `/api/chat`   | `{message, conversation_id, visitor_id, site_id, opt_in, use_docs}` | `{answer, citations, code, session_id, contact_form}`, or `429` over a [rate limit](#rate-limits) |
 | POST   | `/api/forget` | `{conversation_id, visitor_id, site_id}`                            | `{cleared, session_id}`, or `429` over a [rate limit](#rate-limits) |
+| POST   | `/api/contact` | `{conversation_id, visitor_id, site_id, email, message, transcript, page_url}` | `{sent: true}`; `400` for a bad email, `502` if sending failed, `404` when the [contact form](#contact-form) is off |
 | POST   | `/api/github/webhook` | a GitHub push event, signed with `X-Hub-Signature-256` | `202 {sha, upserts, removals}`; `200 {ignored}` for anything else it was sent; `401` for a bad signature, `404` when [GitHub sync](#keep-the-docs-in-sync-with-github) is off |
 | GET    | `/`           | —                                                                   | demo "ask our docs" page         |
 | GET    | `/widget.js`  | —                                                                   | the embeddable snippet           |
 
-Each citation is `{document, snippet, data_id, chunk_id}`.
+Each citation is `{document, snippet, data_id, chunk_id}`. Each entry of `code` is
+`{name, symbol, kind, file, line, url}`: the short name shown, the full code-graph
+symbol, its node type (`CodeSymbol`, `CodeFileReference`, ...), where it is defined,
+and a link when `WIDGET_CODE_BASE_URL` is set.
 
 ## What changed from the in-process example
 

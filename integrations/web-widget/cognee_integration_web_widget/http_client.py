@@ -48,6 +48,12 @@ RECALL_SEARCH_TYPE = None if _SEARCH_TYPE.lower() in ("", "auto") else _SEARCH_T
 # block behind citations is appended by cognee after the answer, so it is
 # unaffected.
 RECALL_SYSTEM_PROMPT = os.getenv("WIDGET_SYSTEM_PROMPT") or None
+# cognee's own default instruction (answer_simple_question.txt), used as the base
+# when a turn adds to the system prompt but WIDGET_SYSTEM_PROMPT is unset: sending
+# a system_prompt replaces cognee's default, so the base has to come along.
+COGNEE_DEFAULT_SYSTEM_PROMPT = (
+    "Answer the question using the provided context. Be as brief as possible."
+)
 
 # The most items cognee's dataset-data endpoint returns per request.
 DATASET_PAGE_SIZE = 1000
@@ -132,6 +138,7 @@ class CogneeHttpClient:
         datasets: Optional[list[str]] = None,
         session_id: Optional[str] = None,
         top_k: int = 8,
+        system_prompt_extra: Optional[str] = None,
     ) -> list[Any]:
         """Recall results for ``query``.
 
@@ -140,7 +147,15 @@ class CogneeHttpClient:
         recall both use *and* persist this conversation's history. Returns the raw
         list of result objects (dicts) cognee reports. A missing dataset (4xx)
         yields ``[]``; 5xx / connection errors propagate.
+
+        ``system_prompt_extra`` is appended to the system prompt for this call
+        only. It reaches the answering model without changing what is searched
+        for or what the session stores as the question.
         """
+        system_prompt = RECALL_SYSTEM_PROMPT
+        if system_prompt_extra:
+            base = RECALL_SYSTEM_PROMPT or COGNEE_DEFAULT_SYSTEM_PROMPT
+            system_prompt = f"{base.rstrip()}\n\n{system_prompt_extra}"
         response = await self._request(
             "POST",
             "/api/v1/recall",
@@ -152,11 +167,30 @@ class CogneeHttpClient:
                 "include_references": True,
                 "scope": list(RECALL_SCOPE),
                 **({"search_type": RECALL_SEARCH_TYPE} if RECALL_SEARCH_TYPE else {}),
-                **({"system_prompt": RECALL_SYSTEM_PROMPT} if RECALL_SYSTEM_PROMPT else {}),
+                **({"system_prompt": system_prompt} if system_prompt else {}),
             },
         )
         if response.status_code >= 500:
             response.raise_for_status()
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        results = data.get("results", data) if isinstance(data, dict) else data
+        return list(results) if isinstance(results, list) else []
+
+    async def code_lookup(self, seed: str, *, datasets: Optional[list[str]] = None) -> list[Any]:
+        """Code-graph facts for one symbol or file name, or ``[]``.
+
+        A code-only recall: no LLM, no session, nothing stored. cognee resolves
+        ``seed`` to one node of the code graph (an exact, unique name: a class,
+        ``Class.method``, ``path/module.function`` or a file), so callers pass
+        names, not sentences. A seed it cannot resolve answers empty.
+        """
+        response = await self._request(
+            "POST",
+            "/api/v1/recall",
+            json={"query": seed, "datasets": datasets, "scope": ["code"]},
+        )
         if response.status_code >= 400:
             return []
         data = response.json()

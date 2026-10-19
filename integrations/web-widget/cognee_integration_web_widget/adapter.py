@@ -19,20 +19,28 @@ optional shared, read-only *docs* dataset (``web:{site_id}:docs``) powers the
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
+import logging
 from typing import Any, List, Optional, Sequence
 
 from .citations import Citation, split_evidence
+from .code_refs import CodeRef, code_context_block, extract_code_seeds, parse_code_entry
 from .http_client import CogneeHttpClient
+
+logger = logging.getLogger("web_widget.adapter")
 
 # cognee tags each recall entry with its origin. The answer to the *current*
 # query is a graph/graph_context completion; a stored session entry is a prior
 # turn, never the answer to display.
 _ANSWER_SOURCES = ("graph", "graph_context")
-# Code-graph facts are structured query results, not prose: never shown as the
-# answer, even when nothing else came back.
+# Code-graph facts are structured query results (JSON), not prose: they are
+# reported as related code next to the answer, never shown as the answer text.
 _NEVER_ANSWER_SOURCES = ("code",)
 _EMPTY_ANSWER = "I don't have anything in memory for that yet."
+# A code lookup that has not answered by then is dropped rather than holding
+# the reply back.
+CODE_LOOKUP_TIMEOUT = 20.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -55,12 +63,14 @@ class Answer:
     text: str
     citations: List[Citation]
     session_id: str
+    code: List[CodeRef] = dataclasses.field(default_factory=list)
 
     def as_dict(self) -> dict:
         # "answer" is the wire name the widget and README use for the prose.
         return {
             "answer": self.text,
             "citations": [c.as_dict() for c in self.citations],
+            "code": [c.as_dict() for c in self.code],
             "session_id": self.session_id,
         }
 
@@ -104,12 +114,16 @@ class ChatMemoryAdapter:
         top_k: int = 8,
         client: Optional[CogneeHttpClient] = None,
         docs_base_url: Optional[str] = None,
+        code_base_url: Optional[str] = None,
     ) -> None:
         self.top_k = top_k
         self.client = client or CogneeHttpClient()
         # Where the ingested pages are published, so a citation can link to
         # the page a reader can actually open instead of naming a chunk.
         self.docs_base_url = docs_base_url or None
+        # Where the ingested repository can be browsed (a blob URL), so related
+        # code links to the file and line.
+        self.code_base_url = code_base_url or None
 
     # -- session helpers ---------------------------------------------------
 
@@ -169,14 +183,47 @@ class ChatMemoryAdapter:
         # ``None`` means "every dataset this key can read", which would let the
         # conversations corpus - and anything distilled from it - answer a
         # visitor. Structural, not a default someone can switch off.
+        datasets = [self.docs_dataset(conversation.site_id)]
+        # Code first: what the message names in the repository is told to the
+        # answering model through this turn's system prompt. Only a message that
+        # names code waits for the lookups, which make no LLM call.
+        looked_up = await self._code_lookups(query, datasets)
         results = await self.client.recall(
             query,
-            datasets=[self.docs_dataset(conversation.site_id)],
+            datasets=datasets,
             session_id=session_id,
             top_k=self.top_k,
+            system_prompt_extra=code_context_block(looked_up) or None,
         )
         text, citations = split_evidence(_answer_text(results), self.docs_base_url)
-        return Answer(text=text, citations=citations, session_id=conversation.session_id)
+        # Code entries can come from the answer's own recall too, when its
+        # scope includes "code"; either way each node is reported once.
+        code: List[CodeRef] = []
+        for entry in [*results, *looked_up]:
+            if _field(entry, "source") != "code":
+                continue
+            ref = parse_code_entry(entry, self.code_base_url)
+            if ref and all(ref.symbol != seen.symbol for seen in code):
+                code.append(ref)
+        return Answer(text=text, citations=citations, session_id=conversation.session_id, code=code)
+
+    async def _code_lookups(self, query: str, datasets: List[str]) -> List[Any]:
+        """Code-graph facts for the names in ``query``. Never fails the answer."""
+        seeds = extract_code_seeds(query)
+        if not seeds:
+            return []
+
+        async def one(seed: str) -> List[Any]:
+            try:
+                return await asyncio.wait_for(
+                    self.client.code_lookup(seed, datasets=datasets), CODE_LOOKUP_TIMEOUT
+                )
+            except Exception as error:  # noqa: BLE001 - related code is optional
+                logger.info("web_widget: code lookup for %r skipped: %s", seed, error)
+                return []
+
+        found = await asyncio.gather(*(one(seed) for seed in seeds))
+        return [entry for entries in found for entry in entries]
 
     # -- forget ------------------------------------------------------------
 

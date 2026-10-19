@@ -21,8 +21,10 @@ widget on your own site::
             data-site-id="acme" data-api="http://127.0.0.1:8000"></script>
 
 Endpoints:
-    POST /api/chat    -> {answer, citations, session_id}, or 429 when rate-limited
+    POST /api/chat    -> {answer, citations, code, session_id, contact_form}, or 429
+                         when rate-limited
     POST /api/forget  -> clear one conversation's memory, or 429 when rate-limited
+    POST /api/contact -> email a conversation to the team (404 unless SMTP is configured)
     POST /api/github/webhook -> apply a GitHub push to the docs corpus (404 unless
                          WIDGET_GITHUB_WEBHOOK_SECRET is set)
     GET  /            -> demo "ask our docs" page
@@ -42,7 +44,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 from urllib.parse import parse_qs
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, Request
@@ -51,6 +53,15 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel
 
 from .adapter import ChatMemoryAdapter
+from .contact import (
+    MAX_MESSAGE_CHARS,
+    SmtpSettings,
+    build_email,
+    send_email,
+    split_contact_marker,
+    trim_transcript,
+    valid_email,
+)
 from .docs_drift import drift_for_items
 from .docs_ingest import item_name, render_for_ingest, upload_filename
 from .docs_ingest import safe_relative as _safe_relative
@@ -84,7 +95,12 @@ DEMO_SITE_ID = os.getenv("WIDGET_SITE_ID", "demo")
 # links to the page; leave it unset and citations name the document only.
 DOCS_BASE_URL = os.getenv("WIDGET_DOCS_BASE_URL", "").strip() or None
 
-adapter = ChatMemoryAdapter(top_k=8, docs_base_url=DOCS_BASE_URL)
+# Where the ingested repository can be browsed, e.g.
+# https://github.com/topoteretes/cognee/blob/main. Set it and related code links
+# to the file and line; leave it unset and it names the symbol only.
+CODE_BASE_URL = os.getenv("WIDGET_CODE_BASE_URL", "").strip() or None
+
+adapter = ChatMemoryAdapter(top_k=8, docs_base_url=DOCS_BASE_URL, code_base_url=CODE_BASE_URL)
 
 
 # Operator dashboard. Unset means the routes 404 — the dashboard is opt-in, so a
@@ -136,6 +152,10 @@ app.add_middleware(
 # rate_limit.py. Read once at startup, so a bad value stops the backend here.
 limits = RateLimits.from_env()
 TRUSTED_PROXIES = parse_trusted_proxies(os.getenv("WIDGET_TRUSTED_PROXIES", ""))
+
+# Where contact requests go; see contact.py. None turns the form off: the
+# marker is still stripped from answers, but no form is offered.
+CONTACT = SmtpSettings.from_env()
 
 _LIMIT_MESSAGES = {
     "visitor": "You've asked a lot of questions in a short time. Please try again in {wait}.",
@@ -189,6 +209,21 @@ class ForgetRequest(BaseModel):
     site_id: str = DEMO_SITE_ID
 
 
+class TranscriptMessage(BaseModel):
+    role: str
+    text: str
+
+
+class ContactRequest(BaseModel):
+    conversation_id: str
+    visitor_id: str = "anonymous"
+    site_id: str = DEMO_SITE_ID
+    email: str
+    message: str = ""
+    transcript: List[TranscriptMessage] = []
+    page_url: str = ""
+
+
 @app.post("/api/chat")
 async def chat(req: ChatRequest, request: Request) -> JSONResponse:
     limited = _rate_limited(request, chat=True)
@@ -222,7 +257,13 @@ async def chat(req: ChatRequest, request: Request) -> JSONResponse:
     # keeps the turn in the conversation's session itself, and distillation
     # moves it into permanent memory from there. The backend used to write its
     # own transcript as well, which only duplicated what the session holds.
-    return JSONResponse(answer.as_dict())
+    body = answer.as_dict()
+    # The model ends a reply it cannot give reliably with the contact marker.
+    # The visitor never sees the marker; the widget shows the form instead,
+    # when there is somewhere to send it.
+    body["answer"], wants_contact = split_contact_marker(body["answer"])
+    body["contact_form"] = wants_contact and CONTACT is not None
+    return JSONResponse(body)
 
 
 @app.post("/api/forget")
@@ -238,6 +279,49 @@ async def forget(req: ForgetRequest, request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001 - a failing backend must not 500 the widget
         cleared = False
     return JSONResponse({"cleared": bool(cleared), "session_id": conversation.session_id})
+
+
+@app.post("/api/contact")
+async def contact(req: ContactRequest, request: Request) -> JSONResponse:
+    if CONTACT is None:
+        raise HTTPException(status_code=404)
+    limited = _rate_limited(request, chat=False)
+    if limited is not None:
+        return limited
+    email = req.email.strip()
+    if not valid_email(email):
+        return JSONResponse(
+            {"error": "invalid_email", "message": "Please enter a valid email address."},
+            status_code=400,
+        )
+    if len(req.message) > MAX_MESSAGE_CHARS:
+        return JSONResponse(
+            {"error": "message_too_long", "message": "Please shorten your message."},
+            status_code=400,
+        )
+    conversation = adapter.conversation(
+        site_id=req.site_id, visitor_id=req.visitor_id, conversation_id=req.conversation_id
+    )
+    msg = build_email(
+        CONTACT,
+        email=email,
+        message=req.message,
+        transcript=trim_transcript([m.model_dump() for m in req.transcript]),
+        page_url=req.page_url,
+        session_id=conversation.session_id,
+    )
+    try:
+        await asyncio.to_thread(send_email, CONTACT, msg)
+    except Exception as error:  # noqa: BLE001 - tell the visitor, never 500
+        print(f"[web_widget] contact email failed: {error}")
+        return JSONResponse(
+            {
+                "error": "send_failed",
+                "message": "Sorry, the message couldn't be sent. Please try again later.",
+            },
+            status_code=502,
+        )
+    return JSONResponse({"sent": True})
 
 
 @app.get("/")

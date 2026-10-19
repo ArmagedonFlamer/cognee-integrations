@@ -185,7 +185,15 @@
     ".cognee-in textarea::placeholder{color:var(--muted)}" +
     ".cognee-send{flex:none;display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;border:0;border-radius:50%;background:var(--btn);color:var(--btn-fg);cursor:pointer}" +
     ".cognee-send:disabled{opacity:.4;cursor:default}.cognee-send svg{width:14px;height:14px}" +
-    ".cognee-opt{display:flex;align-items:center;gap:6px;padding:8px 4px 0;font-size:12px;line-height:16px;color:var(--muted);cursor:pointer}";
+    ".cognee-opt{display:flex;align-items:center;gap:6px;padding:8px 4px 0;font-size:12px;line-height:16px;color:var(--muted);cursor:pointer}" +
+    ".cognee-contact{display:flex;flex-direction:column;gap:8px;margin:0 0 16px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--bg);color:var(--fg)}" +
+    ".cognee-contact-h{color:var(--strong);font-size:13px;line-height:18px;font-weight:600}" +
+    ".cognee-contact input,.cognee-contact textarea{width:100%;padding:6px 10px;border:1px solid var(--in-line);border-radius:8px;outline:0;background:var(--bg);color:var(--strong);font-family:inherit;font-size:13px;line-height:20px}" +
+    ".cognee-contact textarea{min-height:64px;resize:vertical}" +
+    ".cognee-contact input:focus,.cognee-contact textarea:focus{border-color:var(--in-focus)}" +
+    ".cognee-contact button{align-self:flex-start;padding:6px 14px;border:0;border-radius:999px;background:var(--btn);color:var(--btn-fg);font-family:inherit;font-size:13px;line-height:20px;cursor:pointer}" +
+    ".cognee-contact button:disabled{opacity:.5;cursor:default}" +
+    ".cognee-contact-s{font-size:12px;line-height:16px;color:var(--muted)}";
   var style = document.createElement("style");
   style.textContent = css;
   document.head.appendChild(style);
@@ -416,6 +424,8 @@
         var row = addBot(m.text);
         if (m.notice) row.style.color = "var(--muted)";
         addCitations(m.citations);
+        addCode(m.code);
+        if (m.contact) addContact(chat, m);
       }
     });
     if (pendingChat === chat.id) addThinking();
@@ -492,6 +502,122 @@
     scrollDown();
   }
 
+  // Code from the ingested repository that the message named (a class, a
+  // method, a file), as the backend resolved it. Linked when the backend knows
+  // where the repository can be browsed; the full symbol is the tooltip.
+  function addCode(refs) {
+    if (!refs || !refs.length) return;
+    var wrap = document.createElement("div");
+    wrap.className = "cognee-cites";
+    var label = document.createElement("span");
+    label.textContent = "Related code";
+    wrap.appendChild(label);
+    refs.slice(0, 4).forEach(function (r) {
+      if (!r.name) return;
+      var node;
+      if (r.url && /^https?:\/\//i.test(r.url)) {
+        node = document.createElement("a");
+        node.href = r.url;
+        node.target = "_blank";
+        node.rel = "noopener noreferrer";
+      } else {
+        node = document.createElement("span");
+      }
+      node.className = "cognee-cite";
+      var where = r.file ? r.file.split("/").pop() + (r.line ? ":" + r.line : "") : "";
+      node.textContent = r.kind === "CodeFileReference" || !where ? r.name : r.name + " · " + where;
+      node.title = r.symbol || r.name;
+      wrap.appendChild(node);
+    });
+    log.appendChild(wrap);
+    scrollDown();
+  }
+
+  // The hand-off to the team, offered under an answer the assistant could not
+  // give reliably. The visitor's note and this chat's transcript go to the
+  // backend, which emails them; m.contact records "open" or "sent" so a
+  // re-render shows the same state.
+  function addContact(chat, m) {
+    var box = document.createElement("div");
+    box.className = "cognee-contact";
+    var head = document.createElement("div");
+    head.className = "cognee-contact-h";
+    var status = document.createElement("div");
+    status.className = "cognee-contact-s";
+    if (m.contact === "sent") {
+      head.textContent = "Sent to the team";
+      status.textContent = "They'll reply to " + (m.contactEmail || "your email") + ".";
+      box.appendChild(head);
+      box.appendChild(status);
+      log.appendChild(box);
+      scrollDown();
+      return;
+    }
+    head.textContent = "Ask the team";
+    var email = document.createElement("input");
+    email.type = "email";
+    email.placeholder = "Your email";
+    email.setAttribute("aria-label", "Your email");
+    var note = document.createElement("textarea");
+    note.placeholder = "Anything to add? This chat is attached.";
+    note.setAttribute("aria-label", "Message to the team");
+    var btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Send";
+    btn.onclick = async function () {
+      var address = email.value.trim();
+      if (!address) {
+        status.textContent = "Please enter your email so the team can reply.";
+        email.focus();
+        return;
+      }
+      btn.disabled = true;
+      status.textContent = "Sending…";
+      var failed = "Sorry, the message couldn't be sent. Please try again later.";
+      try {
+        var res = await fetch(API + "/api/contact", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            conversation_id: chat.id,
+            visitor_id: visitorId,
+            site_id: SITE_ID,
+            email: address,
+            message: note.value,
+            page_url: window.location.href,
+            transcript: chat.messages.map(function (x) {
+              return { role: x.role === "user" ? "user" : "assistant", text: x.text };
+            }),
+          }),
+        });
+        if (res.ok) {
+          m.contact = "sent";
+          m.contactEmail = address;
+          saveChats();
+          if (chats.active === chat.id) renderChat();
+          return;
+        }
+        var data = {};
+        try {
+          data = await res.json();
+        } catch (e) {
+          /* no body: the generic message below */
+        }
+        status.textContent = data.message || (res.status === 429 ? LIMITED : failed);
+      } catch (e) {
+        status.textContent = failed;
+      }
+      btn.disabled = false;
+    };
+    box.appendChild(head);
+    box.appendChild(email);
+    box.appendChild(note);
+    box.appendChild(btn);
+    box.appendChild(status);
+    log.appendChild(box);
+    scrollDown();
+  }
+
   // -- talking to the backend --------------------------------------------
 
   function grow() {
@@ -535,7 +661,8 @@
       } else if (!res.ok) {
         reply = { role: "bot", text: "Sorry — I couldn't reach memory right now.", citations: [] };
       } else {
-        reply = { role: "bot", text: data.answer || "…", citations: data.citations || [] };
+        reply = { role: "bot", text: data.answer || "…", citations: data.citations || [], code: data.code || [] };
+        if (data.contact_form) reply.contact = "open";
       }
     } catch (e) {
       reply = { role: "bot", text: "Sorry — I couldn't reach memory right now.", citations: [] };

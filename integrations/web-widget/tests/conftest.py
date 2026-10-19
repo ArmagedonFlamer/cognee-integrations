@@ -23,6 +23,7 @@ def fake_client():
     return SimpleNamespace(
         remember=AsyncMock(return_value=None),
         recall=AsyncMock(return_value=[]),
+        code_lookup=AsyncMock(return_value=[]),
         forget=AsyncMock(return_value=None),
         # The dashboard reads these too; without them the fake raises
         # AttributeError from inside an asyncio.gather, where the failure

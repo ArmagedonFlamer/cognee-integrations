@@ -242,3 +242,31 @@ async def test_recall_omits_search_type_when_auto(monkeypatch):
     body = fake.calls[0]["json"]
     assert "search_type" not in body
     assert body["system_prompt"] == "Only use the context."
+
+
+async def test_recall_appends_this_turns_extra_to_the_configured_prompt(monkeypatch):
+    import cognee_integration_web_widget.http_client as http_client
+
+    monkeypatch.setattr(http_client, "RECALL_SYSTEM_PROMPT", "Only use the context.")
+    fake = _FakeClient(_FakeResponse([]))
+    await http_client.CogneeHttpClient(client=fake).recall("q", system_prompt_extra="Code: X")
+    assert fake.calls[0]["json"]["system_prompt"] == "Only use the context.\n\nCode: X"
+
+
+async def test_recall_extra_keeps_cognees_default_when_no_prompt_is_configured(monkeypatch):
+    import cognee_integration_web_widget.http_client as http_client
+
+    monkeypatch.setattr(http_client, "RECALL_SYSTEM_PROMPT", None)
+    fake = _FakeClient(_FakeResponse([]))
+    await http_client.CogneeHttpClient(client=fake).recall("q", system_prompt_extra="Code: X")
+    prompt = fake.calls[0]["json"]["system_prompt"]
+    # Sending a system_prompt replaces cognee's default, so the default comes along.
+    assert prompt == f"{http_client.COGNEE_DEFAULT_SYSTEM_PROMPT}\n\nCode: X"
+
+
+async def test_code_lookup_is_a_code_only_recall_without_session():
+    fake = _FakeClient(_FakeResponse({"results": [{"source": "code", "text": "{}"}]}))
+    results = await CogneeHttpClient(client=fake).code_lookup("Foo", datasets=["web:demo:docs"])
+    body = fake.calls[0]["json"]
+    assert body == {"query": "Foo", "datasets": ["web:demo:docs"], "scope": ["code"]}
+    assert results == [{"source": "code", "text": "{}"}]
