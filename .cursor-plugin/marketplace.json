@@ -1,0 +1,16 @@
+{
+  "name": "cognee",
+  "owner": {
+    "name": "Cognee"
+  },
+  "metadata": {
+    "description": "Cognee integrations for Cursor-format hosts (Grok Bot)."
+  },
+  "plugins": [
+    {
+      "name": "cognee-grok-bot",
+      "source": "integrations/grok-bot",
+      "description": "Cognee knowledge-graph memory for Grok Bot over the hosted Cognee MCP server."
+    }
+  ]
+}
