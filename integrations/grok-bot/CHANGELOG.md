@@ -17,5 +17,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   recall before answering, remember durable facts, always name the dataset, and
   confirm before deleting. It plays the part of the Claude Code plugin's
   SessionStart memory steer, since Grok Bot runs no plugin hooks.
+- A line after each answer that used Cognee: `> 🧠 Cognee memory (<dataset>): …` for
+  recalled memory the answer used, and `> 🧠 Saved to Cognee (<dataset>): …` for what
+  was stored, like the Claude Code plugin's credit line.
 - Root `.cursor-plugin/marketplace.json` listing the plugin, so the repository can
   be added as a marketplace in Grok Bot or Cursor.

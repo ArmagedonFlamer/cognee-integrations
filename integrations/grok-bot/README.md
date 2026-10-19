@@ -7,7 +7,7 @@ API key to paste and nothing to install.
 | Part | What it does |
 |---|---|
 | `mcp.json` | Attaches the hosted Cognee MCP server, `https://mcp.aws.cognee.ai/mcp`, as the `cognee` server |
-| `rules/cognee-memory.mdc` | An always-on rule: Cognee is the bot's memory, recall before answering, remember durable facts, always name the dataset, confirm before deleting |
+| `rules/cognee-memory.mdc` | An always-on rule: Cognee is the bot's memory, recall before answering, remember durable facts, always name the dataset, show what Cognee did, confirm before deleting |
 
 Grok Bot runs in the cloud and does not run plugin hooks, so nothing saves or
 recalls memory for the bot. The rule is in context on every request instead, and
@@ -18,6 +18,21 @@ a memory setting, turn it off so the two do not disagree.
 
 In Cursor the rule applies to every chat too, so installing the plugin there makes
 Cognee the memory for coding sessions as well.
+
+### What Cognee did, after each answer
+
+When an answer used recalled memory, or the bot saved something, it ends with one
+line per action, like the Claude Code plugin's
+[credit line](../claude-code/README.md#credit-in-the-answer):
+
+```
+> 🧠 Cognee memory (london_community): Ana runs the Thursday meetups at Expedite.
+> 🧠 Saved to Cognee (london_community): the next meetup moves to 29 October.
+```
+
+The memory line names the dataset the hit came from and only covers what `recall`
+returned, not what the bot knows from the chat. There are no `[m1]` tags: those come
+from the Claude Code plugin's recall hook, and Grok Bot runs no hooks.
 
 ## Before you start
 

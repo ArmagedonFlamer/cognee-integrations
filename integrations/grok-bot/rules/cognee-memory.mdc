@@ -25,16 +25,14 @@ decisions or facts the user shared before, call `recall` with a plain-language
 
 - The first line summarises the hits and names at most three datasets.
 - Answers saying the context has no relevant information are not hits.
-- Say when an answer came from Cognee memory. If nothing relevant came back, say so
-  instead of guessing.
+- If nothing relevant came back, say so instead of guessing.
 
 ## Remember
 
 When the user shares durable facts, decisions or preferences, or asks you to
 remember something, call `remember` with `data` written as complete,
 self-contained statements ("Ana runs the Thursday meetups at Expedite"). For a
-file, pass `filename` and `content_base64` instead (up to 10 MB). Tell the user
-what was stored and where.
+file, pass `filename` and `content_base64` instead (up to 10 MB).
 
 Ingestion takes about a minute for a short note, longer for large text or files,
 and the first call after a quiet period can be slower. Check
@@ -43,6 +41,26 @@ and the first call after a quiet period can be slower. Check
 
 Never store passwords, API keys, tokens or other secrets, or anything the user
 asked you not to keep.
+
+## Show what Cognee did
+
+End the answer with one line for each of these, so the user sees Cognee's part:
+
+- When the answer used something `recall` returned:
+  `> 🧠 Cognee memory (<dataset>): <what you used, in a few words>`
+- When you called `remember` this turn:
+  `> 🧠 Saved to Cognee (<dataset>): <what you stored, in a few words>`
+
+For example:
+
+```
+> 🧠 Cognee memory (london_community): Ana runs the Thursday meetups at Expedite.
+> 🧠 Saved to Cognee (london_community): the next meetup moves to 29 October.
+```
+
+Write the memory line only for what recall actually returned and the answer used,
+never for what you know from this conversation, the web or your own knowledge, and
+not when recall found nothing relevant. Name the dataset the hit came from.
 
 ## Forget
 

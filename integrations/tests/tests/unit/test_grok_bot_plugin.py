@@ -81,3 +81,11 @@ def test_rule_covers_every_hosted_tool_and_no_local_scripts():
     assert "dataset_name" in text and "`datasets`" in text
     assert "scripts/" not in text
     assert "cognify_status" not in text
+
+
+def test_rule_asks_for_a_line_showing_what_cognee_did():
+    # Users of the Claude Code plugin did not notice Cognee until each answer named
+    # the memories it used; the rule asks for the same, by dataset, with no tags.
+    text = (PLUGIN / "rules/cognee-memory.mdc").read_text()
+    assert "> 🧠 Cognee memory (<dataset>): " in text
+    assert "> 🧠 Saved to Cognee (<dataset>): " in text
