@@ -10,5 +10,5 @@
   "repository": "https://github.com/topoteretes/cognee-integrations",
   "license": "Apache-2.0",
   "keywords": ["memory", "knowledge-graph", "cognee", "mcp", "grok"],
-  "logo": "assets/logo.svg"
+  "logo": "assets/logo.png"
 }
