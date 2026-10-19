@@ -38,6 +38,14 @@ def test_manifest_names_the_plugin_and_matches_the_changelog():
     assert latest and latest.group(1) == manifest["version"]
 
 
+def test_logo_is_a_committed_file_referenced_by_a_relative_path():
+    # Cursor's submission checklist asks for a relative logo path; it rejects
+    # absolute paths and `..`, so the file has to live inside the plugin folder.
+    logo = _json(PLUGIN / ".cursor-plugin/plugin.json")["logo"]
+    assert not logo.startswith(("/", "http://", "https://")) and ".." not in logo
+    assert (PLUGIN / logo).is_file()
+
+
 def test_marketplace_lists_the_plugin_at_its_directory():
     marketplace = _json(REPO / ".cursor-plugin/marketplace.json")
     assert KEBAB.match(marketplace["name"])
