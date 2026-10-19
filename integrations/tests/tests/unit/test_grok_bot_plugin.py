@@ -1,9 +1,9 @@
 """Static checks for the Grok Bot plugin, which ships no code of its own.
 
 Grok Bot reads Cursor-format plugins: `.cursor-plugin/plugin.json`, `mcp.json` and
-`skills/<name>/SKILL.md`, listed in the repository-root
+`rules/*.mdc`, listed in the repository-root
 `.cursor-plugin/marketplace.json`. A typo in any of them fails silently in the
-host (the plugin, the server or a skill just does not appear), so check them here.
+host (the plugin, the server or the rule just does not appear), so check them here.
 """
 
 import json
@@ -61,26 +61,23 @@ def test_mcp_config_points_at_the_hosted_server_without_credentials():
     assert servers == {"cognee": {"url": HOSTED_MCP_URL}}
 
 
-def test_every_skill_has_a_matching_name_and_a_description():
-    skills = sorted((PLUGIN / "skills").iterdir())
-    assert [skill.name for skill in skills] == [
-        "cognee-forget",
-        "cognee-recall",
-        "cognee-remember",
-    ]
-    for skill in skills:
-        fields = _frontmatter(skill / "SKILL.md")
-        assert fields["name"] == skill.name
-        assert KEBAB.match(fields["name"])
-        assert fields["description"]
+def test_the_only_component_is_one_always_on_rule():
+    # The rule replaces skills: it is in context on every request, the way the
+    # Claude Code plugin's SessionStart steer is, so the bot uses memory unasked.
+    assert not (PLUGIN / "skills").exists()
+    rules = sorted((PLUGIN / "rules").iterdir())
+    assert [rule.name for rule in rules] == ["cognee-memory.mdc"]
+    fields = _frontmatter(rules[0])
+    assert fields["alwaysApply"] == "true"
+    assert fields["description"]
 
 
-def test_skills_use_the_hosted_tools_and_no_local_scripts():
+def test_rule_covers_every_hosted_tool_and_no_local_scripts():
     # The hosted server serves cognee-mcp's tools with cognify_status renamed to
     # check_ingestion_status, and Grok Bot has no plugin scripts to run.
-    for skill in (PLUGIN / "skills").iterdir():
-        text = (skill / "SKILL.md").read_text()
-        tool = skill.name.removeprefix("cognee-")
+    text = (PLUGIN / "rules/cognee-memory.mdc").read_text()
+    for tool in ("remember", "recall", "forget", "check_ingestion_status"):
         assert f"`{tool}`" in text
-        assert "scripts/" not in text
-        assert "cognify_status" not in text
+    assert "dataset_name" in text and "`datasets`" in text
+    assert "scripts/" not in text
+    assert "cognify_status" not in text

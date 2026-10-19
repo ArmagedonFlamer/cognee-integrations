@@ -1,7 +1,7 @@
 {
   "name": "cognee-grok-bot",
   "displayName": "Cognee Memory for Grok Bot",
-  "description": "Cognee knowledge-graph memory for Grok Bot. Connects the hosted Cognee MCP server (sign in with your Cognee account, no API key or install) and adds skills for when to remember, recall and forget.",
+  "description": "Cognee knowledge-graph memory for Grok Bot. Connects the hosted Cognee MCP server (sign in with your Cognee account, no API key or install) and adds an always-on rule that makes Cognee the bot's memory.",
   "version": "0.1.0",
   "author": {
     "name": "Cognee"

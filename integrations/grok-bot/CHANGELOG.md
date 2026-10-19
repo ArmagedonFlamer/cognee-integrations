@@ -13,7 +13,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - Cursor-format plugin for Grok Bot. `mcp.json` attaches the hosted Cognee MCP
   server at `https://mcp.aws.cognee.ai/mcp`; Grok Bot signs the user in to Cognee
   with OAuth, so there is no API key to paste and nothing to install.
-- Skills `cognee-remember`, `cognee-recall` and `cognee-forget`, which tell the bot
-  when to use each tool, to always name the dataset, and to confirm before deleting.
+- Always-on rule `rules/cognee-memory.mdc` that makes Cognee the bot's memory:
+  recall before answering, remember durable facts, always name the dataset, and
+  confirm before deleting. It plays the part of the Claude Code plugin's
+  SessionStart memory steer, since Grok Bot runs no plugin hooks.
 - Root `.cursor-plugin/marketplace.json` listing the plugin, so the repository can
   be added as a marketplace in Grok Bot or Cursor.

@@ -7,14 +7,17 @@ API key to paste and nothing to install.
 | Part | What it does |
 |---|---|
 | `mcp.json` | Attaches the hosted Cognee MCP server, `https://mcp.aws.cognee.ai/mcp`, as the `cognee` server |
-| `skills/cognee-remember` | When to store something, and which dataset to store it in |
-| `skills/cognee-recall` | When to search memory, and how to read the results |
-| `skills/cognee-forget` | How to delete memory, always after the user confirms |
+| `rules/cognee-memory.mdc` | An always-on rule: Cognee is the bot's memory, recall before answering, remember durable facts, always name the dataset, confirm before deleting |
 
-Grok Bot runs in the cloud and does not run plugin hooks, so memory is not saved or
-recalled automatically: the bot decides when to call the tools, and the skills tell
-it when. For automatic capture in a coding agent, see the
-[Claude Code](../claude-code/README.md) and [Codex](../codex/README.md) plugins.
+Grok Bot runs in the cloud and does not run plugin hooks, so nothing saves or
+recalls memory for the bot. The rule is in context on every request instead, and
+tells the bot to recall and remember on its own, the same steer the
+[Claude Code plugin](../claude-code/README.md#memory-preference) injects at session
+start. A plugin cannot switch off Grok Bot's built-in memory; if your Grok Bot has
+a memory setting, turn it off so the two do not disagree.
+
+In Cursor the rule applies to every chat too, so installing the plugin there makes
+Cognee the memory for coding sessions as well.
 
 ## Before you start
 
@@ -32,7 +35,7 @@ Either:
   lists it.
 - **Or skip the plugin** and ask Grok Bot to connect the remote MCP server
   `https://mcp.aws.cognee.ai/mcp` with OAuth. You get the same tools without the
-  skills.
+  rule, so the bot only uses them when asked.
 
 The first time a tool is used, Grok Bot shows a connect card. Sign in with your
 Cognee account and approve access.
