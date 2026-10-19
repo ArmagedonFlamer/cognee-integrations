@@ -31,11 +31,12 @@ Call `remember` with:
 
 For a file, pass `filename` and `content_base64` instead of `data` (up to 10 MB).
 
-Ingestion builds the knowledge graph in the background and usually takes under
-a minute. Before relying on the new memory, call `check_ingestion_status` with
-the same `dataset_name` until it reports `DATASET_PROCESSING_COMPLETED`. The
-first call after a quiet period can take longer while the user's Cognee
-workspace starts.
+Ingestion builds the knowledge graph in the background and takes about a minute
+for a short note, longer for large text or files. Before relying on the new
+memory, call `check_ingestion_status` with the same `dataset_name` every 20-30
+seconds until it reports `DATASET_PROCESSING_COMPLETED`; keep checking for a few
+minutes before treating it as stuck. The first call after a quiet period can take
+longer while the user's Cognee workspace starts.
 
 Tell the user what was stored and in which dataset.
 

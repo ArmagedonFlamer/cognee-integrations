@@ -67,8 +67,8 @@ to that instead.
 Remember in dataset "hackathon_test": the London hackathon is on 22 October 2026 at Expedite London HQ.
 ```
 
-Wait for `check_ingestion_status` to report `DATASET_PROCESSING_COMPLETED` (usually
-under a minute), then in a new chat:
+Wait for `check_ingestion_status` to report `DATASET_PROCESSING_COMPLETED` (about a
+minute for a short note), then in a new chat:
 
 ```
 Recall from dataset "hackathon_test": when and where is the London hackathon?
