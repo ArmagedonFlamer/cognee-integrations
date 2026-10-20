@@ -7,6 +7,13 @@ The version here must match the `version` field in `.cursor-plugin/plugin.json`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.1]
+
+### Fixed
+- `.cursor-plugin/plugin.json` now names `mcp.json` in `mcpServers`. Grok Bot did
+  not pick up the Cognee server from the root `mcp.json` on its own, so after
+  install the server showed no availability and no Cognee sign-in appeared.
+
 ## [0.1.0]
 
 ### Added
