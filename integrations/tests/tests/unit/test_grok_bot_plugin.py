@@ -1,9 +1,9 @@
 """Static checks for the Grok Bot plugin, which ships no code of its own.
 
 Grok Bot reads Cursor-format plugins: `.cursor-plugin/plugin.json`, which also
-declares the MCP server, and `rules/*.mdc`, listed in the repository-root
+declares the MCP server, and `skills/*/SKILL.md`, listed in the repository-root
 `.cursor-plugin/marketplace.json`. A typo in any of them fails silently in the
-host (the plugin, the server or the rule just does not appear), so check them here.
+host (the plugin, the server or the skill just does not appear), so check them here.
 """
 
 import json
@@ -55,7 +55,9 @@ def test_marketplace_lists_the_plugin_at_its_directory():
     manifest = _json(PLUGIN / ".cursor-plugin/plugin.json")
     entries = {entry["name"]: entry for entry in marketplace["plugins"]}
     entry = entries[manifest["name"]]
-    assert (REPO / entry["source"]).resolve() == PLUGIN.resolve()
+    # Sources are relative to metadata.pluginRoot when the marketplace sets one.
+    root = REPO / marketplace.get("metadata", {}).get("pluginRoot", ".")
+    assert (root / entry["source"]).resolve() == PLUGIN.resolve()
 
 
 def test_mcp_config_points_at_the_hosted_server_without_credentials():
@@ -66,21 +68,37 @@ def test_mcp_config_points_at_the_hosted_server_without_credentials():
     assert not (PLUGIN / "mcp.json").exists()
 
 
-def test_the_only_component_is_one_always_on_rule():
-    # The rule replaces skills: it is in context on every request, the way the
-    # Claude Code plugin's SessionStart steer is, so the bot uses memory unasked.
-    assert not (PLUGIN / "skills").exists()
-    rules = sorted((PLUGIN / "rules").iterdir())
-    assert [rule.name for rule in rules] == ["cognee-memory.mdc"]
-    fields = _frontmatter(rules[0])
-    assert fields["alwaysApply"] == "true"
-    assert fields["description"]
+def test_the_only_component_is_one_memory_skill():
+    # A skill, not a rule: Grok Bot's plugins load connectors and skills but drop
+    # the manifest's `rules`, so the bot never saw an always-on rule.
+    assert not (PLUGIN / "rules").exists()
+    assert "rules" not in _json(PLUGIN / ".cursor-plugin/plugin.json")
+    skills = sorted((PLUGIN / "skills").iterdir())
+    assert [skill.name for skill in skills] == ["cognee-memory"]
+    fields = _frontmatter(skills[0] / "SKILL.md")
+    assert fields["name"] == "cognee-memory"
+    # There is no always-on switch, so the description must ask for every chat.
+    assert "start of every conversation" in fields["description"]
 
 
-def test_rule_covers_every_hosted_tool_and_no_local_scripts():
+def test_skill_description_gates_every_tool_and_carries_the_key_rules():
+    # Grok Bot sees only the description until it loads the skill, and called
+    # `remember` directly when the description read as optional advice. It names
+    # the tools it is required before, and repeats the dataset and 🧠-line rules
+    # in case the body is never loaded.
+    description = _frontmatter(PLUGIN / "skills/cognee-memory/SKILL.md")["description"]
+    assert description.startswith("Required before calling any tool of the cognee MCP server")
+    for tool in ("remember", "recall", "forget", "check_ingestion_status"):
+        assert tool in description
+    assert "dataset" in description and "🧠" in description
+    # Skill descriptions are capped at 1024 characters.
+    assert len(description) <= 1024
+
+
+def test_skill_covers_every_hosted_tool_and_no_local_scripts():
     # The hosted server serves cognee-mcp's tools with cognify_status renamed to
     # check_ingestion_status, and Grok Bot has no plugin scripts to run.
-    text = (PLUGIN / "rules/cognee-memory.mdc").read_text()
+    text = (PLUGIN / "skills/cognee-memory/SKILL.md").read_text()
     for tool in ("remember", "recall", "forget", "check_ingestion_status"):
         assert f"`{tool}`" in text
     assert "dataset_name" in text and "`datasets`" in text
@@ -88,9 +106,9 @@ def test_rule_covers_every_hosted_tool_and_no_local_scripts():
     assert "cognify_status" not in text
 
 
-def test_rule_asks_for_a_line_showing_what_cognee_did():
+def test_skill_asks_for_a_line_showing_what_cognee_did():
     # Users of the Claude Code plugin did not notice Cognee until each answer named
-    # the memories it used; the rule asks for the same, by dataset, with no tags.
-    text = (PLUGIN / "rules/cognee-memory.mdc").read_text()
+    # the memories it used; the skill asks for the same, by dataset, with no tags.
+    text = (PLUGIN / "skills/cognee-memory/SKILL.md").read_text()
     assert "> 🧠 Cognee memory (<dataset>): " in text
     assert "> 🧠 Saved to Cognee (<dataset>): " in text

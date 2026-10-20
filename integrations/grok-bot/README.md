@@ -7,17 +7,19 @@ API key to paste and nothing to install.
 | Part | What it does |
 |---|---|
 | `.cursor-plugin/plugin.json` | Its `mcpServers` field attaches the hosted Cognee MCP server, `https://mcp.aws.cognee.ai/mcp`, as the `cognee` server |
-| `rules/cognee-memory.mdc` | An always-on rule: Cognee is the bot's memory, recall before answering, remember durable facts, always name the dataset, show what Cognee did, confirm before deleting |
+| `skills/cognee-memory/SKILL.md` | A skill: Cognee is the bot's memory, recall before answering, remember durable facts, always name the dataset, show what Cognee did, confirm before deleting |
 
 Grok Bot runs in the cloud and does not run plugin hooks, so nothing saves or
-recalls memory for the bot. The rule is in context on every request instead, and
-tells the bot to recall and remember on its own, the same steer the
+recalls memory for the bot. The skill tells the bot to recall and remember on its
+own, the same steer the
 [Claude Code plugin](../claude-code/README.md#memory-preference) injects at session
-start. A plugin cannot switch off Grok Bot's built-in memory; if your Grok Bot has
+start. Grok Bot's plugins load connectors and skills but not rules, so this is a
+skill whose description asks the bot to load it at the start of every conversation
+and before any answer that may depend on memory. A plugin cannot switch off Grok Bot's built-in memory; if your Grok Bot has
 a memory setting, turn it off so the two do not disagree.
 
-In Cursor the rule applies to every chat too, so installing the plugin there makes
-Cognee the memory for coding sessions as well.
+In Cursor the skill is available in every chat too, so installing the plugin there
+makes Cognee the memory for coding sessions as well.
 
 ### What Cognee did, after each answer
 
@@ -47,10 +49,12 @@ Either:
   Cursor team marketplace: Dashboard → Plugins & MCPs → Team Marketplaces → Import
   from Repo) using `https://github.com/topoteretes/cognee-integrations`, then
   install **cognee-grok-bot**. The repository's `.cursor-plugin/marketplace.json`
-  lists it.
+  lists it. Link your GitHub account first (Cursor Dashboard → Integrations →
+  GitHub → Connect): without it, Cursor's import can be rate limited by GitHub and
+  the marketplace silently shows no plugins.
 - **Or skip the plugin** and ask Grok Bot to connect the remote MCP server
   `https://mcp.aws.cognee.ai/mcp` with OAuth. You get the same tools without the
-  rule, so the bot only uses them when asked.
+  skill, so the bot only uses them when asked.
 
 The first time a tool is used, Grok Bot shows a connect card. Sign in with your
 Cognee account and approve access.

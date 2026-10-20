@@ -1,6 +1,6 @@
 ---
-description: Use Cognee as this agent's memory
-alwaysApply: true
+name: cognee-memory
+description: Required before calling any tool of the cognee MCP server (remember, recall, forget, check_ingestion_status) and at the start of every conversation. Pass the conversation's dataset on every call, and end every answer that recalled or saved memory with a 🧠 line naming the dataset and what Cognee did. Read the full rules here before the first call.
 ---
 
 # Cognee is your memory
