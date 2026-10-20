@@ -7,6 +7,15 @@ The version here must match the `version` field in `.cursor-plugin/plugin.json`.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.1.2]
+
+### Changed
+- The Cognee server is declared inline in `.cursor-plugin/plugin.json`
+  (`mcpServers.cognee.url`) instead of in a separate `mcp.json`, which is removed,
+  so Grok Bot does not have to resolve a file path to find the server.
+- The plugin description ends with its version, so the installed version is
+  visible in Grok Bot's plugin list.
+
 ## [0.1.1]
 
 ### Fixed
