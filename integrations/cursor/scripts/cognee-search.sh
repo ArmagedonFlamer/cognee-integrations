@@ -28,12 +28,12 @@
 #
 # Configuration:
 #   Session ID and dataset come from this launch's record (~/.cognee-plugin/
-#   codex/sessions/<host id>.json — follows a dataset switch), falling
+#   cursor/sessions/<host id>.json — follows a dataset switch), falling
 #   back to the Cognee connection endpoint and COGNEE_PLUGIN_DATASET / agent_sessions.
 
 set -euo pipefail
 
-PLUGIN_DIR="${HOME}/.cognee-plugin/codex"
+PLUGIN_DIR="${HOME}/.cognee-plugin/cursor"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 runtime_json="$(python3 - <<'PY' "${PLUGIN_DIR}" "${SELF_DIR}" 2>/dev/null || true
 import json
@@ -161,7 +161,7 @@ except Exception:
 PY
 )"
 [ -z "$DATASET" ] && DATASET="${COGNEE_PLUGIN_DATASET:-agent_sessions}"
-[ -z "$SESSION_ID" ] && SESSION_ID="${COGNEE_SESSION_ID:-codex_session}"
+[ -z "$SESSION_ID" ] && SESSION_ID="${COGNEE_SESSION_ID:-cursor_session}"
 [ -z "$SERVICE_URL" ] && SERVICE_URL="${COGNEE_BASE_URL:-${COGNEE_LOCAL_API_URL:-http://localhost:8011}}"
 [ -z "$API_KEY" ] && API_KEY="${COGNEE_API_KEY:-}"
 

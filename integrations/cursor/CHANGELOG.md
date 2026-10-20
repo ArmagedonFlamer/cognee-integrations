@@ -29,16 +29,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
   failure prints the neutral reply and exits 0.
 - Hooks registered: `sessionStart`, `beforeSubmitPrompt` (recall + prompt park),
   `postToolUse`, `postToolUseFailure`, `afterAgentResponse`, `stop`, `preCompact`,
-  `sessionEnd`.
-- `scripts/install-cursor-hooks.py`: writes the same hooks, with absolute paths,
-  into `~/.cursor/hooks.json` or a project's `.cursor/hooks.json` (the latter also
-  runs in cloud agents); idempotent, merges with existing hooks, `--uninstall`.
+  `sessionEnd`. `beforeSubmitPrompt` replies only `{"continue": true}`, since Cursor
+  documents no context field for it; the recall is held for the turn and returned
+  as `additional_context` on its first `postToolUse` / `postToolUseFailure`.
+  `sessionStart`'s context names the plugin root, which the skills need because
+  Cursor does not export `CURSOR_PLUGIN_ROOT` to the agent's shell.
+- `scripts/install-cursor-hooks.py`: writes the same hooks, with this checkout's
+  absolute paths, into `~/.cursor/hooks.json` or a project's `.cursor/hooks.json`;
+  idempotent, merges with existing hooks, `--uninstall`. It refuses (and leaves
+  alone) a file whose shape it would otherwise corrupt, only treats a
+  `run-cursor-hook` launcher running one of the plugin's scripts as its own, and
+  keeps a symlinked file a symlink.
+- One exit watcher per chat, keyed by Cursor's host process and the session, and
+  stopped by that chat's `sessionEnd`. None is started when no Cursor process is
+  found among the hook's ancestors (instead of watching the short-lived hook).
 - Cursor CLI status line: `scripts/cognee_statusline_render.py` (the Claude Code
   renderer on Cursor's state: health glyph, dataset · mode, credits, recall hits and
   session activation, update nudge) behind `scripts/cognee-statusline.sh`;
   `scripts/_statusline_config.py` registers it in `~/.cursor/cli-config.json` on
-  `sessionStart` without touching a user's own `statusLine` (`COGNEE_STATUSLINE=false`
-  opts out). `session-context-lookup.py` writes the per-conversation recall marker
+  `sessionStart`, opt-in with `COGNEE_STATUSLINE=true` because it replaces the CLI's
+  own footer, without touching a user's own `statusLine`. `session-context-lookup.py` writes the per-conversation recall marker
   (`recall/<conversation id>.json`) the bar reads, so several terminals each show
   their own counts. The plain-text `render_status_for_host` header stays for the IDE.
 - `~/.cognee-plugin/cursor/adapter.log`: one JSON line per hook launch (Cursor event,

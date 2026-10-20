@@ -53,7 +53,7 @@ integrations:
     name: "Cognee Plugin for Cursor"
     owner: cognee
     language: python
-    registry: none
+    registry: cursor-marketplace
     package_name: null
     cognee_dependency: http-api
     current_version: "0.1.0"

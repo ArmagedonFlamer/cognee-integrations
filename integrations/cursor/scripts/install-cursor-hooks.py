@@ -11,9 +11,18 @@ checkout into an existing ``hooks.json`` without touching anyone else's entries.
     python3 scripts/install-cursor-hooks.py --uninstall     # remove our entries
     python3 scripts/install-cursor-hooks.py --print         # show, write nothing
 
-Idempotent: our entries are recognised by the ``run-cursor-hook`` launcher in
-their command and replaced on every run. Cursor watches ``hooks.json`` and
+Idempotent: our entries are recognised by their command — a ``run-cursor-hook``
+launcher (this checkout's or a moved one's) running one of the plugin's hook
+scripts — and replaced on every run; nothing else is touched. A ``hooks.json``
+whose shape it does not understand is left alone with an error, never rewritten.
+The file is replaced atomically, keeps its permissions, and a symlinked one
+(dotfiles) is written through to its target. Cursor watches ``hooks.json`` and
 reloads it on save.
+
+The commands hold this checkout's absolute path: moving or deleting the checkout
+breaks them until the installer is run again from the new location. For the same
+reason a project-level file is only useful on machines that have the checkout at
+that path, so don't commit it for other people or cloud agents.
 """
 
 from __future__ import annotations
@@ -21,14 +30,17 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from cursor_hook import HOOK_TABLE  # noqa: E402
 
-MARKER = "run-cursor-hook"
+LAUNCHER_NAMES = frozenset({"run-cursor-hook", "run-cursor-hook.cmd"})
 
 
 def launcher_path() -> Path:
@@ -39,7 +51,8 @@ def launcher_path() -> Path:
 def render_command(script: str, flags: tuple[str, ...]) -> str:
     launcher = str(launcher_path())
     if os.name == "nt":
-        quoted = f'"{launcher}"' if " " in launcher else launcher
+        # Always quoted: cmd treats & ( ) ^ in a bare path as syntax.
+        quoted = f'"{launcher}"'
     else:
         quoted = shlex.quote(launcher)
     return " ".join([quoted, script, *flags])
@@ -55,32 +68,92 @@ def our_entries() -> dict[str, list[dict]]:
     }
 
 
+class UnsupportedHooksFile(ValueError):
+    """``hooks.json`` has a shape this installer will not rewrite."""
+
+
+_SCRIPTS = frozenset(script for entries in HOOK_TABLE.values() for script, _, _ in entries)
+
+
+def _command_tokens(command: str) -> tuple[str, list[str]]:
+    """``(launcher, rest)`` of a command as :func:`render_command` writes it, on
+    either OS (Windows paths keep their backslashes, so no POSIX shlex there)."""
+    command = command.strip()
+    if command.startswith('"'):
+        end = command.find('"', 1)
+        if end < 0:
+            return "", []
+        return command[1:end], command[end + 1 :].split()
+    if command.startswith("'"):
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return "", []
+        return (parts[0], parts[1:]) if parts else ("", [])
+    parts = command.split()
+    return (parts[0], parts[1:]) if parts else ("", [])
+
+
 def _is_ours(entry: object) -> bool:
-    return isinstance(entry, dict) and MARKER in str(entry.get("command", ""))
+    """A ``run-cursor-hook`` launcher running one of our hook scripts — not any
+    command that merely contains the launcher's name."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("command"), str):
+        return False
+    launcher, rest = _command_tokens(entry["command"])
+    name = re.split(r"[\\/]", launcher)[-1]
+    return name in LAUNCHER_NAMES and bool(rest) and rest[0] in _SCRIPTS
 
 
 def merge(existing: dict, *, uninstall: bool = False) -> dict:
-    """Return ``existing`` with our entries replaced (or removed)."""
+    """Return ``existing`` with our entries replaced (or removed).
+
+    Raises :class:`UnsupportedHooksFile` instead of guessing when ``hooks`` is not
+    an object or an event's value is not a list: rewriting either would lose the
+    user's own hooks.
+    """
     result = dict(existing) if isinstance(existing, dict) else {}
     result.setdefault("version", 1)
-    hooks = result.get("hooks")
-    hooks = dict(hooks) if isinstance(hooks, dict) else {}
+    hooks = result.get("hooks", {})
+    if not isinstance(hooks, dict):
+        raise UnsupportedHooksFile('"hooks" is not an object')
+    hooks = dict(hooks)
     for event, entries in list(hooks.items()):
-        kept = (
-            [entry for entry in entries if not _is_ours(entry)]
-            if isinstance(entries, list)
-            else entries
-        )
+        if not isinstance(entries, list):
+            raise UnsupportedHooksFile(f'"hooks.{event}" is not a list')
+        kept = [entry for entry in entries if not _is_ours(entry)]
         if kept:
             hooks[event] = kept
         else:
             hooks.pop(event)
     if not uninstall:
         for event, entries in our_entries().items():
-            hooks.setdefault(event, [])
-            hooks[event] = list(hooks[event]) + entries
+            hooks[event] = list(hooks.get(event, [])) + entries
     result["hooks"] = hooks
     return result
+
+
+def write(path: Path, text: str) -> None:
+    """Replace ``path`` atomically: unique temp file, same permissions, and a
+    symlink written through to its target instead of replaced by a file."""
+    target = path.resolve() if path.is_symlink() else path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.chmod(tmp, stat.S_IMODE(target.stat().st_mode))
+        except FileNotFoundError:
+            os.chmod(tmp, 0o644)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def target_path(project: str | None) -> Path:
@@ -117,15 +190,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     path = target_path(args.project)
-    merged = merge(load(path), uninstall=args.uninstall)
+    try:
+        merged = merge(load(path), uninstall=args.uninstall)
+    except UnsupportedHooksFile as exc:
+        raise SystemExit(f"{path}: {exc}; refusing to rewrite it, fix the file and rerun")
     rendered = json.dumps(merged, indent=2) + "\n"
     if args.show:
         print(rendered, end="")
         return 0
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(rendered, encoding="utf-8")
-    os.replace(tmp, path)
+    write(path, rendered)
     verb = "removed from" if args.uninstall else "written to"
     print(f"Cognee hooks {verb} {path}")
     if not args.uninstall:

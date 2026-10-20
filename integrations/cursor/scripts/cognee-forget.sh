@@ -26,7 +26,7 @@
 
 set -euo pipefail
 
-PLUGIN_DIR="${HOME}/.cognee-plugin/codex"
+PLUGIN_DIR="${HOME}/.cognee-plugin/cursor"
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
 
 # `sync` delegates to the plugin's session sync (it resolves its own auth and

@@ -79,6 +79,27 @@ class VersionConsistencyTests(unittest.TestCase):
                 self.write_json(marketplace, good)
         self.assertEqual(checker.check_versions(self.root), [])
 
+    def test_malformed_cursor_marketplace_fails_and_siblings_are_ignored(self):
+        marketplace, source_dir = checker.MARKETPLACES["cursor"]
+        path = self.root / marketplace
+        good = json.loads(path.read_text(encoding="utf-8"))
+        malformed = [
+            "broken json",
+            json.dumps({"plugins": {"source": source_dir, "version": "1.2.3"}}),
+            json.dumps({"plugins": ["integrations/cursor"]}),
+            json.dumps({"name": "cognee"}),
+            json.dumps([{"source": source_dir, "version": "1.2.3"}]),
+        ]
+        for text in malformed:
+            with self.subTest(text=text):
+                path.write_text(text, encoding="utf-8")
+                errors = checker.check_versions(self.root)
+                self.assertTrue(any(marketplace in error for error in errors), errors)
+        # Other plugins in the same marketplace (Grok Bot, unversioned) are not ours to check.
+        sibling = {"name": "cognee-grok-bot", "source": "./integrations/grok-bot"}
+        self.write_json(marketplace, {"plugins": [*good["plugins"], sibling]})
+        self.assertEqual(checker.check_versions(self.root), [])
+
     def test_missing_or_malformed_manifest_fails(self):
         manifest = self.root / checker.MANIFESTS["codex"]
         manifest.unlink()

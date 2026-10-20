@@ -136,7 +136,7 @@ _CAMEL_STOPLIST = frozenset(
     {
         "Claude",
         "ClaudeCode",
-        "Cursor",
+        "Codex",
         "Cursor",
         "Cognee",
         "GitHub",

@@ -42,6 +42,7 @@ from _plugin_common import (
     PRESENCE_READY,
     _https_context,
     _reexec_into_venv,
+    _sanitize_session_key,
     apply_cognee_env,
     clear_server_pidfile,
     ensure_launch_record,
@@ -1343,13 +1344,19 @@ def _spawn_idle_watcher(
 
 
 def _find_cursor_parent_pid() -> int:
-    """Find the live Cursor host process for this hook.
+    """Find the live Cursor host process for this hook, or 0 when there is none.
 
     Cursor exports no pid variable of its own; ``CURSOR_PID`` is honoured when an
     operator sets it, otherwise the process tree is walked. The walk stops at
     the *nearest* ``cursor`` ancestor: the IDE's extension host ("Cursor Helper
-    (Plugin)") or the ``cursor-agent`` CLI, both of which end with the agent
-    session (see the claude-code twin, topoteretes/cognee-integrations#391).
+    (Plugin)", which lives as long as the window, not one chat) or the
+    ``cursor-agent`` CLI (see the claude-code twin,
+    topoteretes/cognee-integrations#391).
+
+    No fallback to the hook's own parent, unlike the Codex twin: here that parent
+    is ``cursor_hook.py``, which exits as soon as SessionStart returns, so an exit
+    watcher on it would run the final sync (and unregister the connection) a few
+    seconds into the session. 0 means "unknown"; callers skip what needs a host.
     """
     try:
         host_pid = int(str(os.environ.get("CURSOR_PID", "") or "0").strip() or 0)
@@ -1357,9 +1364,10 @@ def _find_cursor_parent_pid() -> int:
         host_pid = 0
     if host_pid > 1 and _pid_alive(host_pid):
         return host_pid
-    fallback = os.getppid()
+    start = os.getppid()
     if sys.platform == "win32":
-        return find_host_ancestor_windows(fallback, "cursor")
+        found = find_host_ancestor_windows(start, "cursor")
+        return found if found != start else 0
     try:
         raw = subprocess.check_output(
             ["ps", "-axo", "pid=,ppid=,command="],
@@ -1368,7 +1376,7 @@ def _find_cursor_parent_pid() -> int:
         )
     except Exception as exc:
         hook_log("find_cursor_parent_failed", {"error": str(exc)[:200]})
-        return fallback
+        return 0
 
     table: dict[int, tuple[int, str]] = {}
     for line in raw.splitlines():
@@ -1386,9 +1394,11 @@ def _find_cursor_parent_pid() -> int:
 
     # Match "cursor" as an executable basename anywhere in the command line,
     # tolerant of spaces in the executable path (a naive split()[0] mis-tokenizes
-    # paths like "/…/Application Support/…/cursor").
-    host_re = re.compile(r"(?i)(?:^|/)cursor(?:-[\w.]+)?(?:\s|$)")
-    pid = fallback
+    # paths like "/…/Application Support/…/cursor"), or the CLI's install dir
+    # (``~/.local/share/cursor-agent/versions/<v>/…``), whose launcher is now
+    # also called plain ``agent``.
+    host_re = re.compile(r"(?i)(?:^|/)cursor(?:-[\w.]+)?(?:\s|$)|/cursor-agent/")
+    pid = start
     seen: set[int] = set()
     while pid > 1 and pid not in seen:
         seen.add(pid)
@@ -1396,7 +1406,15 @@ def _find_cursor_parent_pid() -> int:
         if command and host_re.search(command):
             return pid
         pid = ppid
-    return fallback
+    return 0
+
+
+def _exit_watcher_pidfile(parent_pid: int, session_key: str) -> Path:
+    """One watcher per chat, not per host process: in the IDE every chat in a
+    window shares the extension host, and each must sync its own session when
+    the window closes. ``cursor_hook.py`` removes it on that chat's sessionEnd."""
+    key = _sanitize_session_key(session_key) or "unknown"
+    return _EXIT_WATCHERS_DIR / f"{parent_pid}-{key}.pid"
 
 
 def _spawn_exit_watcher(
@@ -1424,7 +1442,12 @@ def _spawn_exit_watcher(
         hook_log("exit_watcher_prune_failed", {"error": str(exc)[:200]})
 
     parent_pid = _find_cursor_parent_pid()
-    watcher_pidfile = _EXIT_WATCHERS_DIR / f"{parent_pid}.pid"
+    if parent_pid <= 1:
+        # The final sync still runs from sessionEnd; without a host process to
+        # watch, a watcher could only fire at the wrong time.
+        hook_log("exit_watcher_skipped", {"reason": "host_not_found"})
+        return
+    watcher_pidfile = _exit_watcher_pidfile(parent_pid, session_key)
     try:
         if watcher_pidfile.exists():
             existing = int(watcher_pidfile.read_text(encoding="utf-8").strip())
@@ -1862,10 +1885,10 @@ async def _run_bootstrap(bootstrap: dict) -> None:
 
 
 async def _start(payload: dict | None = None) -> dict:
-    # Cursor CLI status line: register scripts/cognee-statusline.sh in
-    # ~/.cursor/cli-config.json (never over a user's own line; opt out with
-    # COGNEE_STATUSLINE=false). The IDE has no status line, so this is a no-op
-    # there beyond the config write.
+    # Cursor CLI status line, opt-in with COGNEE_STATUSLINE=true: register
+    # scripts/cognee-statusline.sh in ~/.cursor/cli-config.json (never over a
+    # user's own line), or drop our entry again when not opted in. It replaces
+    # the CLI's own footer, and the IDE has no status line at all.
     from _statusline_config import ensure_statusline_configured
 
     ensure_statusline_configured(hook_log)

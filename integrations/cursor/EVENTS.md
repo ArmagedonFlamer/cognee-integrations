@@ -114,6 +114,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:exit_watcher_launch_failed` | `exit.watcher_launch_failed` |
 | `hook:exit_watcher_log_open_failed` | `exit.watcher_log_open_failed` |
 | `hook:exit_watcher_prune_failed` | `exit.watcher_prune_failed` |
+| `hook:exit_watcher_skipped` | `exit.watcher_skipped` |
 | `hook:exit_watcher_started` | `exit.watcher_started` |
 | `hook:extras_probe_failed` | `extras.probe_failed` |
 | `hook:final_sync_once_already_claimed` | `sync.sync_once_already_claimed` |
@@ -235,6 +236,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:slow_streak_escalated` | `slow.streak_escalated` |
 | `hook:state_sweep` | `state.sweep` |
 | `hook:statusline_configured` | `statusline.configured` |
+| `hook:statusline_removed` | `statusline.removed` |
 | `hook:statusline_setup_failed` | `statusline.setup_failed` |
 | `hook:statusline_setup_skipped` | `statusline.setup_skipped` |
 | `hook:stop_store_error` | `stop.store_error` |

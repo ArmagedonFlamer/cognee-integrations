@@ -495,7 +495,9 @@ def _evict_own_statusline() -> None:
     """Remove our statusLine entry from ~/.cursor/cli-config.json (best-effort).
 
     Only removes it when the entry is recognizably ours, so a status line the
-    user set themselves is never touched. Atomic replace to avoid a torn file.
+    user set themselves is never touched. Goes through ``_statusline_config``,
+    the one writer of that file, so it takes the same lock and yields to a
+    concurrent write by the CLI.
     """
     try:
         settings = _read_json(_USER_SETTINGS)
@@ -503,10 +505,9 @@ def _evict_own_statusline() -> None:
         cmd = sl.get("command", "") if isinstance(sl, dict) else ""
         if _OWNED_STATUSLINE_MARKER not in str(cmd):
             return  # not ours (or already gone) — leave it alone
-        settings.pop("statusLine", None)
-        tmp = _USER_SETTINGS.with_name(f".cli-config-{os.getpid()}.json.tmp")
-        tmp.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, _USER_SETTINGS)
+        from _statusline_config import remove_statusline
+
+        remove_statusline(_USER_SETTINGS)
     except Exception:
         pass
 

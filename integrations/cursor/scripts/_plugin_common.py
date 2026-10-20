@@ -718,19 +718,15 @@ def resolve_host_key_outside_hook(cwd: str = "") -> tuple[str, str]:
     Resolution, in order — returns ``(host_key, source)``, ``("", reason)`` when
     nothing matched:
       1. ``COGNEE_SESSION_KEY`` — already inside a hook.
-      2. The host's own session-id export (Claude Code: ``CLAUDE_CODE_SESSION_ID``).
-      3. The host's pid export or our process ancestry, matched against the
+      2. The host's own session-id export — none on Cursor, which exports no
+         session id to the agent's shell.
+      3. ``CURSOR_PID`` (when an operator sets it) or our process ancestry, matched against the
          ``host_pid`` each SessionStart stores in its record.
       4. A single live record whose ``cwd`` equals ours.
     """
     key = get_session_key()
     if key:
         return key, "env_session_key"
-
-    for var in ("CLAUDE_CODE_SESSION_ID", "CODEX_SESSION_ID", "CODEX_THREAD_ID"):
-        val = _sanitize_session_key(str(os.environ.get(var, "") or "").strip())
-        if val and _session_map_path(val).exists():
-            return val, var
 
     records = _live_launch_records()
     pids = _candidate_host_pids()
@@ -772,7 +768,7 @@ def _live_launch_records() -> list[dict]:
 def _candidate_host_pids() -> set[int]:
     """Pids that could be this process's host: the host's pid export + ancestry."""
     pids: set[int] = set()
-    for var in ("CLAUDE_PID", "CODEX_PID"):
+    for var in ("CURSOR_PID",):
         try:
             v = int(str(os.environ.get(var, "") or "0").strip() or 0)
         except ValueError:

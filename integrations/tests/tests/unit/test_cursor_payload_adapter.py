@@ -350,16 +350,12 @@ def _cognee_reply(context: str = "", message: str = "", event: str = "UserPrompt
     )
 
 
-def test_prompt_context_is_returned_in_both_shapes_cursor_accepts(adapter):
-    reply = adapter.translate_output(
-        "UserPromptSubmit", _cognee_reply("=== Cognee memory ===\nfacts")
-    )
-    assert reply["continue"] is True
-    assert reply["additional_context"] == "=== Cognee memory ===\nfacts"
-    assert reply["hookSpecificOutput"] == {
-        "hookEventName": "UserPromptSubmit",
-        "additionalContext": "=== Cognee memory ===\nfacts",
-    }
+def test_before_submit_prompt_replies_only_with_what_cursor_documents(adapter):
+    """Cursor documents ``continue`` / ``user_message`` for beforeSubmitPrompt and
+    no context field; the recall is kept for the turn's first postToolUse."""
+    content = _cognee_reply("=== Cognee memory ===\nfacts")
+    assert adapter.translate_output("UserPromptSubmit", content) == {"continue": True}
+    assert adapter.prompt_context(content) == "=== Cognee memory ===\nfacts"
 
 
 def test_prompt_reply_without_context_is_just_continue(adapter):
@@ -372,10 +368,9 @@ def test_prompt_reply_without_context_is_just_continue(adapter):
 def test_a_system_message_becomes_a_notice_in_context_once(adapter):
     header = "Cognee memory: 0 memory hits"
     # The recall hook repeats its header as systemMessage: no duplicate notice.
-    reply = adapter.translate_output(
-        "UserPromptSubmit", _cognee_reply(header + "\n\nfacts", header)
+    assert adapter.prompt_context(_cognee_reply(header + "\n\nfacts", header)) == (
+        header + "\n\nfacts"
     )
-    assert reply["additional_context"] == header + "\n\nfacts"
     # A distinct notice (memory off, update available) is appended for the agent to relay.
     reply = adapter.translate_output(
         "SessionStart", _cognee_reply("", "Cognee memory: hook failed")
@@ -640,6 +635,39 @@ def test_session_start_always_tells_the_agent_the_plugin_root(adapter, monkeypat
     )
     assert adapter.main(["session-context-lookup.py"]) == 0
     assert "additional_context" not in json.loads(capsys.readouterr().out.strip())
+
+
+def test_prompt_recall_reaches_the_model_on_the_turns_first_tool_call(adapter, monkeypatch, capsys):
+    """beforeSubmitPrompt cannot inject context in Cursor; postToolUse can. The
+    recall is held for its turn, delivered once, and never leaks into a later turn."""
+    replies = {
+        "session-context-lookup.py": _cognee_reply("=== Cognee memory ===\nfacts"),
+        "store-user-prompt.py": json.dumps({"systemMessage": "Cognee memory is off"}),
+        "store-to-session.py": json.dumps({}),
+    }
+    monkeypatch.setattr(adapter, "_run_script", lambda payload, script, flags: replies[script])
+
+    def fire(script: str, payload: dict) -> dict:
+        monkeypatch.setattr("sys.stdin", _Stdin(json.dumps(payload)))
+        assert adapter.main([script]) == 0
+        return json.loads(capsys.readouterr().out.strip())
+
+    prompt = _payload("beforeSubmitPrompt", prompt="what changed?")
+    assert fire("session-context-lookup.py", prompt) == {"continue": True}
+    assert fire("store-user-prompt.py", prompt) == {"continue": True}
+
+    tool = _payload("postToolUse", tool_name="Shell", tool_input={"command": "ls"}, tool_output="x")
+    first = fire("store-to-session.py", tool)
+    assert first["additional_context"] == (
+        "=== Cognee memory ===\nfacts\n\n[cognee notice] Cognee memory is off"
+    )
+    assert "additional_context" not in fire("store-to-session.py", tool)  # once per turn
+
+    # A turn that never reached a tool call does not leak into the next one.
+    fire("session-context-lookup.py", prompt)
+    later = dict(tool, generation_id="gen-8")
+    assert "additional_context" not in fire("store-to-session.py", later)
+    assert not list((adapter.state_dir() / "prompt-context").iterdir())
 
 
 def test_only_the_qa_store_consumes_the_stored_marker(adapter, tmp_path):

@@ -23,8 +23,13 @@ This module is the boundary between the two:
   timeout and a kill of the whole process tree on expiry.
 * ``translate_output`` turns the Cognee reply into the shape Cursor documents
   for the hook: ``additional_context`` on ``sessionStart`` / ``postToolUse``,
-  ``continue: true`` (plus the recalled context) on ``beforeSubmitPrompt``,
-  nothing at all on ``stop`` — a Cognee hook must never auto-submit a follow-up.
+  only ``continue: true`` on ``beforeSubmitPrompt`` (Cursor documents no context
+  field there), nothing at all on ``stop`` — a Cognee hook must never
+  auto-submit a follow-up.
+* The per-prompt recall therefore cannot ride on ``beforeSubmitPrompt``: it is
+  held per (conversation, turn) and handed to the model as ``additional_context``
+  of that turn's first ``postToolUse`` / ``postToolUseFailure``. A turn that
+  calls no tool gets no per-prompt recall; the sessionStart context still applies.
 
 Every path fails open: on any error the adapter prints the hook's neutral reply
 and exits 0, so memory trouble can never block the agent.
@@ -405,6 +410,113 @@ def consume_stored_marker(session: str, turn: str, root: Path | None = None) -> 
     return not stored_turn or not turn or stored_turn == str(turn)
 
 
+def _sanitize_session_key(value: str) -> str:
+    """``_plugin_common._sanitize_session_key``, which keys the launch records and
+    the exit-watcher pidfiles (this module stays free of the plugin's imports)."""
+    safe = [
+        ch if (ch.isascii() and ch.isalnum()) or ch in ("-", "_", ".") else "_"
+        for ch in str(value or "")
+    ]
+    return "".join(safe).strip("._")[:120]
+
+
+def stop_exit_watchers(session: str, root: Path | None = None) -> int:
+    """End this chat's exit watcher once its sessionEnd sync has run.
+
+    session-start names the pidfile ``<host pid>-<session key>.pid``; a watcher
+    whose pidfile is gone exits without syncing. Without this, an IDE chat's
+    watcher would outlive the chat and sync it again when the window closes.
+    """
+    key = _sanitize_session_key(session)
+    if not key:
+        return 0
+    base = root if root is not None else state_dir()
+    stopped = 0
+    for pidfile in (base / "exit-watchers").glob(f"*-{key}.pid"):
+        try:
+            pidfile.unlink()
+            stopped += 1
+        except OSError:
+            pass
+    return stopped
+
+
+# --------------------------------------------------------------------------- #
+# Prompt-time context, delivered on the turn's first tool call
+# --------------------------------------------------------------------------- #
+
+
+def _pending_dir(root: Path | None = None) -> Path:
+    return (root if root is not None else state_dir()) / "prompt-context"
+
+
+def hold_prompt_context(
+    session: str, turn: str, script: str, text: str, root: Path | None = None
+) -> Path | None:
+    """Keep a prompt hook's context for this turn's first ``postToolUse``.
+
+    One file per (conversation, prompt script): the recall and the prompt-store
+    hooks both run on ``beforeSubmitPrompt``, possibly at once. A new prompt
+    replaces whatever an earlier turn left undelivered.
+    """
+    key = _sanitize_session_key(session)
+    if not key or not text.strip():
+        return None
+    path = _pending_dir(root) / f"{key}--{Path(script).stem}.json"
+    tmp = ""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump({"turn": str(turn or ""), "context": text}, handle)
+        os.replace(tmp, path)
+        return path
+    except OSError:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+        return None
+
+
+def take_prompt_context(session: str, turn: str, root: Path | None = None) -> str:
+    """Pop this turn's held prompt context (recall first); drop other turns' leftovers."""
+    key = _sanitize_session_key(session)
+    if not key:
+        return ""
+    parts: list[tuple[int, str]] = []
+    order = {"session-context-lookup": 0, "store-user-prompt": 1}
+    for path in _pending_dir(root).glob(f"{key}--*.json"):
+        try:
+            # Claim it first: a parallel postToolUse of the same turn must not
+            # deliver it a second time.
+            claimed = path.with_name(f".{path.name}.{os.getpid()}.taken")
+            os.replace(path, claimed)
+        except OSError:
+            continue
+        try:
+            held = json.loads(claimed.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            held = {}
+        finally:
+            try:
+                claimed.unlink()
+            except OSError:
+                pass
+        if not isinstance(held, dict):
+            continue
+        held_turn = str(held.get("turn") or "")
+        text = held.get("context")
+        if not isinstance(text, str) or not text.strip():
+            continue
+        if held_turn and turn and held_turn != str(turn):
+            continue  # an earlier turn that never reached a tool call
+        script = path.name[len(key) + 2 : -len(".json")]
+        parts.append((order.get(script, 9), text.strip()))
+    return "\n\n".join(text for _, text in sorted(parts))
+
+
 def read_transcript_tail(transcript_path: object) -> list[dict[str, Any]]:
     """Decode a bounded tail of Cursor's JSONL transcript (``{"role", "message"}``)."""
     if not transcript_path:
@@ -496,39 +608,59 @@ def _extract(output: dict[str, Any], key: str) -> str:
     return value.strip() if isinstance(value, str) and value.strip() else ""
 
 
+def _parse_output(content: object) -> dict[str, Any]:
+    if isinstance(content, dict):
+        return content
+    try:
+        output = json.loads(content) if isinstance(content, str) and content.strip() else {}
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return output if isinstance(output, dict) else {}
+
+
+def _context_with_notice(output: dict[str, Any]) -> str:
+    """The reply's context, plus its systemMessage as a ``[cognee notice]``.
+
+    Cursor has no user-facing channel for a non-blocking hook message, so a
+    notice (memory off, update available) rides along in the model's context
+    where the agent can relay it. The recall hook repeats its header as the
+    systemMessage; skip the note when the context has it.
+    """
+    context = _extract(output, "additionalContext")
+    message = _extract(output, "systemMessage")
+    if message and message not in context:
+        note = f"[cognee notice] {message}"
+        context = f"{context}\n\n{note}" if context else note
+    return context
+
+
+def prompt_context(content: object) -> str:
+    """What a prompt-time hook (recall, prompt store) wants the model to see.
+
+    Not returned from ``beforeSubmitPrompt``: Cursor documents only ``continue``
+    and ``user_message`` there. :func:`main` holds it for the turn's first
+    ``postToolUse``, whose ``additional_context`` is documented to reach the model.
+    """
+    return _context_with_notice(_parse_output(content))
+
+
 def translate_output(event: str, content: object) -> dict[str, Any]:
     """Turn a Cognee hook reply into what Cursor documents for ``event``."""
     reply = neutral_reply(event)
-    if isinstance(content, dict):
-        output = content
-    else:
-        try:
-            output = json.loads(content) if isinstance(content, str) and content.strip() else {}
-        except (json.JSONDecodeError, TypeError, ValueError):
-            output = {}
-    if not isinstance(output, dict):
+    output = _parse_output(content)
+    if not output:
         return reply
 
     context = _extract(output, "additionalContext")
     message = _extract(output, "systemMessage")
 
-    if event in ("SessionStart", "UserPromptSubmit"):
-        # Cursor has no user-facing channel for a non-blocking hook message, so a
-        # notice (memory off, update available) rides along in the model's
-        # context where the agent can relay it. The recall hook repeats its
-        # header as the systemMessage; skip the note when the context has it.
-        if message and message not in context:
-            note = f"[cognee notice] {message}"
-            context = f"{context}\n\n{note}" if context else note
+    if event == "SessionStart":
+        context = _context_with_notice(output)
         if context:
             reply["additional_context"] = context
-            if event == "UserPromptSubmit":
-                # The nested Claude Code shape is what Cursor's third-party hook
-                # layer already accepts for UserPromptSubmit context injection.
-                reply["hookSpecificOutput"] = {
-                    "hookEventName": "UserPromptSubmit",
-                    "additionalContext": context,
-                }
+    elif event == "UserPromptSubmit":
+        # {"continue": true} only; see prompt_context.
+        pass
     elif event == "PostToolUse":
         if context:
             reply["additional_context"] = context
@@ -738,7 +870,15 @@ def main(argv: list[str] | None = None) -> int:
                 raise
             reply = translate_output(event, output)
             record["outcome"] = "ran"
+            if event == "UserPromptSubmit":
+                held = hold_prompt_context(
+                    record["session"], record["turn"], script, prompt_context(output)
+                )
+                record["context_held"] = held is not None
             record["reply_keys"] = sorted(reply)
+            if script == "sync-session-to-graph.py" and "--session-end" in flags:
+                record["exit_watchers_stopped"] = stop_exit_watchers(record["session"])
+                take_prompt_context(record["session"], "")  # nothing left to deliver to
     except Exception as exc:  # fail open, always
         record["outcome"] = "failed"
         record["error"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -750,6 +890,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if script == "session-start.py":
         reply = with_plugin_root_context(reply)
+    if event == "PostToolUse" and record.get("session"):
+        held = take_prompt_context(record["session"], record.get("turn", ""))
+        if held:
+            current = reply.get("additional_context")
+            if isinstance(current, str) and current.strip():
+                held = f"{held}\n\n{current}"
+            reply = {**reply, "additional_context": held}
+            record["context_delivered"] = True
     record["ms"] = round((time.monotonic() - started) * 1000)
     adapter_log(record)
     print(json.dumps(reply))

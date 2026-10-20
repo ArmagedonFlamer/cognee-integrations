@@ -279,6 +279,72 @@ def test_installer_merges_and_uninstalls_without_touching_foreign_hooks(plugin_r
         sys.modules.pop("cursor_contract_installer", None)
 
 
+def test_installer_refuses_shapes_it_would_corrupt_and_keeps_lookalikes(plugin_root):
+    installer = _load(INSTALLER, "cursor_contract_installer")
+    try:
+        # A non-list event value or a non-object "hooks" is the user's; rewriting
+        # it would drop their hook, so the installer refuses instead.
+        for bad in ({"hooks": {"stop": {"command": "x"}}}, {"hooks": [{"command": "x"}]}):
+            with pytest.raises(installer.UnsupportedHooksFile):
+                installer.merge(bad)
+            with pytest.raises(installer.UnsupportedHooksFile):
+                installer.merge(bad, uninstall=True)
+
+        # Only a run-cursor-hook launcher running one of our scripts is ours.
+        lookalikes = [
+            {"command": "/home/u/my-run-cursor-hook-wrapper.sh store-to-session.py"},
+            {"command": "/opt/run-cursor-hook my-own-script.py"},
+            {"command": "echo run-cursor-hook"},
+        ]
+        ours = [
+            {"command": "/old/checkout/scripts/run-cursor-hook store-to-session.py --stop"},
+            {"command": '"C:\\\\Users\\\\a b\\\\scripts\\\\run-cursor-hook.cmd" pre-compact.py'},
+            {"command": "'/a b/scripts/run-cursor-hook' session-start.py"},
+        ]
+        removed = installer.merge({"hooks": {"stop": lookalikes + ours}}, uninstall=True)
+        assert removed["hooks"]["stop"] == lookalikes
+    finally:
+        sys.modules.pop("cursor_contract_installer", None)
+
+
+def test_installer_cli_refuses_malformed_files_and_keeps_symlinks(plugin_root, tmp_path):
+    project = tmp_path / "proj"
+    (project / ".cursor").mkdir(parents=True)
+    hooks = project / ".cursor" / "hooks.json"
+    env = {**os.environ, "HOME": str(tmp_path / "home")}
+
+    original = json.dumps({"version": 1, "hooks": {"stop": {"command": "mine"}}})
+    hooks.write_text(original, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(INSTALLER), "--project", str(project)],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=60,
+    )
+    assert proc.returncode != 0 and "refusing to rewrite" in proc.stderr
+    assert hooks.read_text(encoding="utf-8") == original
+
+    dotfiles = tmp_path / "dotfiles.json"
+    dotfiles.write_text(json.dumps({"version": 1, "hooks": {}}), encoding="utf-8")
+    hooks.unlink()
+    try:
+        hooks.symlink_to(dotfiles)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+    proc = subprocess.run(
+        [sys.executable, str(INSTALLER), "--project", str(project)],
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert hooks.is_symlink()
+    assert "sessionStart" in json.loads(dotfiles.read_text(encoding="utf-8"))["hooks"]
+    assert not list((project / ".cursor").glob("*.tmp")) and not list(tmp_path.glob(".*.tmp"))
+
+
 def test_installer_cli_writes_a_project_hooks_json(plugin_root, tmp_path):
     project = tmp_path / "proj"
     project.mkdir()
@@ -347,16 +413,24 @@ def test_runtime_constants_are_cursors(plugin_root):
 
 
 def test_no_codex_state_or_manifest_paths_survive_in_the_copy(plugin_root):
+    """Every script, shell ones included: the skills' .sh scripts read the launch
+    records through PLUGIN_DIR, so a leftover codex path there made Cursor's skills
+    search with Codex's session and dataset."""
     offenders = []
-    for path in sorted(SCRIPTS_DIR.glob("*.py")):
+    for path in sorted(p for p in SCRIPTS_DIR.iterdir() if p.is_file()):
         text = path.read_text(encoding="utf-8")
         for needle in (
             '".cognee-plugin" / "codex"',
             '_SHARED_ROOT / "codex"',
+            ".cognee-plugin/codex",
             ".codex-plugin",
             "CODEX_CWD",
+            "CODEX_PID",
+            "CODEX_SESSION_ID",
+            "CODEX_THREAD_ID",
             "COGNEE_CODEX_BACKEND",
             "codex-agent",
+            "codex_session",
         ):
             if needle in text:
                 offenders.append(f"{path.name}: {needle}")
@@ -424,7 +498,9 @@ CONVERSATION = "11111111-2222-3333-4444-555555555555"
 
 
 @pytest.fixture
-def statusline_config(plugin_root: Path):
+def statusline_config(plugin_root: Path, monkeypatch):
+    # It imports its sibling _file_lock, as it does when session-start runs it.
+    monkeypatch.syspath_prepend(str(SCRIPTS_DIR))
     module = _load(STATUSLINE_CONFIG, "cursor_statusline_config")
     try:
         yield module
@@ -507,8 +583,79 @@ def test_statusline_renders_from_cursor_state_without_network(plugin_root, tmp_p
     assert broken.returncode == 0 and "cognee:" in _plain(broken.stdout)
 
 
-def test_statusline_config_writes_only_when_safe(statusline_config, tmp_path, monkeypatch):
+def test_statusline_is_opt_in_and_opting_out_removes_only_our_entry(
+    statusline_config, tmp_path, monkeypatch
+):
+    """A custom statusLine replaces the CLI's own footer, so nothing is written
+    unless COGNEE_STATUSLINE=true, and an entry an earlier opt-in left is removed."""
+    path = tmp_path / "cli-config.json"
+    events: list[tuple[str, dict]] = []
+    log = lambda event, detail: events.append((event, detail))  # noqa: E731
+
     monkeypatch.delenv("COGNEE_STATUSLINE", raising=False)
+    assert statusline_config.ensure_statusline_configured(log, config_path=path) == "not_enabled"
+    assert not path.exists()
+    path.write_text(json.dumps({"model": "x"}))
+    assert statusline_config.ensure_statusline_configured(log, config_path=path) == "not_enabled"
+    assert json.loads(path.read_text()) == {"model": "x"}
+
+    monkeypatch.setenv("COGNEE_STATUSLINE", "true")
+    assert statusline_config.ensure_statusline_configured(log, config_path=path) == "configured"
+    monkeypatch.setenv("COGNEE_STATUSLINE", "false")
+    assert statusline_config.ensure_statusline_configured(log, config_path=path) == "removed"
+    assert json.loads(path.read_text()) == {"model": "x"}
+    assert events[-1] == ("statusline_removed", {"reason": "not_enabled"})
+
+    # A user's own line survives the opt-out untouched.
+    mine = {"statusLine": {"type": "command", "command": "~/mine.sh"}}
+    path.write_text(json.dumps(mine))
+    assert statusline_config.ensure_statusline_configured(log, config_path=path) == "not_enabled"
+    assert json.loads(path.read_text()) == mine
+
+
+def test_statusline_config_keeps_symlinks_modes_and_concurrent_cli_writes(
+    statusline_config, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COGNEE_STATUSLINE", "true")
+    dotfiles = tmp_path / "dotfiles" / "cli-config.json"
+    dotfiles.parent.mkdir()
+    dotfiles.write_text(json.dumps({"model": "x"}))
+    os.chmod(dotfiles, 0o600)
+    link = tmp_path / "cli-config.json"
+    try:
+        link.symlink_to(dotfiles)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are not available here")
+
+    assert statusline_config.ensure_statusline_configured(config_path=link) == "configured"
+    assert link.is_symlink()
+    assert "statusLine" in json.loads(dotfiles.read_text())
+    if os.name != "nt":
+        assert stat.S_IMODE(dotfiles.stat().st_mode) == 0o600
+
+    # The CLI rewrites the file between our read and our replace: its write wins
+    # and ours is redone on top of it, so neither change is lost.
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({"model": "x"}))
+    real_write = statusline_config._write_atomic
+    raced: list[bool] = []
+
+    def cli_writes_first(path, config, expected):
+        if not raced:
+            raced.append(True)
+            plain.write_text(json.dumps({"model": "y", "editor": {"vim": True}}))
+            os.utime(plain, ns=(1, 1))
+        return real_write(path, config, expected)
+
+    monkeypatch.setattr(statusline_config, "_write_atomic", cli_writes_first)
+    assert statusline_config.ensure_statusline_configured(config_path=plain) == "configured"
+    config = json.loads(plain.read_text())
+    assert config["model"] == "y" and config["editor"] == {"vim": True}
+    assert statusline_config.is_owned(config["statusLine"])
+
+
+def test_statusline_config_writes_only_when_safe(statusline_config, tmp_path, monkeypatch):
+    monkeypatch.setenv("COGNEE_STATUSLINE", "true")
     monkeypatch.delenv("COGNEE_STATUSLINE_TIMEOUT_MS", raising=False)
     monkeypatch.delenv("COGNEE_STATUSLINE_PADDING", raising=False)
     path = tmp_path / "cli-config.json"
@@ -543,18 +690,13 @@ def test_statusline_config_writes_only_when_safe(statusline_config, tmp_path, mo
     config = json.loads(path.read_text(encoding="utf-8"))
     assert config["model"] == "x" and "/old/" not in config["statusLine"]["command"]
 
-    # Opt out by env; removal only touches our entry.
-    monkeypatch.setenv("COGNEE_STATUSLINE", "false")
-    assert (
-        statusline_config.ensure_statusline_configured(log, config_path=path) == "disabled_by_env"
-    )
+    # Removal only touches our entry.
     assert statusline_config.remove_statusline(path) is True
     assert "statusLine" not in json.loads(path.read_text())
     path.write_text(json.dumps({"statusLine": {"type": "command", "command": "~/mine.sh"}}))
     assert statusline_config.remove_statusline(path) is False
 
     # Missing file is created; tuning knobs land as the CLI expects them.
-    monkeypatch.delenv("COGNEE_STATUSLINE")
     monkeypatch.setenv("COGNEE_STATUSLINE_TIMEOUT_MS", "3500")
     monkeypatch.setenv("COGNEE_STATUSLINE_PADDING", "2")
     fresh = tmp_path / "nested" / "cli-config.json"
@@ -563,7 +705,10 @@ def test_statusline_config_writes_only_when_safe(statusline_config, tmp_path, mo
     assert entry["timeoutMs"] == 3500 and entry["padding"] == 2
 
 
-def test_statusline_config_skips_when_the_launcher_is_missing(statusline_config, tmp_path):
+def test_statusline_config_skips_when_the_launcher_is_missing(
+    statusline_config, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("COGNEE_STATUSLINE", "true")
     outcome = statusline_config.ensure_statusline_configured(
         config_path=tmp_path / "cli-config.json", plugin_root=tmp_path / "nowhere"
     )
