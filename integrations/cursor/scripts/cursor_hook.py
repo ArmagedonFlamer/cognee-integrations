@@ -131,6 +131,30 @@ def neutral_reply(event: str) -> dict[str, Any]:
     return {"continue": True} if event == "UserPromptSubmit" else {}
 
 
+PLUGIN_ROOT_CONTEXT_PREFIX = "Cognee plugin root:"
+
+
+def with_plugin_root_context(reply: dict[str, Any]) -> dict[str, Any]:
+    """Tell the agent where the plugin lives.
+
+    The skills run ``${CURSOR_PLUGIN_ROOT}/scripts/...``, but Cursor exports that
+    variable to nothing the agent's shell can see (only this adapter sets it, for
+    the hook processes it starts). sessionStart's context is the one channel that
+    reaches the model, so the absolute path goes there, even when the inner hook
+    failed open.
+    """
+    root = plugin_root()
+    line = (
+        f"{PLUGIN_ROOT_CONTEXT_PREFIX} {root} - Cursor does not set CURSOR_PLUGIN_ROOT in "
+        f'your shell; run `export CURSOR_PLUGIN_ROOT="{root}"` in the same command '
+        "before any Cognee skill command that uses it."
+    )
+    context = reply.get("additional_context")
+    if isinstance(context, str) and context.strip():
+        line = f"{context}\n\n{line}"
+    return {**reply, "additional_context": line}
+
+
 ADAPTER_LOG_NAME = "adapter.log"
 _ADAPTER_LOG_MAX_BYTES = 2 * 1024 * 1024
 
@@ -275,12 +299,15 @@ def normalize_payload(
         if isinstance(payload.get("status"), str):
             normalized["status"] = payload["status"]
         message = _first_str(payload, "assistant_message", "last_assistant_message", "text")
-        if not message and payload.get("hook_event_name") != "afterAgentResponse":
+        qa_store = script == "store-to-session.py" and "--stop" in flags
+        if not message and qa_store and payload.get("hook_event_name") != "afterAgentResponse":
             # Cursor's stop carries no text. If afterAgentResponse already
             # stored this turn, leave the message empty so the hook is skipped
             # instead of storing the answer twice; otherwise recover it from
             # the transcript tail. (An afterAgentResponse without text has
-            # nothing to store and is skipped as well.)
+            # nothing to store and is skipped as well.) Only the QA store
+            # touches the marker: the other stop hooks (credits-refresh) must
+            # not consume it out from under the store.
             if consume_stored_marker(session, turn):
                 normalized["answer_already_stored"] = True
             else:
@@ -319,18 +346,43 @@ def _stored_marker_path(session: str, root: Path | None = None) -> Path:
 
 
 def mark_answer_stored(session: str, turn: str, root: Path | None = None) -> Path | None:
-    """Record that ``afterAgentResponse`` stored the QA pair for this turn."""
+    """Claim this turn's QA store for ``afterAgentResponse``.
+
+    Written *before* the store runs, so a ``stop`` that fires while the store
+    is still in flight sees the claim and skips instead of storing again.
+    """
     if not session:
         return None
     path = _stored_marker_path(session, root)
+    tmp = ""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(str(turn or ""), encoding="utf-8")
+        # A unique temp name: two afterAgentResponse launches for one
+        # conversation must not share (and race on) the same temp file.
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}.", suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(str(turn or ""))
         os.replace(tmp, path)
         return path
     except OSError:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
         return None
+
+
+def release_stored_marker(session: str, turn: str, root: Path | None = None) -> None:
+    """Drop this turn's claim after its store failed, so ``stop`` can recover it."""
+    if not session:
+        return
+    path = _stored_marker_path(session, root)
+    try:
+        if path.read_text(encoding="utf-8").strip() == str(turn or ""):
+            path.unlink()
+    except OSError:
+        pass
 
 
 def consume_stored_marker(session: str, turn: str, root: Path | None = None) -> bool:
@@ -675,12 +727,18 @@ def main(argv: list[str] | None = None) -> int:
             if normalized.get("answer_already_stored"):
                 record["skip_reason"] = "answer_already_stored"
         else:
-            output = run_inner_hook(normalized, script, flags)
+            claimed = stores_the_answer(record["cursor_event"], script, flags)
+            if claimed:
+                mark_answer_stored(record["session"], record["turn"])
+            try:
+                output = run_inner_hook(normalized, script, flags)
+            except Exception:
+                if claimed:
+                    release_stored_marker(record["session"], record["turn"])
+                raise
             reply = translate_output(event, output)
             record["outcome"] = "ran"
             record["reply_keys"] = sorted(reply)
-            if stores_the_answer(record["cursor_event"], script, flags):
-                mark_answer_stored(record["session"], record["turn"])
     except Exception as exc:  # fail open, always
         record["outcome"] = "failed"
         record["error"] = f"{type(exc).__name__}: {exc}"[:200]
@@ -690,6 +748,8 @@ def main(argv: list[str] | None = None) -> int:
             pass
         reply = neutral_reply(event)
 
+    if script == "session-start.py":
+        reply = with_plugin_root_context(reply)
     record["ms"] = round((time.monotonic() - started) * 1000)
     adapter_log(record)
     print(json.dumps(reply))

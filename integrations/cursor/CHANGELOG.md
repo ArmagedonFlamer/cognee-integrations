@@ -13,7 +13,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Added
 - First cut of the Cursor plugin: `.cursor-plugin/plugin.json`, `hooks/hooks.json`
   in Cursor's native format, and the Cognee skills, on top of the Codex plugin's
-  hook runtime (Cognee 1.6.0 pins, HTTP-only hooks, local and cloud modes).
+  hook runtime (Cognee 1.6.5 pin, HTTP-only hooks, local and cloud modes).
 - `scripts/cursor_hook.py`, the payload adapter between Cursor's hook contract
   and the shared Cognee hook scripts: `conversation_id` → `session_id`,
   `generation_id` → `turn_id`, `workspace_roots` → `cwd`, Cursor tool names

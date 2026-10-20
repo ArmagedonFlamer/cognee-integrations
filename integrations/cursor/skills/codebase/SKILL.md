@@ -5,6 +5,12 @@ description: Use when indexing a code repository into Cognee's code graph or que
 
 # Cognee Code Graph
 
+> **Plugin root.** The commands below use `${CURSOR_PLUGIN_ROOT}`, which Cursor
+> does not set in your shell. Take the path from the `Cognee plugin root:` line
+> in the session context (or use the directory two levels above this `SKILL.md`,
+> the one holding `scripts/`) and run `export CURSOR_PLUGIN_ROOT="<that path>"`
+> in the same shell command, before the skill command.
+
 Use this skill when the user asks Cursor to build a Cognee memory of a
 repository, index code, or answer structural code questions (who calls X,
 what breaks if X changes, how does A reach B) from memory.

@@ -5,6 +5,12 @@ description: Use only when the user explicitly asks to launch or inspect the LOC
 
 # Cognee Local UI
 
+> **Plugin root.** The commands below use `${CURSOR_PLUGIN_ROOT}`, which Cursor
+> does not set in your shell. Take the path from the `Cognee plugin root:` line
+> in the session context (or use the directory two levels above this `SKILL.md`,
+> the one holding `scripts/`) and run `export CURSOR_PLUGIN_ROOT="<that path>"`
+> in the same shell command, before the skill command.
+
 Use this skill only when the user explicitly asks to launch or inspect the
 **local** Cognee UI — the development UI that `cognee-cli -ui` serves from a
 cognee source checkout.

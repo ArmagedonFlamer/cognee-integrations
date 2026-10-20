@@ -604,6 +604,100 @@ def test_main_stores_the_answer_once_per_turn_across_after_response_and_stop(
     assert not list((adapter.state_dir() / "responses").glob("*.stored"))
 
 
+def test_session_start_always_tells_the_agent_the_plugin_root(adapter, monkeypatch, capsys):
+    """The skills need the plugin root and Cursor never exports CURSOR_PLUGIN_ROOT to
+    the agent's shell, so sessionStart's context carries it, even on a failed hook."""
+    root = str(adapter.plugin_root())
+    start = json.dumps(_payload("sessionStart"))
+
+    monkeypatch.setattr(
+        adapter,
+        "_run_script",
+        lambda payload, script, flags: json.dumps(
+            {"hookSpecificOutput": {"additionalContext": "memory ready"}}
+        ),
+    )
+    monkeypatch.setattr("sys.stdin", _Stdin(start))
+    assert adapter.main(["session-start.py"]) == 0
+    context = json.loads(capsys.readouterr().out.strip())["additional_context"]
+    assert context.startswith("memory ready\n\n")
+    assert f"{adapter.PLUGIN_ROOT_CONTEXT_PREFIX} {root}" in context
+    assert f'export CURSOR_PLUGIN_ROOT="{root}"' in context
+
+    def boom(payload, script, flags):
+        raise RuntimeError("server down")
+
+    monkeypatch.setattr(adapter, "_run_script", boom)
+    monkeypatch.setattr("sys.stdin", _Stdin(start))
+    assert adapter.main(["session-start.py"]) == 0
+    context = json.loads(capsys.readouterr().out.strip())["additional_context"]
+    assert context.startswith(f"{adapter.PLUGIN_ROOT_CONTEXT_PREFIX} {root}")
+
+    # Only sessionStart carries it; every prompt would otherwise repeat it.
+    monkeypatch.setattr(adapter, "_run_script", lambda payload, script, flags: "{}")
+    monkeypatch.setattr(
+        "sys.stdin", _Stdin(json.dumps(_payload("beforeSubmitPrompt", prompt="hi")))
+    )
+    assert adapter.main(["session-context-lookup.py"]) == 0
+    assert "additional_context" not in json.loads(capsys.readouterr().out.strip())
+
+
+def test_only_the_qa_store_consumes_the_stored_marker(adapter, tmp_path):
+    """credits-refresh also runs on stop; it must leave the marker for the QA store,
+    or the store falls back to the transcript and stores the answer a second time."""
+    transcript = _write_transcript(
+        tmp_path / "t.jsonl", _user("q"), _assistant({"type": "text", "text": "scraped"})
+    )
+    adapter.mark_answer_stored("conv-123", "gen-7")
+    stop = _payload("stop", status="completed", transcript_path=str(transcript))
+
+    credits = adapter.normalize_payload(stop, "credits-refresh.py")
+    assert credits["hook_event_name"] == "Stop"
+    assert "answer_already_stored" not in credits and "assistant_message" not in credits
+
+    store = adapter.normalize_payload(stop, "store-to-session.py", ("--stop",))
+    assert store["answer_already_stored"] is True
+    assert adapter.should_skip(store, "store-to-session.py", ("--stop",))
+
+
+def test_stop_skips_while_the_after_response_store_is_still_running(
+    adapter, monkeypatch, capsys, tmp_path
+):
+    """The turn is claimed before the store runs, so a stop that lands mid-store
+    skips; a store that fails releases the claim so stop can still recover it."""
+    transcript = _write_transcript(
+        tmp_path / "t.jsonl", _user("q"), _assistant({"type": "text", "text": "scraped"})
+    )
+    stop = _payload("stop", status="completed", transcript_path=str(transcript))
+    during: list[dict] = []
+
+    def slow_store(payload, script, flags):
+        # Cursor fires stop while afterAgentResponse's store is still in flight.
+        during.append(adapter.normalize_payload(stop, "store-to-session.py", ("--stop",)))
+        return json.dumps({})
+
+    monkeypatch.setattr(adapter, "_run_script", slow_store)
+    after = _payload("afterAgentResponse", text="the answer")
+    monkeypatch.setattr("sys.stdin", _Stdin(json.dumps(after)))
+    assert adapter.main(["store-to-session.py", "--stop"]) == 0
+    capsys.readouterr()
+    assert during[0].get("answer_already_stored") is True
+    assert "assistant_message" not in during[0]
+
+    def failing_store(payload, script, flags):
+        raise subprocess.TimeoutExpired(["store"], 1)
+
+    monkeypatch.setattr(adapter, "_run_script", failing_store)
+    monkeypatch.setattr("sys.stdin", _Stdin(json.dumps(dict(after, generation_id="gen-8"))))
+    assert adapter.main(["store-to-session.py", "--stop"]) == 0
+    capsys.readouterr()
+    recovered = adapter.normalize_payload(
+        dict(stop, generation_id="gen-8"), "store-to-session.py", ("--stop",)
+    )
+    assert recovered["assistant_message"] == "scraped"
+    assert not list((adapter.state_dir() / "responses").glob("*.tmp"))
+
+
 def test_hook_table_only_names_known_scripts_with_bounded_timeouts(adapter):
     for event, entries in adapter.HOOK_TABLE.items():
         assert event in adapter.EVENT_MAP, event

@@ -5,6 +5,12 @@ description: Use when configuring the Cognee connection, checking whether Cognee
 
 # Cognee Connection And Status
 
+> **Plugin root.** The commands below use `${CURSOR_PLUGIN_ROOT}`, which Cursor
+> does not set in your shell. Take the path from the `Cognee plugin root:` line
+> in the session context (or use the directory two levels above this `SKILL.md`,
+> the one holding `scripts/`) and run `export CURSOR_PLUGIN_ROOT="<that path>"`
+> in the same shell command, before the skill command.
+
 Use this skill when the user asks to configure Cognee, check whether Cognee is
 ready or connected, switch between local and cloud mode, or diagnose a
 connection problem.

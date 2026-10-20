@@ -148,6 +148,11 @@ def test_every_skill_directory_has_a_skill_md_naming_cursor_not_codex(manifest):
         assert re.search(r"^description:\s*\S+", text, re.M), skill
         assert "CODEX_PLUGIN_ROOT" not in text, skill
         assert "COGNEE_CODEX_BACKEND" not in text, skill
+        if "${CURSOR_PLUGIN_ROOT}" in text:
+            # Cursor never exports it to the agent's shell; the skill has to say
+            # where the root comes from, or every command expands to /scripts/...
+            assert "Cognee plugin root:" in text, skill
+            assert 'export CURSOR_PLUGIN_ROOT="' in text, skill
 
 
 def test_readme_and_changelog_exist_and_agree_on_the_version(manifest):

@@ -5,6 +5,12 @@ description: Forget data stored in Cognee memory. Use when the user asks to forg
 
 # Cognee Forget
 
+> **Plugin root.** The commands below use `${CURSOR_PLUGIN_ROOT}`, which Cursor
+> does not set in your shell. Take the path from the `Cognee plugin root:` line
+> in the session context (or use the directory two levels above this `SKILL.md`,
+> the one holding `scripts/`) and run `export CURSOR_PLUGIN_ROOT="<that path>"`
+> in the same shell command, before the skill command.
+
 Delete documents from Cognee memory based on what the user asks to forget. You decide *which* documents match by reading their raw content — Cognee only deletes what you tell it to.
 
 ## When to use

@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Search session + trace + agent guidance + graph for context relevant to the user's prompt.
 
-Runs on the Cursor UserPromptSubmit hook. One ``/api/v1/recall`` request with
-``scope=["graph"]``, ``HYBRID_COMPLETION`` and ``only_context=True``, carrying the
-session id. On cognee >= 1.6.0 the returned item's ``text`` is the full LLM input
-the completion would have received: the conversation history, the question with
-the retrieved context rendered through the retriever's template, and the session
-guidance block. That one string is injected as-is into Cursor's context, so
-the session, trace and agent-guidance layers no longer need requests of their
-own. A deterministic code-graph lane is added only on identifier-shaped prompts.
+Runs on the Cursor UserPromptSubmit hook. Two requests to ``/api/v1/recall`` in flight
+together: ``scope=["graph"]`` with ``HYBRID_COMPLETION`` and ``only_context=True``
+but WITHOUT the session id, and ``scope=["session_context"]`` with it. On cognee
+>= 1.6.0 the graph item's ``text`` is the full LLM input the completion would
+have received; sent without a session id it carries no conversation history,
+and ``_recall_text`` cuts the question template away and shrinks the retrieved
+context (own-session passages dropped, passages capped, empty entity bullets
+pruned) before it is injected — the agent already holds the conversation, so
+re-sending it only cost tokens (SDK-904). The session_context item is the
+server-rendered guidance block, capped server-side. A deterministic code-graph
+lane is added only on identifier-shaped prompts, and injected only when it
+found something.
 
 Configuration:
     Resolves session state via Cognee HTTP endpoints.
@@ -24,6 +28,7 @@ import time
 
 # Add scripts dir to path for helper imports
 sys.path.insert(0, os.path.dirname(__file__))
+import _plugin_common
 from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
@@ -57,9 +62,20 @@ from _plugin_common import (
     set_session_key,
     slow_streak_threshold,
     warmup_backlog,
+    with_base_url_notice,
     write_connection_state,
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
+from _recall_text import (
+    MemoryTags,
+    begin_turn,
+    code_facts,
+    credit_enabled,
+    credit_instruction,
+    format_code_facts,
+    has_credited,
+    trim_recall_text,
+)
 from cognee_statusline_render import render_status_for_host
 from config import get_dataset, get_session_id, load_config
 
@@ -148,12 +164,10 @@ def _format_entry(entry: dict) -> str:
 
     if source == "graph_context":
         # One item per dataset. On cognee >= 1.6.0 its ``text`` is the full LLM
-        # input the completion would have received (conversation history, the
-        # question with the retrieved context rendered through the retriever's
-        # template, then the session guidance block); older servers put the
-        # bare retrieval context there. Injected whole and uncapped: the context
-        # sits in the middle and the guidance at the end, so any cut would take
-        # exactly what memory is for. ``top_k`` bounds the size server-side.
+        # input the completion would have received; ``_run`` has already cut
+        # it down to the retrieved context (``trim_recall_text``), so what is
+        # left is injected as-is. Older servers put the bare retrieval context
+        # there, which the trimmer passes through untouched.
         content = str(entry.get("text", "") or entry.get("content", ""))
         return f"[cognee-memory]\n{content}"
 
@@ -162,9 +176,13 @@ def _format_entry(entry: dict) -> str:
         return f"[agent-guidance]\n{content}"
 
     if source == "code":
-        # Deterministic code-graph facts (ResponseCodeEntry): `text` is the
-        # normalized renderable field; raw payloads keep full structure.
+        # Deterministic code-graph facts (ResponseCodeEntry): ``text`` is the
+        # server's JSON ``query_facts`` payload, rendered one line per symbol;
+        # any other shape is injected as-is.
         content = str(entry.get("text", "") or entry.get("content", ""))
+        facts = code_facts(content)
+        if facts:
+            content = format_code_facts(facts)
         return f"[code-graph]\n{content}"
 
     if source == "trace":
@@ -243,6 +261,35 @@ def _memory_summary(
     return "Cognee memory: " + " · ".join(parts)
 
 
+def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
+    """``_format_entry`` with the item's credit tag (SDK-1071), when tagging is on.
+
+    Graph memory is tagged per passage plus one tag each for its entities and
+    facts; every other item gets one tag naming where it came from. An earlier
+    turn or trace is known by its server id, so it keeps its tag when recalled
+    again.
+    """
+    if tags is None:
+        return _format_entry(entry)
+    source = entry.get("source", "")
+    if source == "graph_context":
+        entry = dict(entry)
+        entry["text"] = tags.tag_graph(str(entry.get("text", "") or entry.get("content", "")))
+        return _format_entry(entry)
+    body = _format_entry(entry)
+    ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
+    if source == "code":
+        origin = "code graph"
+    elif source == "session_context":
+        origin = "agent guidance"
+    elif source == "trace":
+        origin = f"agent trace, {entry.get('origin_function', '?')}"
+    else:
+        day = str(entry.get("time", "") or "")[:10]
+        origin = f"earlier session turn, {day}" if day else "earlier session turn"
+    return f"{tags.label(source or 'session', origin, body, ident)}\n{body}"
+
+
 def _outage_output(state: str) -> dict:
     """Envelope for a prompt whose recall was skipped: see ``outage_header``."""
     session_id = _load_session_id()
@@ -263,7 +310,14 @@ def _has_entry_content(entry: dict) -> bool:
     if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "code":
-        return bool(str(entry.get("text", "") or entry.get("content", "")).strip())
+        # A ``query_facts`` payload with no facts is a miss, not a hit: the
+        # server answers the lane with an empty list when the seed resolves
+        # to nothing, and injecting that JSON told the model nothing (SDK-904).
+        content = str(entry.get("text", "") or entry.get("content", ""))
+        facts = code_facts(content)
+        if facts is not None:
+            return bool(facts)
+        return bool(content.strip())
     if source == "trace":
         fields = ("origin_function", "status", "session_feedback", "method_return_value")
     else:
@@ -272,6 +326,14 @@ def _has_entry_content(entry: dict) -> bool:
 
 
 async def _run(prompt: str, cwd: str = "") -> dict | None:
+    if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
+        # First, so a recall that returns early leaves this turn with no tags
+        # and the Stop hook cannot check the answer against the previous
+        # turn's (SDK-1071).
+        try:
+            begin_turn(_plugin_common._PLUGIN_DIR, get_session_key())
+        except Exception as exc:
+            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
     config = load_config()
     runtime = resolve_runtime_mode()
     # Readiness gate, redesigned (SDK-356): the recall attempt itself is the
@@ -283,7 +345,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # so a confirmed-bad backend costs one bounded probe per prompt instead of
     # the full budget.
     service_url = runtime.get("base_url", "")
-    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)
+    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 3.0)
     prior = read_connection_state()
     # Permissive on purpose: "same target" unless the two URLs provably differ,
     # so a recorded state still applies when a URL is unknown. Mirrors the
@@ -334,16 +396,18 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # (store-user-prompt.py) drains instead; improve/SessionEnd re-drain too.
     saves_last_turn = read_and_reset_save_counter(session_id)
 
-    # One request for memory. On cognee >= 1.6.0 an ``only_context`` completion
-    # search returns the whole LLM input: the conversation history (the old
-    # ``session`` scope), the question plus retrieved graph context, and the
-    # session guidance block (the old ``session_context`` scope, distilled from
-    # the trace layer) — so the per-layer fan-out this hook used to run is one
-    # graph-scope recall now, with the session id attached so the server can
-    # build the session layers. Scope, type and only_context stay explicit:
-    # the server's ``auto`` scope would add raw session entries next to the
-    # prompt (or short-circuit the graph on a session hit), and an unpinned
-    # type lets the router pick CHUNKS, which never builds a prompt.
+    # Two requests for memory (SDK-904). The graph recall is sent WITHOUT the
+    # session id: with it, a cognee >= 1.6.0 ``only_context`` completion
+    # prepends the session's last ten Q&A pairs in full — the agent's own
+    # previous turns, already in its context window — which was ~60% of a
+    # mid-session payload. Without it the item is the question template around
+    # the retrieved context, and ``trim_recall_text`` keeps only the context.
+    # The guidance block (the ``session_context`` layer distilled from the
+    # trace layer) is small and useful, so it is fetched on its own, with the
+    # session id, as the server-rendered block. Scope, type and only_context
+    # stay explicit: the server's ``auto`` scope would add raw session entries
+    # next to the prompt (or short-circuit the graph on a session hit), and an
+    # unpinned type lets the router pick CHUNKS, which never builds a prompt.
     # HYBRID_COMPLETION combines BM25 + vector + graph retrieval; the LLM
     # completion itself is skipped server-side. The code lane below is the
     # only other request, and only on prompts that arm it. The list order is
@@ -351,6 +415,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     results: list = []
     scope_specs = [
         (["graph"], "HYBRID_COMPLETION", None),
+        (["session_context"], None, "qa"),
     ]
     # Additive code-graph lane (cognee >= 1.5.3). Fires only when the prompt
     # carries an identifier-shaped token AND the cwd sits inside a repo the
@@ -396,11 +461,11 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # very same interval. COGNEE_RECALL_TIMEOUT is NOT read here — it still
     # bounds the explicit cognee-search path (_cognee_client.py).
     #
-    # The default (12s) is sized for the graph scope, the only expensive call.
+    # The default (20s) is sized for the graph scope, the only expensive call.
     # Graph search time grows with the dataset and with the round trip to a
     # remote (cloud) server, so a cap tuned for a small local graph silently
     # drops graph memory once either grows.
-    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 12.0)
+    recall_budget = _float_env("COGNEE_RECALL_BUDGET", 20.0)
     recall_start = time.monotonic()
     budget_deadline = recall_start + recall_budget
     # Respect the shared circuit breaker: when the server has been failing (tripped
@@ -464,6 +529,10 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             scope_dataset_ids = (
                 read_ids if scope_list == ["graph"] else [write_id] if write_id else []
             )
+        # The graph recall carries no session id (see scope_specs): the
+        # history it would add is the agent's own conversation. Only the
+        # guidance request needs the session.
+        scope_session_id = "" if scope_list == ["graph"] else session_id
         part, exc = None, None
         t0 = time.monotonic()
         try:
@@ -473,7 +542,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             part = await asyncio.to_thread(
                 recall_via_http,
                 prompt,
-                session_id=session_id,
+                session_id=scope_session_id,
                 top_k=TOP_K,
                 scope=scope_list,
                 only_context=True,
@@ -507,7 +576,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         import urllib.error as _urlerr
 
         verdict = classify_transport_exception(exc)
-        if isinstance(exc, _urlerr.HTTPError) and exc.code == 404 and scope_list == ["graph"]:
+        is_404 = isinstance(exc, _urlerr.HTTPError) and exc.code == 404
+        if is_404 and scope_list == ["session_context"]:
+            # The server answered: no session guidance exists for this session
+            # or dataset yet (a fresh install, a dataset without a graph).
+            # Authoritative empty, same as ``_recall_http`` reads a 404 — not a
+            # failure, and the server was reached, so the request counts as ok.
+            hook_log("recall_guidance_absent", {"scope": scope_list, "dataset": scope_dataset})
+            scopes_ok += 1
+            continue
+        if is_404 and scope_list == ["graph"]:
             # A dataset nobody has written to yet has no graph, and the
             # server answers the graph scope with 404 (DatasetNotFound)
             # until the first cognify lands. On a fresh install that is
@@ -638,9 +716,13 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         "session_context": [],
         "code": [],
     }
+    item_guidance = ""
     for r in results or []:
         if not isinstance(r, dict):
             continue
+        # Work on a copy: the source is re-tagged and the text trimmed below,
+        # and the caller's items are not ours to rewrite.
+        r = dict(r)
         src = r.get("source", "session")
         # The graph scope tags results source=graph; keep the historical
         # graph_context bucket name so the status line, last_recall.json
@@ -648,39 +730,40 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         if src == "graph":
             r["source"] = "graph_context"
             src = "graph_context"
+            # Keep the retrieved context only (SDK-904): the question template
+            # goes, own-session passages go, the rest is capped and pruned.
+            # Unparsed text (a pre-1.6.0 bare context, an unknown template)
+            # is injected whole — fail-open, logged.
+            if r.get("text"):
+                trimmed, guidance, stats = trim_recall_text(
+                    str(r.get("text") or ""), prompt, session_id
+                )
+                r["text"] = trimmed
+                if guidance and not item_guidance:
+                    item_guidance = guidance
+                hook_log(
+                    "recall_context_trimmed" if stats["parsed"] else "recall_context_unparsed",
+                    stats,
+                )
         if not _has_entry_content(r):
             continue
         by_source.setdefault(src, []).append(r)
+    # A durable-preferences block can trail the graph item even without a
+    # session id. The session_context request renders the same lines inside
+    # its block, so it is only used when that request brought nothing.
+    if item_guidance and not by_source.get("session_context"):
+        by_source["session_context"].append({"source": "session_context", "content": item_guidance})
 
     counts = {k: len(v) for k, v in by_source.items()}
     total = sum(counts.values())
-
-    # Name the other datasets the user could search instead (see
-    # _other_datasets_hint) — on every prompt the server answered, since only
-    # the model can tell whether the recalled context answers the user. Not
-    # when nothing answered: the search it recommends would fail the same way.
-    # Decoration on the recall path — it must never break the hook output.
-    dataset_hint = ""
-    if scopes_ok and _dataset_hint_enabled():
-        try:
-            dataset_hint = _other_datasets_hint(
-                session_dataset,
-                read_ids or ([write_id] if write_id else []),
-                service_url,
-                budget_deadline,
-            )
-        except Exception as exc:
-            hook_log(
-                "recall_error",
-                {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
-            )
 
     # Session-cumulative counter: how many prompts this session has seen and on
     # how many of them memory actually injected something — the "memory fired
     # on 12 of 40 turns" activation number in the header. Carried forward from
     # the marker only when the marker is ours (codex keeps a single shared
     # file, so another terminal may have prompted last); keyed by host session,
-    # so a new session starts over and a resumed one continues.
+    # so a new session starts over and a resumed one continues. Read here,
+    # before the dataset hint, which it gates.
     _session_key = get_session_key()
     _totals = {"turns": 0, "turns_with_hits": 0}
     _state = None
@@ -705,6 +788,28 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     _totals["turns"] += 1
     if total > 0:
         _totals["turns_with_hits"] += 1
+
+    # Name the other datasets the user could search instead (see
+    # _other_datasets_hint). The block is static text, so it rides along on
+    # the session's FIRST answered prompt — the model keeps it from there —
+    # and again on any prompt memory answered with nothing, the moment it is
+    # actually needed (SDK-904). Not when nothing answered: the search it
+    # recommends would fail the same way. Decoration on the recall path — it
+    # must never break the hook output.
+    dataset_hint = ""
+    if scopes_ok and _dataset_hint_enabled() and (_totals["turns"] <= 1 or total == 0):
+        try:
+            dataset_hint = _other_datasets_hint(
+                session_dataset,
+                read_ids or ([write_id] if write_id else []),
+                service_url,
+                budget_deadline,
+            )
+        except Exception as exc:
+            hook_log(
+                "recall_error",
+                {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
+            )
 
     # Write last-turn counts so the status line script can render them.
     # Best-effort; failure here must not break the hook output.
@@ -752,16 +857,22 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         backlog=warmup_backlog(),
     )
 
+    # Tag each recalled item so the answer can credit it (SDK-1071).
+    tags = (
+        MemoryTags.load(_plugin_common._PLUGIN_DIR, get_session_key())
+        if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
+        else None
+    )
     section_lines = []
     if by_source.get("code"):
         section_lines.append("=== Code graph facts ===")
         for e in by_source["code"]:
-            section_lines.append(_format_entry(e))
+            section_lines.append(_tagged_entry(e, tags))
             section_lines.append("")
     if by_source.get("graph_context"):
         section_lines.append("=== Cognee memory ===")
         for e in by_source["graph_context"]:
-            section_lines.append(_format_entry(e))
+            section_lines.append(_tagged_entry(e, tags))
             section_lines.append("")
     # A server older than 1.6.0 answers the graph scope with the bare context
     # and nothing else arrives on this request; whatever a server does tag with
@@ -774,11 +885,19 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         if by_source.get(src):
             section_lines.append(title)
             for e in by_source[src]:
-                section_lines.append(_format_entry(e))
+                section_lines.append(_tagged_entry(e, tags))
                 section_lines.append("")
     if total > 0:
+        # The credit instruction goes right under the header, not after the
+        # memory: Claude Code replaces hook context over 10,000 characters with
+        # a file and a 2 KB preview, so a large recall would cut off anything
+        # at the end (SDK-1071).
+        instruction = ""
+        if tags is not None and tags.found:
+            first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
+            instruction = credit_instruction(first, len(tags.found)) + "\n\n"
         full_context = (
-            f"{header}\n\nRelevant context from this session's memory:\n\n"
+            f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
         if dataset_hint:
@@ -795,9 +914,10 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         )
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
-        full_context = f"{header}\n\n(no memory matches for this prompt)"
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
+        # Nothing recalled: the agent gets no memory header (a "0 hits" line on
+        # most turns read as "Cognee does nothing", SDK-1071). The header stays
+        # in systemMessage; the dataset hint, when due, still goes in.
+        full_context = dataset_hint
         hook_log(
             "context_lookup_empty",
             {
@@ -830,12 +950,22 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     "prompt": _audit_clip(prompt, _AUDIT_PROMPT_CHARS),
                     "hits": counts,
                     "per_scope": per_scope,
+                    # The header the user sees: an empty recall no longer
+                    # puts it in the injected context (SDK-1071).
+                    "header": header,
                     "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
                 }
             ),
         )
     except Exception as exc:
         hook_log("recall_audit_write_failed", {"error": str(exc)[:200]})
+
+    # The Stop hook checks the answer's citations against these (SDK-1071).
+    if tags is not None:
+        try:
+            tags.save(_plugin_common._PLUGIN_DIR, get_session_key())
+        except Exception as exc:
+            hook_log("memory_tags_write_failed", {"error": str(exc)[:200]})
 
     # additionalContext is the MODEL injection channel and must carry the full
     # recalled content — trimming it to the status line would silently disable
@@ -850,6 +980,20 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         },
     }
     return output
+
+
+def _recall_min_prompt_chars() -> int:
+    """Prompts shorter than this skip recall (capture keeps its own 5-char floor).
+
+    COGNEE_RECALL_MIN_PROMPT_CHARS lets a host raise the floor so acknowledgements
+    and one-word nudges do not cost a lookup and an injected context block. The
+    default matches the stock gate, so an unset variable changes nothing.
+    """
+    raw = os.environ.get("COGNEE_RECALL_MIN_PROMPT_CHARS", "").strip()
+    try:
+        return max(5, int(raw)) if raw else 5
+    except ValueError:
+        return 5
 
 
 def main():
@@ -875,6 +1019,12 @@ def main():
     prompt = payload.get("prompt", "")
     if not prompt or len(prompt) < 5:
         return
+    # Only a raised floor applies here: the stock gate above keeps its exact
+    # behavior (whitespace counts), so an unset variable changes nothing.
+    min_chars = _recall_min_prompt_chars()
+    if min_chars > 5 and len(prompt.strip()) < min_chars:
+        hook_log("context_lookup_short_prompt", {"chars": len(prompt.strip()), "min": min_chars})
+        return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
 
     output = None
@@ -883,7 +1033,7 @@ def main():
             output = asyncio.run(_run(prompt, cwd))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
-    return output
+    return with_base_url_notice(output, "UserPromptSubmit")
 
 
 if __name__ == "__main__":

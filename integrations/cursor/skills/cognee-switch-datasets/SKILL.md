@@ -5,6 +5,12 @@ description: Use when the user wants to switch this Cursor session to another Co
 
 # Switch Datasets
 
+> **Plugin root.** The commands below use `${CURSOR_PLUGIN_ROOT}`, which Cursor
+> does not set in your shell. Take the path from the `Cognee plugin root:` line
+> in the session context (or use the directory two levels above this `SKILL.md`,
+> the one holding `scripts/`) and run `export CURSOR_PLUGIN_ROOT="<that path>"`
+> in the same shell command, before the skill command.
+
 Move this Cursor session to a different Cognee dataset. A Cognee session never
 spans two datasets, so the switch retires the current session (after syncing
 it into the graph) and starts a new one on the chosen dataset. All later saves
