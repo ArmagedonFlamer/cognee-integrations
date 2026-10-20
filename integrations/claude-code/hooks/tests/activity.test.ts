@@ -17,10 +17,6 @@ const SNAPSHOT = {
   credits: '',
   update: '',
   text: 'cognee: agent_sessions · local',
-  counts: {
-    tokens_saved: '~2.4k tokens saved',
-    tokens_saved_short: '~2.4kt saved',
-  },
 }
 
 const BAND = {
@@ -85,11 +81,11 @@ test('the desktop band shows the row the terminal status line shows', async ($, 
 
   const ui = await $.ui.mount({ plugin: 'cognee-memory', surface: 'desktop', ...BAND })
   // The mark (the official SVG on the desktop), the wordmark, the dataset,
-  // the mode, the estimate and the activity.
+  // the mode and the activity.
   expect(await ui.find({ type: 'Svg' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /agent_sessions/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /~2.4k tokens saved/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /tokens saved/ })).toBeUndefined()
   expect(await ui.find({ type: 'Text', text: /3 memories used/ })).toBeDefined()
   // Healthy leads with the green dot, as on the text line.
   expect(await ui.find({ type: 'Text', text: /●/ })).toBeDefined()
