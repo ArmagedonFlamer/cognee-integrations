@@ -1,6 +1,6 @@
 {
   "name": "@cognee/cognee-opencode",
-  "version": "2026.9.5",
+  "version": "2026.9.29",
   "type": "module",
   "description": "OpenCode Cognee-backed memory plugin with auto-recall and custom tools",
   "main": "dist/index.js",

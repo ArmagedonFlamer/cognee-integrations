@@ -14,12 +14,15 @@ Contract:
     goes by (its UUIDs under shared memory, its name when name-addressed);
   * ``cached_readable_datasets`` returns the rows: a fresh cache without the
     network, a stale one refreshed, the stale rows kept when the refresh fails,
-    and never a listing fetched for another server/identity;
-  * the hook appends the hint on every prompt the server ANSWERED — hits or
-    not, since graph retrieval always returns something and only the model
-    can judge whether it answers the user — and never when nothing answered
-    (dead server, open breaker), with a single dataset, or with the knob off;
-    the hint never reaches the header;
+    a failed refresh not retried before ``COGNEE_DATASETS_CACHE_RETRY``, and never
+    a listing fetched for another server/identity;
+  * the hook appends the hint on the session's FIRST prompt the server
+    ANSWERED — hit or not, since graph retrieval always returns something and
+    only the model can judge whether it answers the user — and again on any
+    later prompt memory answered with nothing (SDK-904: the block is static
+    text, so repeating it on every hit only cost tokens); never when nothing
+    answered (dead server, open breaker), with a single dataset, or with the
+    knob off; the hint never reaches the header;
   * ``list-datasets.py`` marks the active dataset and can drop it.
 
 Both hook suites carry the flow identically.
@@ -169,6 +172,73 @@ def test_failed_refresh_with_no_cache_is_empty_not_an_error(pc, monkeypatch):
     assert pc.cached_readable_datasets(service_url=URL) == []
 
 
+def _age_the_cache(pc) -> None:
+    """Date the stored listing far into the past. ``max_age=0`` is not enough:
+    on Windows ``time.time()`` ticks in ~15 ms steps, so a listing fetched a
+    moment ago can be exactly 0 s old and count as fresh."""
+    stored = json.loads(pc._READABLE_DATASETS_CACHE.read_text(encoding="utf-8"))
+    stored["fetched_at"] = time.time() - 10_000
+    pc._READABLE_DATASETS_CACHE.write_text(json.dumps(stored), encoding="utf-8")
+
+
+def test_failed_refresh_is_not_retried_inside_the_backoff(pc, cache, monkeypatch):
+    pc.cached_readable_datasets(service_url=URL)
+    _age_the_cache(pc)
+    attempts: list[str] = []
+
+    def boom(*a, **k):
+        attempts.append("server")
+        raise OSError("timed out")
+
+    monkeypatch.setattr(pc, "list_readable_datasets", boom)
+    assert pc.cached_readable_datasets(service_url=URL) == ROWS
+    assert pc.cached_readable_datasets(service_url=URL) == ROWS
+    assert pc.cached_readable_datasets(service_url=URL) == ROWS
+    assert attempts == ["server"]
+    stored = json.loads(pc._READABLE_DATASETS_CACHE.read_text(encoding="utf-8"))
+    assert stored["datasets"] == ROWS and stored["failed_at"] > 0
+
+
+def test_failed_refresh_is_retried_once_the_backoff_has_passed(pc, cache, monkeypatch):
+    def boom(*a, **k):
+        raise OSError("timed out")
+
+    monkeypatch.setattr(pc, "list_readable_datasets", boom)
+    assert pc.cached_readable_datasets(service_url=URL) == []
+    stored = json.loads(pc._READABLE_DATASETS_CACHE.read_text(encoding="utf-8"))
+    stored["failed_at"] = time.time() - 10_000
+    pc._READABLE_DATASETS_CACHE.write_text(json.dumps(stored), encoding="utf-8")
+    monkeypatch.setattr(pc, "list_readable_datasets", lambda *a, **k: list(ROWS))
+    assert pc.cached_readable_datasets(service_url=URL) == ROWS
+    stored = json.loads(pc._READABLE_DATASETS_CACHE.read_text(encoding="utf-8"))
+    assert "failed_at" not in stored
+
+
+def test_backoff_window_is_configurable(pc, cache, monkeypatch):
+    monkeypatch.setenv("COGNEE_DATASETS_CACHE_RETRY", "0")
+    attempts: list[str] = []
+
+    def boom(*a, **k):
+        attempts.append("server")
+        raise OSError("timed out")
+
+    monkeypatch.setattr(pc, "list_readable_datasets", boom)
+    pc.cached_readable_datasets(service_url=URL)
+    pc.cached_readable_datasets(service_url=URL)
+    assert attempts == ["server", "server"]
+
+
+def test_a_failure_for_one_identity_does_not_defer_another(pc, cache, monkeypatch):
+    def boom(*a, **k):
+        raise OSError("timed out")
+
+    monkeypatch.setattr(pc, "list_readable_datasets", boom)
+    assert pc.cached_readable_datasets(service_url=URL) == []
+    monkeypatch.setattr(pc, "list_readable_datasets", lambda *a, **k: list(ROWS))
+    monkeypatch.setattr(pc, "_api_key", lambda: "key-2")
+    assert pc.cached_readable_datasets(service_url=URL) == ROWS
+
+
 def test_cache_is_keyed_by_server_and_identity(pc, cache, monkeypatch):
     pc.cached_readable_datasets(service_url=URL)
     pc.cached_readable_datasets(service_url="https://elsewhere.example")
@@ -217,11 +287,14 @@ def test_the_hint_names_the_hosts_way_of_asking(suite, lookup, monkeypatch):
         assert "numbered list" in ctx and "AskUserQuestion" not in ctx
 
 
-def test_an_answered_prompt_appends_the_other_datasets(lookup, monkeypatch):
+def test_an_answered_prompt_appends_the_other_datasets(lookup, monkeypatch, suite):
     _offer(lookup, monkeypatch)
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
     ctx = _context(run)
-    assert "(no memory matches for this prompt)" in ctx
+    if suite.injects_empty_recall:
+        assert "(no memory matches for this prompt)" in ctx
+    else:
+        assert ctx.startswith("Other Cognee datasets")  # no empty-recall header (SDK-1071)
     assert "Other Cognee datasets you can search (active: agent_sessions)" in ctx
     assert f"  - project-alpha [{OTHER_ID}]" in ctx and f"  - team-notes [{THIRD_ID}]" in ctx
     assert "agent_sessions [" not in ctx  # the active dataset is never offered
@@ -239,7 +312,7 @@ def test_the_hint_never_reaches_the_header(lookup, monkeypatch):
     assert "Other Cognee datasets" not in header
 
 
-def test_hits_still_offer_the_other_datasets(lookup, monkeypatch):
+def test_hits_still_offer_the_other_datasets(lookup, monkeypatch, suite):
     """Graph retrieval is nearest-neighbour and returns something from any
     populated dataset, so a hit is no proof the question was answered — the
     list rides along and the model judges."""
@@ -247,9 +320,29 @@ def test_hits_still_offer_the_other_datasets(lookup, monkeypatch):
     hit = dict(HIT, graph=[{"source": "graph", "content": "found something"}])
     run = drive_recall(lookup, monkeypatch, recall=hit)
     ctx = _context(run)
-    assert "Relevant context from this session's memory" in ctx
+    assert (
+        "=== Cognee memory ==="
+        if suite.name == "claude-code"
+        else "Relevant context from this session's memory"
+    ) in ctx
     assert "Other Cognee datasets you can search" in ctx
     assert "does not answer it, do not conclude that memory has nothing" in ctx
+
+
+def test_a_hit_on_a_later_turn_does_not_repeat_the_hint(lookup, monkeypatch):
+    """The block is static text the model keeps from the first turn; repeating
+    it on every hit was ~3k chars a prompt for nothing (SDK-904). A later MISS
+    brings it back, that being the moment it is actually needed."""
+    seen = _offer(lookup, monkeypatch)
+    hit = dict(HIT, graph=[{"source": "graph", "content": "found something"}])
+
+    first = drive_recall(lookup, monkeypatch, recall=hit)
+    assert "Other Cognee datasets you can search" in _context(first)
+    second = drive_recall(lookup, monkeypatch, recall=hit)
+    assert "Other Cognee datasets" not in _context(second)
+    assert len(seen) == 1, "the listing is not even consulted on a later hit"
+    third = drive_recall(lookup, monkeypatch, recall=_MISS)
+    assert "Other Cognee datasets you can search" in _context(third)
 
 
 def test_an_errored_graph_scope_still_offers_when_the_code_lane_answered(lookup, monkeypatch):
@@ -300,10 +393,17 @@ def test_a_dataset_without_a_graph_yet_still_offers(lookup, monkeypatch):
     assert "Other Cognee datasets you can search" in _context(run)
 
 
-def test_only_the_active_dataset_offers_nothing(lookup, monkeypatch):
+def _assert_empty_recall(ctx: str, suite) -> None:
+    if suite.injects_empty_recall:
+        assert ctx.endswith("(no memory matches for this prompt)")
+    else:
+        assert ctx == ""  # nothing recalled, nothing to offer: nothing injected
+
+
+def test_only_the_active_dataset_offers_nothing(lookup, monkeypatch, suite):
     _offer(lookup, monkeypatch, rows=ROWS[:1])
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
-    assert _context(run).endswith("(no memory matches for this prompt)")
+    _assert_empty_recall(_context(run), suite)
     assert not run.fired("recall_dataset_hint")
 
 
@@ -343,13 +443,13 @@ def test_every_other_dataset_is_named_unranked(lookup, monkeypatch):
     assert run.detail("recall_dataset_hint")["offered"] == 40
 
 
-def test_a_failing_lister_never_breaks_the_hook(lookup, monkeypatch):
+def test_a_failing_lister_never_breaks_the_hook(lookup, monkeypatch, suite):
     def boom(**kw):
         raise RuntimeError("cache exploded")
 
     monkeypatch.setattr(lookup, "cached_readable_datasets", boom)
     run = drive_recall(lookup, monkeypatch, recall=_MISS)
-    assert _context(run).endswith("(no memory matches for this prompt)")
+    _assert_empty_recall(_context(run), suite)
     assert run.detail("recall_error") == {
         "scope": ["dataset_hint"],
         "error": "cache exploded",

@@ -7,6 +7,7 @@ import type {
   CogneeSearchResult,
   CogneeSearchType,
 } from "./types.js";
+import { hash } from "./runtime.js";
 
 const MAX_RETRIES = 2;
 const RETRY_BASE_DELAY_MS = 3_000;
@@ -197,7 +198,15 @@ export class CogneeHttpClient {
   }> {
     const path = this.isCloud ? "/remember" : "/api/v1/remember";
     const formData = new FormData();
-    formData.append("data", new Blob([params.data], { type: "text/plain" }), "memory.txt");
+    // cognee >= 1.6.0 treats an upload's filename as its identity in the dataset
+    // and refuses (409) a known name with new content, so a fixed "memory.txt"
+    // failed every remember after the first. Naming by content keeps distinct
+    // texts distinct; the same text reuses its name and stays a dedup no-op.
+    formData.append(
+      "data",
+      new Blob([params.data], { type: "text/plain" }),
+      `memory-${hash(params.data).slice(0, 32)}.txt`,
+    );
     formData.append("datasetName", params.datasetName);
     if (params.datasetId) formData.append("datasetId", params.datasetId);
     if (params.sessionId) formData.append("session_id", params.sessionId);

@@ -102,6 +102,26 @@ def test_a_local_session_uses_the_server_already_running(host, local_server, tmp
     assert not (home / ".cognee-plugin" / "uv").exists()
 
 
+# One file per interpreter start, written aside and renamed into place. A shared
+# append-mode log tore lines on Windows, where append is not atomic across the
+# hooks and detached children a host starts at the same moment.
+_REEXEC_RECORDER = """\
+import json
+import os
+import sys
+import uuid
+
+if os.environ.get("COGNEE_PLUGIN_IN_VENV") == "1":
+    _dir = os.path.join(sys.prefix, "reexec")
+    os.makedirs(_dir, exist_ok=True)
+    _name = uuid.uuid4().hex
+    _tmp = os.path.join(_dir, _name + ".tmp")
+    with open(_tmp, "w", encoding="utf-8") as _fh:
+        json.dump(sys.argv, _fh)
+    os.replace(_tmp, os.path.join(_dir, _name + ".json"))
+"""
+
+
 def _make_plugin_venv(home: Path) -> Path:
     """A real venv at the plugin's venv path, logging every interpreter start."""
     venv = home / ".cognee-plugin" / "venv"
@@ -121,11 +141,9 @@ def _make_plugin_venv(home: Path) -> Path:
     # in the stdlib that shadows it). The plugin's re-exec sets
     # COGNEE_PLUGIN_IN_VENV=1 before it execs, so only re-execs are recorded.
     Path(purelib, "cognee_test_reexec.pth").write_text(
-        "import os, sys, json; os.environ.get('COGNEE_PLUGIN_IN_VENV') == '1' and "
-        "open(os.path.join(sys.prefix, 'reexec.jsonl'), 'a', encoding='utf-8')"
-        ".write(json.dumps(sys.argv) + chr(10))\n",
-        encoding="utf-8",
+        "import cognee_test_reexec_record\n", encoding="utf-8"
     )
+    Path(purelib, "cognee_test_reexec_record.py").write_text(_REEXEC_RECORDER, encoding="utf-8")
     return venv
 
 
@@ -159,9 +177,9 @@ def test_hooks_re_exec_into_the_plugin_venv(host, local_server, tmp_path, profil
     session.full("what is the project codename?", "and what did you just tell me?")
 
     _assert_session_worked(session)
-    log = venv / "reexec.jsonl"
-    assert log.is_file(), "no hook re-execed into the plugin venv"
-    starts = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines() if line]
+    records = sorted((venv / "reexec").glob("*.json"))
+    assert records, "no hook re-execed into the plugin venv"
+    starts = [json.loads(record.read_text(encoding="utf-8")) for record in records]
     # Every hook imports _plugin_common, so every hook the host launched
     # re-execs, and through the runner. Detached children the hooks start
     # themselves (the exit watcher, Codex's deferred SessionEnd sync) run

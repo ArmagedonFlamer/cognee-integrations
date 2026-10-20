@@ -19,6 +19,8 @@ from werkzeug import Request, Response
 
 from .identity_fake import IdentityFake
 
+_ENTRY_SCHEMA_REF = "#/components/schemas/RememberEntryPayload"
+
 #: Terminal cognify status the clients poll for on /api/v1/datasets/status.
 STATUS_COMPLETED = "DATASET_PROCESSING_COMPLETED"
 STATUS_ERRORED = "DATASET_PROCESSING_ERRORED"
@@ -214,6 +216,7 @@ class MockCogneeServer:
             elif "multipart/form-data" in ctype:
                 entry["form"] = dict(req.form)
                 entry["files"] = list(req.files.keys())
+                entry["filenames"] = [f.filename for f in req.files.values()]
             elif "application/x-www-form-urlencoded" in ctype:
                 entry["form"] = dict(req.form)
         except Exception:  # pragma: no cover - defensive
@@ -259,14 +262,36 @@ class MockCogneeServer:
                         ),
                         **(
                             {
+                                # As a real server describes it: the entry's
+                                # request body, behind a $ref, lists dataset_id.
                                 "/api/v1/remember/entry": {
-                                    "post": {"x-cognee-session-dataset-ids": True}
+                                    "post": {
+                                        "requestBody": {
+                                            "content": {
+                                                "application/json": {
+                                                    "schema": {"$ref": _ENTRY_SCHEMA_REF}
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
                             if self.identity.typed_dataset_ids
                             else {}
                         ),
-                    }
+                    },
+                    "components": {
+                        "schemas": {
+                            "RememberEntryPayload": {
+                                "properties": {
+                                    "dataset_id": {},
+                                    "dataset_name": {},
+                                    "entry": {},
+                                    "session_id": {},
+                                }
+                            }
+                        }
+                    },
                 },
             ),
         )
@@ -428,7 +453,9 @@ class MockCogneeServer:
                 200, {"dataset_id": dataset_id, "pipeline_run_id": f"run-{len(self.calls)}"}
             )
         dataset = req.form.get("datasetName", "")
-        _, ds = self.identity.datasets_create(dataset or "default", api_key)
+        status, ds = self.identity.datasets_create(dataset or "default", api_key)
+        if status == 401:
+            return _json(status, ds)
         return _json(
             200,
             {"dataset_id": ds["id"], "pipeline_run_id": f"run-{len(self.calls)}"},
@@ -529,6 +556,8 @@ class MockCogneeServer:
             return _json(200, self._improve_response)
         body_in = req.get_json(silent=True) or {}
         dataset = str(body_in.get("dataset_name") or "default")
+        if self.identity.is_foreign_minted_key(req.headers.get("X-Api-Key")):
+            return _json(401, {"detail": "invalid api key"})
         _, ds = self.identity.datasets_create(dataset)
         return _json(200, {"dataset_id": ds["id"], "status": "submitted"})
 

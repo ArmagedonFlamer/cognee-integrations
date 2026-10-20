@@ -294,6 +294,15 @@ describe("syncFiles", () => {
     }));
   });
 
+  it("passes the configured chunkSize to remember (#428)", async () => {
+    const files = [createFile("new.md", "content")];
+    mockRemember.mockResolvedValue(rememberResult("ds1", "test", [{ filePath: "new.md", dataId: "id1" }]));
+
+    await syncFiles(client, files, files, { entries: {} }, baseCfg({ chunkSize: 1200 }), logger);
+
+    expect(mockRemember).toHaveBeenCalledWith(expect.objectContaining({ chunkSize: 1200 }));
+  });
+
   it("updates changed file with dataId", async () => {
     const files = [createFile("existing.md", "new content")];
     const syncIndex: SyncIndex = { entries: { "existing.md": { hash: "old-hash", dataId: "id1" } }, datasetId: "ds1" };

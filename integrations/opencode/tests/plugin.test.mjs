@@ -53,6 +53,17 @@ test('404 lifecycle is optional but authentication failures propagate', async ()
  } finally {globalThis.fetch=original;}
 });
 
+test('remember names each upload by its content', async () => {
+ // cognee >= 1.6.0 refuses (409) a known upload name with new content.
+ const original=globalThis.fetch; const names=[];
+ try { const client=new CogneeHttpClient('https://example.test','key');
+ globalThis.fetch=async(_url,init={})=>{ names.push(init.body.get('data').name); return json({dataset_id:'d'}); };
+ for (const data of ['first','second','first']) await client.remember({data,datasetName:'ds'});
+ assert.match(names[0],/^memory-[0-9a-f]{32}\.txt$/);
+ assert.notEqual(names[0],names[1]); assert.equal(names[0],names[2]);
+ } finally {globalThis.fetch=original;}
+});
+
 test('the host entry point exports only plugin initializers', async () => {
  const module=await import('../dist/index.js');
  assert.deepEqual(Object.keys(module),['default']);

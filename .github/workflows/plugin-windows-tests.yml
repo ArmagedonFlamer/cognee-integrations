@@ -16,7 +16,7 @@ name: Plugin Windows Tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, dev]
     paths:
       - 'integrations/claude-code/**'
       - 'integrations/codex/**'

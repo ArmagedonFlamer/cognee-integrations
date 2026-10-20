@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Search session + trace + agent guidance + graph for context relevant to the user's prompt.
 
-Runs on the Antigravity PreInvocation hook. One ``/api/v1/recall`` request with
-``scope=["graph"]``, ``HYBRID_COMPLETION`` and ``only_context=True``, carrying the
-session id. On cognee >= 1.6.0 the returned item's ``text`` is the full LLM input
-the completion would have received: the conversation history, the question with
-the retrieved context rendered through the retriever's template, and the session
-guidance block. That one string is injected as-is into Antigravity's context, so
-the session, trace and agent-guidance layers no longer need requests of their
-own. A deterministic code-graph lane is added only on identifier-shaped prompts.
+Runs on the Antigravity PreInvocation hook. Two requests to ``/api/v1/recall`` in flight
+together: ``scope=["graph"]`` with ``HYBRID_COMPLETION`` and ``only_context=True``
+but WITHOUT the session id, and ``scope=["session_context"]`` with it. On cognee
+>= 1.6.0 the graph item's ``text`` is the full LLM input the completion would
+have received; sent without a session id it carries no conversation history,
+and ``_recall_text`` cuts the question template away and shrinks the retrieved
+context (own-session passages dropped, passages capped, empty entity bullets
+pruned) before it is injected — the agent already holds the conversation, so
+re-sending it only cost tokens (SDK-904). The session_context item is the
+server-rendered guidance block, capped server-side. A deterministic code-graph
+lane is added only on identifier-shaped prompts, and injected only when it
+found something.
 
 Configuration:
     Resolves session state via Cognee HTTP endpoints.
@@ -57,9 +61,11 @@ from _plugin_common import (
     set_session_key,
     slow_streak_threshold,
     warmup_backlog,
+    with_base_url_notice,
     write_connection_state,
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
+from _recall_text import code_facts, format_code_facts, trim_recall_text
 from cognee_statusline_render import render_status_for_host
 from config import ensure_cognee_ready, get_dataset, get_session_id, load_config
 
@@ -104,12 +110,10 @@ def _format_entry(entry: dict) -> str:
 
     if source == "graph_context":
         # One item per dataset. On cognee >= 1.6.0 its ``text`` is the full LLM
-        # input the completion would have received (conversation history, the
-        # question with the retrieved context rendered through the retriever's
-        # template, then the session guidance block); older servers put the
-        # bare retrieval context there. Injected whole and uncapped: the context
-        # sits in the middle and the guidance at the end, so any cut would take
-        # exactly what memory is for. ``top_k`` bounds the size server-side.
+        # input the completion would have received; ``_run`` has already cut
+        # it down to the retrieved context (``trim_recall_text``), so what is
+        # left is injected as-is. Older servers put the bare retrieval context
+        # there, which the trimmer passes through untouched.
         content = str(entry.get("text", "") or entry.get("content", ""))
         return f"[cognee-memory]\n{content}"
 
@@ -118,9 +122,13 @@ def _format_entry(entry: dict) -> str:
         return f"[agent-guidance]\n{content}"
 
     if source == "code":
-        # Deterministic code-graph facts (ResponseCodeEntry): `text` is the
-        # normalized renderable field; raw payloads keep full structure.
+        # Deterministic code-graph facts (ResponseCodeEntry): ``text`` is the
+        # server's JSON ``query_facts`` payload, rendered one line per symbol;
+        # any other shape is injected as-is.
         content = str(entry.get("text", "") or entry.get("content", ""))
+        facts = code_facts(content)
+        if facts:
+            content = format_code_facts(facts)
         return f"[code-graph]\n{content}"
 
     if source == "trace":
@@ -219,7 +227,14 @@ def _has_entry_content(entry: dict) -> bool:
     if source == "session_context":
         return bool(str(entry.get("content", "") or entry.get("text", "")).strip())
     if source == "code":
-        return bool(str(entry.get("text", "") or entry.get("content", "")).strip())
+        # A ``query_facts`` payload with no facts is a miss, not a hit: the
+        # server answers the lane with an empty list when the seed resolves
+        # to nothing, and injecting that JSON told the model nothing (SDK-904).
+        content = str(entry.get("text", "") or entry.get("content", ""))
+        facts = code_facts(content)
+        if facts is not None:
+            return bool(facts)
+        return bool(content.strip())
     if source == "trace":
         fields = ("origin_function", "status", "session_feedback", "method_return_value")
     else:
@@ -275,7 +290,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # so a confirmed-bad backend costs one bounded probe per prompt instead of
     # the full budget.
     service_url = runtime.get("base_url", "")
-    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 1.0)
+    probe_timeout = _float_env("COGNEE_READY_PROBE_TIMEOUT", 3.0)
     prior = read_connection_state()
     # Permissive on purpose: "same target" unless the two URLs provably differ,
     # so a recorded state still applies when a URL is unknown. Mirrors the
@@ -329,16 +344,18 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # (store-user-prompt.py) drains instead; improve/SessionEnd re-drain too.
     saves_last_turn = read_and_reset_save_counter(session_id)
 
-    # One request for memory. On cognee >= 1.6.0 an ``only_context`` completion
-    # search returns the whole LLM input: the conversation history (the old
-    # ``session`` scope), the question plus retrieved graph context, and the
-    # session guidance block (the old ``session_context`` scope, distilled from
-    # the trace layer) — so the per-layer fan-out this hook used to run is one
-    # graph-scope recall now, with the session id attached so the server can
-    # build the session layers. Scope, type and only_context stay explicit:
-    # the server's ``auto`` scope would add raw session entries next to the
-    # prompt (or short-circuit the graph on a session hit), and an unpinned
-    # type lets the router pick CHUNKS, which never builds a prompt.
+    # Two requests for memory (SDK-904). The graph recall is sent WITHOUT the
+    # session id: with it, a cognee >= 1.6.0 ``only_context`` completion
+    # prepends the session's last ten Q&A pairs in full — the agent's own
+    # previous turns, already in its context window — which was ~60% of a
+    # mid-session payload. Without it the item is the question template around
+    # the retrieved context, and ``trim_recall_text`` keeps only the context.
+    # The guidance block (the ``session_context`` layer distilled from the
+    # trace layer) is small and useful, so it is fetched on its own, with the
+    # session id, as the server-rendered block. Scope, type and only_context
+    # stay explicit: the server's ``auto`` scope would add raw session entries
+    # next to the prompt (or short-circuit the graph on a session hit), and an
+    # unpinned type lets the router pick CHUNKS, which never builds a prompt.
     # HYBRID_COMPLETION combines BM25 + vector + graph retrieval; the LLM
     # completion itself is skipped server-side. The code lane below is the
     # only other request, and only on prompts that arm it. The list order is
@@ -346,6 +363,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     results: list = []
     scope_specs = [
         (["graph"], "HYBRID_COMPLETION", None),
+        (["session_context"], None, "qa"),
     ]
     # Additive code-graph lane (cognee >= 1.5.3). Fires only when the prompt
     # carries an identifier-shaped token AND the cwd sits inside a repo the
@@ -462,6 +480,10 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             scope_dataset_ids = (
                 read_ids if scope_list == ["graph"] else [write_id] if write_id else []
             )
+        # The graph recall carries no session id (see scope_specs): the
+        # history it would add is the agent's own conversation. Only the
+        # guidance request needs the session.
+        scope_session_id = "" if scope_list == ["graph"] else session_id
         part, exc = None, None
         t0 = time.monotonic()
         try:
@@ -469,7 +491,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 part = await asyncio.to_thread(
                     recall_via_http,
                     prompt,
-                    session_id=session_id,
+                    session_id=scope_session_id,
                     top_k=TOP_K,
                     scope=scope_list,
                     only_context=True,
@@ -485,7 +507,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 part = await asyncio.wait_for(
                     cognee.recall(
                         prompt,
-                        session_id=session_id,
+                        session_id=scope_session_id,
                         top_k=TOP_K,
                         scope=scope_list,
                         only_context=True,
@@ -526,7 +548,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             verdict = SLOW  # pre-3.11 asyncio.TimeoutError isn't TimeoutError
         else:
             verdict = classify_transport_exception(exc)
-        if isinstance(exc, _urlerr.HTTPError) and exc.code == 404 and scope_list == ["graph"]:
+        is_404 = isinstance(exc, _urlerr.HTTPError) and exc.code == 404
+        if is_404 and scope_list == ["session_context"]:
+            # The server answered: no session guidance exists for this session
+            # or dataset yet (a fresh install, a dataset without a graph).
+            # Authoritative empty, same as ``_recall_http`` reads a 404 — not a
+            # failure, and the server was reached, so the request counts as ok.
+            hook_log("recall_guidance_absent", {"scope": scope_list, "dataset": scope_dataset})
+            scopes_ok += 1
+            continue
+        if is_404 and scope_list == ["graph"]:
             # A dataset nobody has written to yet has no graph, and the
             # server answers the graph scope with 404 (DatasetNotFound)
             # until the first cognify lands. On a fresh install that is
@@ -661,11 +692,15 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         "session_context": [],
         "code": [],
     }
+    item_guidance = ""
     for r in results or []:
         if hasattr(r, "model_dump"):
             r = r.model_dump()
         if not isinstance(r, dict):
             continue
+        # Work on a copy: the source is re-tagged and the text trimmed below,
+        # and the caller's items are not ours to rewrite.
+        r = dict(r)
         src = r.get("source", "session")
         # The graph scope tags results source=graph; keep the historical
         # graph_context bucket name so the status line, last_recall.json
@@ -673,19 +708,29 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         if src == "graph":
             r["source"] = "graph_context"
             src = "graph_context"
+            # Keep the retrieved context only (SDK-904): the question template
+            # goes, own-session passages go, the rest is capped and pruned.
+            # Unparsed text (a pre-1.6.0 bare context, an unknown template)
+            # is injected whole — fail-open, logged.
+            if r.get("text"):
+                trimmed, guidance, stats = trim_recall_text(
+                    str(r.get("text") or ""), prompt, session_id
+                )
+                r["text"] = trimmed
+                if guidance and not item_guidance:
+                    item_guidance = guidance
+                hook_log(
+                    "recall_context_trimmed" if stats["parsed"] else "recall_context_unparsed",
+                    stats,
+                )
         if not _has_entry_content(r):
             continue
         by_source.setdefault(src, []).append(r)
-
-    if not cloud_mode and not by_source.get("trace"):
-        fallback_traces = await _recent_trace_fallback(
-            session_id,
-            _load_user_id(),
-            RECENT_TRACE_FALLBACK_TOP_K,
-        )
-        if fallback_traces:
-            by_source["trace"].extend(fallback_traces)
-            hook_log("trace_fallback_hit", {"count": len(fallback_traces)})
+    # A durable-preferences block can trail the graph item even without a
+    # session id. The session_context request renders the same lines inside
+    # its block, so it is only used when that request brought nothing.
+    if item_guidance and not by_source.get("session_context"):
+        by_source["session_context"].append({"source": "session_context", "content": item_guidance})
 
     counts = {k: len(v) for k, v in by_source.items()}
     total = sum(counts.values())
@@ -872,6 +917,20 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     return output
 
 
+def _recall_min_prompt_chars() -> int:
+    """Prompts shorter than this skip recall (capture keeps its own 5-char floor).
+
+    COGNEE_RECALL_MIN_PROMPT_CHARS lets a host raise the floor so acknowledgements
+    and one-word nudges do not cost a lookup and an injected context block. The
+    default matches the stock gate, so an unset variable changes nothing.
+    """
+    raw = os.environ.get("COGNEE_RECALL_MIN_PROMPT_CHARS", "").strip()
+    try:
+        return max(5, int(raw)) if raw else 5
+    except ValueError:
+        return 5
+
+
 def main():
     payload_raw = sys.stdin.read()
     if not payload_raw.strip():
@@ -895,6 +954,12 @@ def main():
     prompt = payload.get("prompt", "")
     if not prompt or len(prompt) < 5:
         return
+    # Only a raised floor applies here: the stock gate above keeps its exact
+    # behavior (whitespace counts), so an unset variable changes nothing.
+    min_chars = _recall_min_prompt_chars()
+    if min_chars > 5 and len(prompt.strip()) < min_chars:
+        hook_log("context_lookup_short_prompt", {"chars": len(prompt.strip()), "min": min_chars})
+        return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
 
     output = None
@@ -903,7 +968,7 @@ def main():
             output = asyncio.run(_run(prompt, cwd))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
-    return output
+    return with_base_url_notice(output, "UserPromptSubmit")
 
 
 if __name__ == "__main__":

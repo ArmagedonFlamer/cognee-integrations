@@ -10,6 +10,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `clear-transcript-context:clear_context_failed` | `transcript.failed` |
 | `clear-transcript-context:clear_context_invalid_payload` | `transcript.invalid_payload` |
 | `clear-transcript-context:clear_context_skipped_stop_hook_active` | `transcript.skip_active` |
+| `config:dataset_name_sanitized` | `config.dataset_name_sanitized` |
 | `config:default_user_resolve_failed` | `config.default_user_resolve_failed` |
 | `config:git_branch_lookup_failed` | `config.git_branch_lookup_failed` |
 | `config:improve_local_unsupported` | `config.improve_local_unsupported` |
@@ -32,6 +33,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `exit-watcher:pidfile_unlink_failed` | `exit_watcher.pidfile_unlink_failed` |
 | `exit-watcher:pidfile_write_failed` | `exit_watcher.pidfile_write_failed` |
 | `exit-watcher:started` | `exit_watcher.started` |
+| `hook:users_me_lookup_failed` | `config.users_me_lookup_failed` |
 | `hook:activity_log_write_failed` | `activity.log_write_failed` |
 | `hook:activity_touch_failed` | `activity.touch_failed` |
 | `hook:agent_lifecycle_error` | `agent.lifecycle_error` |
@@ -45,6 +47,9 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:auto_improve_error` | `auto.improve_error` |
 | `hook:auto_improve_fired` | `auto.improve_fired` |
 | `hook:auto_improve_throttled` | `auto.improve_throttled` |
+| `hook:base_url_changed_mid_session` | `endpoint.base_url_changed_mid_session` |
+| `hook:base_url_notice_failed` | `endpoint.base_url_notice_failed` |
+| `hook:hook_notice_failed` | `notice.failed` |
 | `hook:boot_refused_server_present` | `boot.refused_server_present` |
 | `hook:bootstrap_complete` | `bootstrap.complete` |
 | `hook:bootstrap_failed` | `bootstrap.failed` |
@@ -59,6 +64,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:buffer_lock_error` | `buffer.lock_error` |
 | `hook:buffer_lock_release_failed` | `buffer.lock_release_failed` |
 | `hook:buffer_lock_timeout` | `buffer.lock_timeout` |
+| `hook:capture_tools_invalid` | `capture.tools_invalid` |
 | `hook:code_autoindex` | `code.autoindex` |
 | `hook:code_autoindex_error` | `code.autoindex_error` |
 | `hook:code_lane_armed` | `code.lane_armed` |
@@ -84,6 +90,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:context_lookup_hit` | `recall.lookup_hit` |
 | `hook:context_lookup_missing_session_key` | `recall.lookup_missing_session_key` |
 | `hook:context_lookup_session_key` | `recall.lookup_session_key` |
+| `hook:context_lookup_short_prompt` | `recall.lookup_short_prompt` |
 | `hook:credits_fetch_empty` | `credits.fetch_empty` |
 | `hook:credits_fetch_failed` | `credits.fetch_failed` |
 | `hook:credits_marker_write_failed` | `credits.marker_write_failed` |
@@ -175,8 +182,11 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:recall_auth_rejected` | `recall.auth_rejected` |
 | `hook:recall_breaker_open` | `recall.breaker_open` |
 | `hook:recall_budget_exceeded` | `recall.budget_exceeded` |
+| `hook:recall_context_trimmed` | `recall.context_trimmed` |
+| `hook:recall_context_unparsed` | `recall.context_unparsed` |
 | `hook:recall_error` | `recall.error` |
 | `hook:recall_graph_not_built` | `recall.graph_not_built` |
+| `hook:recall_guidance_absent` | `recall.guidance_absent` |
 | `hook:recall_health_accounting_failed` | `recall.health_accounting_failed` |
 | `hook:recall_server_down` | `recall.server_down` |
 | `hook:recall_skipped_not_ready` | `recall.skipped_not_ready` |
@@ -221,6 +231,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `hook:switch_old_handle_released` | `switch.old_handle_released` |
 | `hook:switch_sync_forced_past_failure` | `switch.sync_forced_past_failure` |
 | `hook:switch_sync_result` | `switch.sync_result` |
+| `hook:switch_sync_timeout` | `switch.sync_timeout` |
 | `hook:switch_watcher_restart_failed` | `switch.watcher_restart_failed` |
 | `hook:switch_watcher_restarted` | `switch.watcher_restarted` |
 | `hook:switch_watcher_stop_failed` | `switch.watcher_stop_failed` |
@@ -289,6 +300,7 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:llm_key_auth_failed` | `idle_watcher.llm_key_auth_failed` |
 | `idle-watcher:llm_key_check_error` | `idle_watcher.llm_key_check_error` |
 | `idle-watcher:llm_key_check_inconclusive` | `idle_watcher.llm_key_check_inconclusive` |
+| `idle-watcher:llm_key_check_skipped` | `idle_watcher.llm_key_check_skipped` |
 | `idle-watcher:llm_key_not_set` | `idle_watcher.llm_key_not_set` |
 | `idle-watcher:llm_key_ok` | `idle_watcher.llm_key_ok` |
 | `idle-watcher:pidfile_read_failed` | `idle_watcher.pidfile_read_failed` |
@@ -340,3 +352,5 @@ Names cover current hooks, configuration, transcript cleanup, and both watchers.
 | `idle-watcher:shared_memory_refreshed` | `idle_watcher.shared_memory_refreshed` |
 | `hook:shared_memory_grant_denied` | `shared_memory.grant_denied` |
 | `hook:plugin_provision_retry_after_update` | `plugin.provision_retry_after_update` |
+
+- `capture.trace_skipped_low_signal`: cloud trace omitted as low signal; counted in stats.

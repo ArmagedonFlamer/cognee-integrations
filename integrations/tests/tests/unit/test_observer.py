@@ -761,6 +761,8 @@ def watcher_check(suite, hook_module, isolated_modules, observer, monkeypatch):
     )
     monkeypatch.setattr(pc, "read_llm_state", lambda: {})
     monkeypatch.setattr(pc, "get_session_key", lambda: "host-1")
+    # The plugin started this server: keep the live ownership probe out of it.
+    monkeypatch.setattr(pc, "llm_key_owner", lambda _config: "")
     monkeypatch.setattr(watcher, "_log", lambda event, **kw: events.append(event))
     monkeypatch.setenv(obs.ACTIVE_ENV_FLAG, "1")
 

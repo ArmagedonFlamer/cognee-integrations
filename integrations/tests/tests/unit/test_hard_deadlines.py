@@ -41,9 +41,14 @@ def test_concurrent_log_rotation_preserves_previous_generation(suite, isolated_m
     log = tmp_path / "test.log"
     log.write_text("z" * 2048, encoding="utf-8")
     scripts = str(Path(lf.__file__).parent)
+    # append_line gives up after a 0.05s lock wait by design (a log line never
+    # holds up a prompt), so a writer can lose the race on a slow runner. Retry:
+    # this test is about rotation under concurrency, not lock latency.
     code = (
-        "import sys;sys.path.insert(0,sys.argv[1]);from _logfiles import append_line;"
-        "assert append_line(sys.argv[2],sys.argv[3],cap=1024)"
+        "import sys,time;sys.path.insert(0,sys.argv[1]);from _logfiles import append_line;"
+        "deadline=time.monotonic()+5\n"
+        "while not append_line(sys.argv[2],sys.argv[3],cap=1024):\n"
+        "    assert time.monotonic()<deadline"
     )
     writers = [
         subprocess.Popen([sys.executable, "-c", code, scripts, str(log), str(i)]) for i in range(8)

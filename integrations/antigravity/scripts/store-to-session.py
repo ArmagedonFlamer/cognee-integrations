@@ -65,9 +65,8 @@ async def _fire_improve_background(dataset: str, session_id: str, user, reason: 
     """Fire-and-forget session improve; failures are logged but never raised.
 
     The server bridges the session itself from its session cache (improve);
-    see run_session_improve. Shares the cooldown / no-new-entries gate with the
-    idle watcher; the session-end sync ignores it and covers whatever a skip
-    here leaves behind.
+    see run_session_improve. Honours the cooldown / no-new-entries gate; the
+    session-end sync ignores it and covers whatever a skip here leaves behind.
     """
     throttled = improve_throttle_reason(session_id)
     if throttled:
@@ -129,6 +128,11 @@ def _infer_status(payload: dict) -> tuple[str, str]:
         if response.get("is_error") or response.get("error"):
             err = response.get("error") or response.get("message") or "Tool reported an error."
             return "error", _truncate_str(err, 500)
+        if response.get("interrupted"):
+            return "error", "Tool interrupted."
+        exit_code = response.get("exit_code", response.get("exitCode", 0))
+        if exit_code not in (0, "0", None):
+            return "error", "Tool exited with code %s." % exit_code
     if isinstance(payload.get("error"), str) and payload["error"]:
         return "error", _truncate_str(payload["error"], 500)
     return "success", ""
@@ -136,7 +140,9 @@ def _infer_status(payload: dict) -> tuple[str, str]:
 
 def _load_session() -> tuple[str, str, str]:
     """Load session_id, dataset, user_id from resolved cache with fallbacks."""
-    resolved = load_resolved()
+    # The identity probes cost up to 10s each on a slow backend, on every tool
+    # call and Stop; only the local SDK path uses user_id.
+    resolved = load_resolved(identity=resolve_runtime_mode()["mode"] != "http")
     session_id = resolved.get("session_id", "")
     dataset = resolved.get("dataset", "")
     user_id = resolved.get("user_id", "")
@@ -152,25 +158,44 @@ async def _store_tool_call(payload: dict) -> None:
     tool_name = payload.get("tool_name", "unknown")
     tool_input = payload.get("tool_input") or {}
     tool_output = payload.get("tool_output") or payload.get("tool_response") or ""
-    from _capture_policy import allow_tool, redact
+    from _capture_policy import (
+        CapturePatternError,
+        allow_tool,
+        is_plugin_invocation,
+        low_signal_bash,
+        redact,
+        safe_first_token,
+    )
 
-    if not allow_tool(tool_name, tool_input):
+    try:
+        allowed = allow_tool(tool_name, tool_input)
+    except CapturePatternError as exc:
+        # Fail closed, but not silently: this hook's output is never shown, so
+        # the recall hook repeats the problem to the user on the next prompt.
+        hook_log("capture_tools_invalid", {"tool": tool_name, "error": str(exc)[:200]})
+        notify(f"trace not captured: {exc}")
+        return
+    if not allowed:
         return
     tool_input = redact(tool_input)
     tool_output = redact(tool_output)
     payload = redact(payload)
 
-    # Suppress self-reference: any Bash call that mentions 'cognee' is
-    # likely the plugin/CLI talking to itself and would recurse.
-    if tool_name == "Bash":
-        cmd = ""
-        if isinstance(tool_input, dict):
-            cmd = str(tool_input.get("command", ""))
-        if "cognee" in cmd:
-            hook_log("skip_self_cognee_bash", {"cmd_prefix": cmd[:80]})
-            return
-
+    command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
     status, error_message = _infer_status(payload)
+    reason = is_plugin_invocation(command) if tool_name == "Bash" else ""
+    low_signal = tool_name == "Bash" and low_signal_bash(command, tool_output, status)
+    if reason:
+        hook_log(
+            "skip_self_cognee_bash", {"first_token": safe_first_token(command), "reason": reason}
+        )
+        return
+    if low_signal:
+        hook_log(
+            "trace_skipped_low_signal",
+            {"tool": tool_name, "first_token": safe_first_token(command)},
+        )
+        return
 
     # Normalize method_params: small structured dict is ideal; fall back
     # to a truncated-string dict if we got something non-JSON-safe.

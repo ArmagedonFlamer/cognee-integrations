@@ -24,6 +24,8 @@
  * asserted below without any wait.
  */
 
+import type { IncomingMessage, ServerResponse } from "node:http";
+
 import { CogneeHttpClient } from "../../src/client";
 import { MockCognee } from "../../test-utils/mockCognee";
 
@@ -251,6 +253,51 @@ describe("failure handling", () => {
     }
   });
 
+  it("keeps the deadline while reading the body of a 401 re-login retry", async () => {
+    // The retry branch must await the parser inside its try, or its `finally`
+    // clears the abort timer before the body is read and a stalled body hangs
+    // the caller. Server: login succeeds, the first recall gets a 401, the retry
+    // gets headers and part of a body, then nothing until a 3s safety cut — so a
+    // regression fails the timing assertion instead of hanging the suite.
+    const stall = await MockCognee.start();
+    const stalled: ServerResponse[] = [];
+    try {
+      const server = stall as unknown as { server: { removeAllListeners: (e: string) => void; on: (e: string, cb: unknown) => void } };
+      server.server.removeAllListeners("request");
+      let recalls = 0;
+      server.server.on("request", (req: IncomingMessage, res: ServerResponse) => {
+        req.resume();
+        req.on("end", () => {
+          if (req.url?.endsWith("/auth/login")) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ access_token: "test-token" }));
+          } else if (recalls++ === 0) {
+            res.writeHead(401, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ detail: "expired" }));
+          } else {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.write('{"results": [');
+            stalled.push(res);
+            setTimeout(() => res.destroy(), 3_000).unref();
+          }
+        });
+      });
+
+      const client = new CogneeHttpClient(stall.url, undefined, "u", "p", 500, 30_000, LOCAL);
+      const started = Date.now();
+      await expect(
+        client.recall({ queryText: "q", searchPrompt: "", searchType: "GRAPH_COMPLETION" as never, datasetIds: ["ds-1"], timeoutMs: 500 }),
+      ).rejects.toThrow();
+
+      expect(recalls).toBe(2);
+      // The retry's 500ms deadline fired; without it this only ends at the 3s cut.
+      expect(Date.now() - started).toBeLessThan(2_500);
+    } finally {
+      for (const res of stalled) res.destroy();
+      await stall.close();
+    }
+  });
+
   it("surfaces the status on a non-2xx", async () => {
     mock.forceResponse("GET", "/datasets", 500, { detail: "kaboom" });
     await expect(localClient().listDatasets()).rejects.toThrow(/500|kaboom/i);
@@ -380,6 +427,72 @@ describe("memory verbs send what the server expects", () => {
     expect(body).toContain('name="content_type"');
   });
 
+  it("fetchAPI bypasses Node global fetch for long-running multipart ingestion (#429)", async () => {
+    const originalFetch = global.fetch;
+    global.fetch = jest.fn(async () => {
+      throw new Error("global fetch must not handle fetchAPI requests");
+    }) as typeof fetch;
+
+    try {
+      await expect(
+        new CogneeHttpClient(mock.url, "key-abc", undefined, undefined, 5_000, 300_000, LOCAL).remember({
+          files: [{ filePath: "memory/slow.md", data: "hello" }],
+          datasetName: "ds",
+        }),
+      ).resolves.toMatchObject({ datasetName: "ds" });
+
+      const call = mock.assertCalled("POST", "/remember");
+      expect(call.body).toContain('name="data"');
+      expect(call.body).toContain("hello");
+      expect(call.body).not.toBe("[object FormData]");
+    } finally {
+      global.fetch = originalFetch;
+    }
+  });
+
+  it("remember sends chunk_size only when chunkSize is set (#428)", async () => {
+    // The server's form default is 4096 tokens, which can exceed the embedding
+    // model's input limit; unset must still leave that default alone.
+    const files = [{ filePath: "MEMORY.md", data: "hello" }];
+    await localClient().remember({ files, datasetName: "ds", chunkSize: 1200 });
+    const body = mock.assertCalled("POST", "/remember").body;
+    expect(body).toContain('name="chunk_size"');
+    expect(body).toMatch(/name="chunk_size"\r\n\r\n1200\r\n/);
+
+    mock.reset();
+    await localClient().remember({ files, datasetName: "ds" });
+    expect(mock.assertCalled("POST", "/remember").body).not.toContain('name="chunk_size"');
+  });
+
+  it("remember resolves dataId for Windows-style file paths", async () => {
+    mock.setResponse("POST", "/remember", {
+      datasetId: "ds-1",
+      items: [
+        {
+          id: "data-win-1",
+          name: "memory_2026-10-02-md",
+        },
+      ],
+    });
+
+    const result = await localClient().remember({
+      files: [
+        {
+          filePath: "memory\\2026-10-02.md",
+          data: "hello from Windows",
+        },
+      ],
+      datasetName: "ds",
+    });
+
+    expect(result.items).toEqual([
+      {
+        filePath: "memory\\2026-10-02.md",
+        uploadName: "memory_2026-10-02-md",
+        dataId: "data-win-1",
+      },
+    ]);
+  });
   it("health reads the status field", async () => {
     await expect(localClient().health()).resolves.toEqual({ status: "ok" });
   });
@@ -427,5 +540,42 @@ describe("forget-tool server calls", () => {
     expect(result).toEqual({ datasetId: "ds-1", dataId: "d1", deleted: true });
     const call = mock.assertCalled("POST", "/forget");
     expect(call.json).toEqual({ dataset_id: "ds-1", data_id: "d1" });
+  });
+});
+
+describe("cognee 1.6.3 request hygiene", () => {
+  it("never sends a blank node_set entry (cognee >= 1.6.3 answers it with 400)", async () => {
+    await localClient().remember({ files: [{ filePath: "memory/a.md", data: "x" }], datasetName: "ds", nodeSet: ["user_context", "", "  "] });
+    const body = mock.assertCalled("POST", "/remember").body;
+    expect(body.match(/name="node_set"/g)).toHaveLength(1);
+    expect(body).toContain("user_context");
+  });
+
+  it("omits search_type only when the caller leaves it unset (the session_context guidance request)", async () => {
+    await localClient().recall({ queryText: "q", searchPrompt: "", datasetIds: ["ds-1"], scope: ["session_context"], sessionId: "s" });
+    expect(mock.assertCalled("POST", "/recall").json).not.toHaveProperty("search_type");
+  });
+
+  it("surfaces the HTTP status of a failed request", async () => {
+    mock.forceResponse("POST", "/improve", 402, { error: "budget exhausted" });
+    await expect(localClient().improve({ datasetName: "ds" })).rejects.toMatchObject({ name: "CogneeRequestError", status: 402 });
+  });
+});
+
+describe("recap endpoints", () => {
+  it("lists sessions with range and paging, and reads an unknown session as null", async () => {
+    mock.setResponse("GET", "/sessions", { sessions: [], has_more: false });
+    const api = localClient().recapApi();
+    await api.listSessions({ range: "7d", limit: 200, offset: 0 });
+    expect(mock.assertCalled("GET", "/sessions").query).toEqual({ range: "7d", limit: "200", offset: "0" });
+    await expect(api.getSession("open_claw_missing")).resolves.toBeNull();
+  });
+
+  it("reads raw data as text and recalls the graph without a session id", async () => {
+    const api = localClient().recapApi();
+    await api.recallGraph({ query: "deploys", datasetIds: ["ds-1"], topK: 12, timeoutMs: 5_000 });
+    const body = mock.assertCalled("POST", "/recall").json as Record<string, unknown>;
+    expect(body).toMatchObject({ query: "deploys", top_k: 12, scope: ["graph"], only_context: true, dataset_ids: ["ds-1"] });
+    expect(body).not.toHaveProperty("session_id");
   });
 });

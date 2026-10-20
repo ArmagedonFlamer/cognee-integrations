@@ -85,6 +85,7 @@ def run_check(suite, hook_module, isolated_modules, monkeypatch):
         checked_at=0.0,
         env=None,
         prior_session_key=_SESSION,
+        owner="",
     ):
         writes, events = [], []
 
@@ -120,6 +121,9 @@ def run_check(suite, hook_module, isolated_modules, monkeypatch):
             lambda: {"checked_at": checked_at, "session_key": prior_session_key},
         )
         monkeypatch.setattr(pc, "get_session_key", lambda: _SESSION)
+        # Ownership is decided by a live probe; tests pick the answer instead.
+        monkeypatch.setattr(pc, "llm_key_owner", lambda _config: owner)
+        monkeypatch.setattr(pc, "clear_llm_state", lambda: writes.append(("cleared", "")))
         monkeypatch.setattr(watcher, "_log", lambda event, **_kw: events.append(event))
 
         watcher._check_llm_key(config if config is not None else {})
@@ -228,6 +232,16 @@ def test_local_url_is_still_checked(run_check):
     assert writes == [("ok", "")], writes
 
 
+@pytest.mark.parametrize("owner", ["managed_endpoint", "unowned_server"])
+def test_a_server_the_plugin_did_not_start_is_not_checked(run_check, owner):
+    """#371: a docker/systemd server on loopback reads its key from its own env,
+    so a keyless plugin env must not accuse it — and an old verdict is withdrawn."""
+    writes, events = run_check(key="", config={"base_url": "http://127.0.0.1:8000"}, owner=owner)
+    assert writes == [("cleared", "")], writes
+    assert "llm_key_check_skipped" in events, events
+    assert "llm_key_not_set" not in events, events
+
+
 def test_recent_check_by_this_session_is_throttled(run_check):
     writes, _ = run_check(checked_at=time.time(), env={"COGNEE_LLM_CHECK_INTERVAL": "300"})
     assert writes == [], writes
@@ -319,3 +333,87 @@ def test_session_marker_is_skipped_without_a_session_key(marker_env, monkeypatch
     pc.write_llm_state("ok")
     assert pc._LLM_STATE_MARKER.exists()
     assert not pc._LLM_STATE_DIR.exists()
+
+
+# ── llm_key_owner: who holds the key the server uses (#371, #377) ─────────
+
+
+@pytest.fixture
+def owner_env(pc, monkeypatch):
+    """Fake the health probe and the pidfile; return (pc, set_probe, set_pid)."""
+    monkeypatch.delenv("COGNEE_MANAGED_ENDPOINT", raising=False)
+    state = {"probe": "ready", "pid": 0}
+    monkeypatch.setattr(pc, "probe_health", lambda *_a, **_kw: state["probe"])
+    monkeypatch.setattr(pc, "_live_server_pid", lambda _port: state["pid"])
+    return pc, state
+
+
+_LOOPBACK = {"base_url": "http://127.0.0.1:8000"}
+
+
+def test_a_serving_server_without_a_pidfile_is_not_ours(owner_env):
+    pc, _ = owner_env
+    assert pc.llm_key_owner(_LOOPBACK) == "unowned_server"
+
+
+def test_a_serving_server_with_our_pidfile_is_ours(owner_env):
+    pc, state = owner_env
+    state["pid"] = 4242
+    assert pc.llm_key_owner(_LOOPBACK) == ""
+
+
+@pytest.mark.parametrize("probe", ["down", "slow", "unknown"])
+def test_nothing_serving_yet_keeps_the_check(owner_env, probe):
+    """Our own server may still be installing: the watcher checks once per
+    session, so skipping here would lose the check for the whole session."""
+    pc, state = owner_env
+    state["probe"] = probe
+    assert pc.llm_key_owner(_LOOPBACK) == ""
+
+
+def test_a_remote_url_is_left_to_the_cloud_guard(owner_env):
+    pc, _ = owner_env
+    assert pc.llm_key_owner({"base_url": "https://api.cognee.ai"}) == ""
+
+
+def test_the_managed_endpoint_setting_marks_the_server_as_not_ours(owner_env, monkeypatch):
+    pc, state = owner_env
+    if not hasattr(pc, "managed_endpoint_enabled"):
+        pytest.skip("this integration has no COGNEE_MANAGED_ENDPOINT")
+    state["pid"] = 4242  # the setting wins even over a pidfile
+    monkeypatch.setenv("COGNEE_MANAGED_ENDPOINT", "true")
+    assert pc.llm_key_owner(_LOOPBACK) == "managed_endpoint"
+
+
+# ── clear_llm_state withdraws only our own verdict ────────────────────────
+
+
+def _write_marker(path, session_key, state="not_set"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"llm_state": state, "session_key": session_key}), encoding="utf-8")
+
+
+def test_clear_removes_our_session_copy_and_our_shared_marker(marker_env, monkeypatch):
+    pc = marker_env
+    monkeypatch.setattr(pc, "get_session_key", lambda: "mine")
+    _write_marker(pc._LLM_STATE_DIR / "mine.json", "mine")
+    _write_marker(pc._LLM_STATE_MARKER, "mine")
+    pc.clear_llm_state()
+    assert not (pc._LLM_STATE_DIR / "mine.json").exists()
+    assert not pc._LLM_STATE_MARKER.exists()
+
+
+def test_clear_keeps_another_sessions_shared_verdict(marker_env, monkeypatch):
+    pc = marker_env
+    monkeypatch.setattr(pc, "get_session_key", lambda: "mine")
+    _write_marker(pc._LLM_STATE_MARKER, "theirs")
+    pc.clear_llm_state()
+    assert pc._LLM_STATE_MARKER.exists()
+
+
+def test_clear_removes_an_unattributed_shared_marker(marker_env, monkeypatch):
+    pc = marker_env
+    monkeypatch.setattr(pc, "get_session_key", lambda: "mine")
+    _write_marker(pc._LLM_STATE_MARKER, "")
+    pc.clear_llm_state()
+    assert not pc._LLM_STATE_MARKER.exists()

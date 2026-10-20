@@ -28,6 +28,7 @@ _REPORT_KEYS = {
     "memory_sharing",
     "reachable",
     "latency_ms",
+    "runtime_python",
     "cognee_local",
     "cognee_server",
     "embedding_model",
@@ -66,6 +67,7 @@ def test_json_report_has_exactly_the_expected_keys(doctor, mock_server, suite):
     parsed = json.loads(doctor.format_json(report))
     expected = set(_REPORT_KEYS)
     if suite.name == "claude-code":
+        expected.add("auto_memory")
         expected.add("llm")  # where the local server's LLM calls go (key vs. Claude observer)
     assert set(parsed.keys()) == expected, f"keys mismatch: {expected ^ set(parsed.keys())}"
 
@@ -88,5 +90,6 @@ def test_human_output_contains_header(doctor, mock_server):
     text = doctor.format_human(doctor.collect_report())
     assert "Cognee Doctor" in text
     assert "Mode:" in text
+    assert "Runtime Python:" in text
     assert "Cognee (local):" in text
     assert "Circuit Breaker:" in text

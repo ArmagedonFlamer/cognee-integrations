@@ -47,11 +47,13 @@ from _plugin_common import (
     ensure_launch_record,
     get_session_key,
     hook_log,
+    managed_endpoint_enabled,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
     server_presence,
     service_url_is_local,
+    set_launch_base_url,
     set_session_key,
     touch_activity,
     write_connection_state,
@@ -99,24 +101,51 @@ _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() n
 )
 
 # --- Self-managed cognee install (SHARED with the Claude Code plugin) --------
-# uv + a uv-managed Python guarantee a cognee-compatible runtime (3.10-3.14)
-# regardless of what's on the machine. All paths sit under the shared
-# ~/.cognee-plugin root so the two plugins install once and reuse one venv.
+# The runtime venv is built ONLY from tooling already on the machine. The plugin
+# never downloads an installer script or an interpreter: plugin directories admit
+# only code that is in the reviewed repository or a package pinned to an exact
+# version, so the one thing fetched at setup is ``cognee==<_PINNED_COGNEE_VERSION>``
+# from PyPI. uv is used when the user already has it (fast resolver, and it can
+# pick any suitable interpreter on the machine); otherwise the stdlib ``venv`` +
+# pip build from a host Python 3.10+ (cognee requires 3.10-3.14). All paths sit
+# under the shared ~/.cognee-plugin root so the two plugins install once and reuse
+# one venv, and nothing touches the user's PATH or shell profile.
 # The hooks themselves need only a stdlib python3 of 3.9+ (see SDK-617): the
 # host interpreter never imports cognee, it only builds and talks to the venv.
 _UV_DIR = _GLOBAL_STATE_DIR / "uv"
 _UV_BIN = _UV_DIR / ("uv.exe" if os.name == "nt" else "uv")
+# Where earlier plugin versions let uv store a downloaded interpreter. Still
+# handed to uv as a *discovery* location so a machine that already has one keeps
+# using it; downloads themselves are disabled (UV_PYTHON_DOWNLOADS=never).
 _UV_PYTHON_DIR = _GLOBAL_STATE_DIR / "python"
-_UV_INSTALL_URL = "https://astral.sh/uv/install.sh"
-_PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or "3.12"
-# Floor for the HOST interpreter, enforced only on the uv-less fallback, which
-# builds the runtime venv from sys.executable and so inherits its version.
+# The interpreter range cognee itself supports (its ``requires-python``): both
+# the uv request and the stdlib fallback are bounded by it, so a too-new Python
+# (which cognee's wheels would refuse) is skipped the same as a too-old one.
 _FALLBACK_VENV_MIN_PYTHON = (3, 10)
+_FALLBACK_VENV_MAX_PYTHON = (3, 14)
+# A version *range*, not a single minor: lets uv pick whichever cognee-compatible
+# interpreter is already installed instead of insisting on one it would have to
+# fetch. COGNEE_PLUGIN_PYTHON overrides it (a version, a name, or a path).
+_PINNED_PYTHON = os.environ.get("COGNEE_PLUGIN_PYTHON", "") or ">={}.{},<{}.{}".format(
+    *_FALLBACK_VENV_MIN_PYTHON, _FALLBACK_VENV_MAX_PYTHON[0], _FALLBACK_VENV_MAX_PYTHON[1] + 1
+)
+# Interpreter names probed on PATH for that fallback, newest first, when the
+# python3 that launched the hook is itself too old: macOS ships 3.9 as
+# /usr/bin/python3 while a Homebrew or python.org 3.12 sits beside it.
+_HOST_PYTHON_CANDIDATES = (
+    "python3.14",
+    "python3.13",
+    "python3.12",
+    "python3.11",
+    "python3.10",
+    "python3",
+    "python",
+)
 # Written when that fallback is refused; read by the next SessionStart so the
 # refusal reaches the user as a systemMessage (the worker that hits it runs
 # detached, with nothing it prints visible). Cleared once a venv is ready.
 _HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
-_PINNED_COGNEE_VERSION = "1.6.0"
+_PINNED_COGNEE_VERSION = "1.6.5"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Maps a configured backend provider env var to the cognee package "extra" that
@@ -177,11 +206,56 @@ _VENV_INSTALL_POLL_SECONDS = 0.5
 
 
 def _find_uv() -> str:
-    """Locate uv: prefer our self-managed copy, then anything on PATH."""
+    """Locate a uv that is already on the machine: the copy an earlier plugin
+    version left under ~/.cognee-plugin, then anything on PATH. Never fetched."""
     if _UV_BIN.exists():
         return str(_UV_BIN)
     found = shutil.which("uv")
     return found or ""
+
+
+def _host_python_version(python: str) -> tuple:
+    """``(major, minor)`` of an interpreter on disk, or ``()`` if it cannot run."""
+    try:
+        out = subprocess.run(
+            [python, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=True,
+        ).stdout.strip()
+        major, minor = out.split(".")
+        return (int(major), int(minor))
+    except Exception:
+        return ()
+
+
+def _cognee_supports(version: tuple) -> bool:
+    """Whether a ``(major, minor)`` falls inside cognee's supported range."""
+    if not version:
+        return False
+    return _FALLBACK_VENV_MIN_PYTHON <= tuple(version[:2]) <= _FALLBACK_VENV_MAX_PYTHON
+
+
+def _find_host_python() -> str:
+    """A Python inside cognee's supported range (3.10-3.14) already installed on
+    this machine, or '' when there is none.
+
+    Used by the stdlib ``venv`` fallback. The interpreter running this hook is
+    tried first (no subprocess), then the versioned names on PATH, newest first.
+    Nothing is downloaded: a miss is reported by ``_refuse_fallback_venv``.
+    """
+    if _cognee_supports(tuple(sys.version_info[:2])):
+        return sys.executable
+    seen = {sys.executable}
+    for name in _HOST_PYTHON_CANDIDATES:
+        found = shutil.which(name)
+        if not found or found in seen:
+            continue
+        seen.add(found)
+        if _cognee_supports(_host_python_version(found)):
+            return found
+    return ""
 
 
 def _host_python_label() -> str:
@@ -190,22 +264,25 @@ def _host_python_label() -> str:
 
 
 def _refuse_fallback_venv() -> None:
-    """Record why the uv-less fallback will not build the runtime venv.
+    """Record why no runtime venv could be built: no Python 3.10+ on the machine.
 
     Three readers: hook.log (forensics), this process's stderr (the bootstrap
     log when detached, the terminal when not), and the marker the next
     SessionStart turns into a systemMessage via ``_apply_host_python_warning``.
     """
     message = (
-        "Cognee Memory: cannot build the local Cognee runtime. uv is unavailable, and the "
-        "fallback would build the venv from {}, but that needs Python 3.10 or newer. Install "
-        "uv (https://docs.astral.sh/uv/) or a Python 3.10+ python3, then start a new "
-        "session.".format(_host_python_label())
+        "Cognee Memory: cannot start the local Cognee server. Cognee requires Python 3.10 or "
+        "newer (up to 3.14), and no such interpreter is installed on this machine: the hook "
+        "runs under {}, none of {} on PATH qualifies, and the plugin does not download "
+        "interpreters. Install Python 3.10+ (python.org, Homebrew, or `uv python install "
+        "3.12` if you use uv), then start a new session. Cloud mode (COGNEE_BASE_URL) has no "
+        "such requirement.".format(_host_python_label(), "/".join(_HOST_PYTHON_CANDIDATES[:5]))
     )
     detail = {
         "python": sys.executable,
         "version": "{}.{}.{}".format(*sys.version_info[:3]),
         "required": "{}.{}".format(*_FALLBACK_VENV_MIN_PYTHON),
+        "supported": "{}.{}-{}.{}".format(*_FALLBACK_VENV_MIN_PYTHON, *_FALLBACK_VENV_MAX_PYTHON),
     }
     hook_log("host_python_too_old_for_venv", detail)
     print(message, file=sys.stderr)
@@ -250,29 +327,6 @@ def _apply_host_python_warning(output: dict) -> dict:
     return result
 
 
-def _install_uv() -> str:
-    """Install the standalone uv binary into ~/.cognee-plugin/uv (no PATH edits)."""
-    try:
-        _UV_DIR.mkdir(parents=True, exist_ok=True)
-        env = os.environ.copy()
-        # UV_UNMANAGED_INSTALL drops the binary in the given dir without editing
-        # shell profiles or managing updates — exactly what we want.
-        env["UV_UNMANAGED_INSTALL"] = str(_UV_DIR)
-        subprocess.run(
-            ["sh", "-c", f"curl -LsSf {_UV_INSTALL_URL} | sh"],
-            env=env,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-        if _UV_BIN.exists():
-            return str(_UV_BIN)
-    except Exception as exc:
-        hook_log("uv_install_failed", {"error": str(exc)[:300]})
-    return ""
-
-
 def _venv_cognee_version() -> str:
     """Installed cognee version inside the plugin venv, or '' if unimportable."""
     if not _VENV_PYTHON.exists():
@@ -296,7 +350,7 @@ def _venv_cognee_version() -> str:
 
 
 # One distribution per extra whose presence in the venv proves that extra's
-# drivers are installed (verified against cognee 1.6.0's optional-dependencies:
+# drivers are installed (verified against cognee 1.6.5's optional-dependencies:
 # fastembed and codegraph are empty extras there, their packages being core).
 # Probing the venv is deliberately preferred over recording installed extras in
 # venv-ready.json: that marker is shared with plugins that don't know about
@@ -466,11 +520,17 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 return True
             hook_log("cognee_extras_missing_at_pin", {"missing": missing_extras})
 
-        uv = _find_uv() or _install_uv()
+        uv = _find_uv()
         venv_present = _VENV_PYTHON.exists()
+        installed_via_uv = False
 
         if uv:
             env = os.environ.copy()
+            # uv must never fetch an interpreter: the runtime is built from what
+            # is already installed (no binaries downloaded at setup). The install
+            # dir is passed only so an interpreter an earlier plugin version put
+            # there is still discovered.
+            env["UV_PYTHON_DOWNLOADS"] = "never"
             env.setdefault("UV_PYTHON_INSTALL_DIR", str(_UV_PYTHON_DIR))
             try:
                 if not venv_present:
@@ -500,19 +560,24 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     text=True,
                     timeout=timeout,
                 )
+                installed_via_uv = True
             except Exception as exc:
                 hook_log("cognee_install_failed", {"via": "uv", "error": str(exc)[:300]})
-        elif not venv_present:
-            # Last-resort fallback: stdlib venv + pip. Slower, and the venv inherits
-            # this interpreter, so the host python3 must itself satisfy cognee's
-            # floor (3.10-3.14). The hooks run on any 3.9+, so check explicitly
-            # rather than build a venv cognee could never install into.
-            if sys.version_info < _FALLBACK_VENV_MIN_PYTHON:
+
+        if not installed_via_uv and not _VENV_PYTHON.exists():
+            # Fallback: stdlib venv + pip, from a Python 3.10+ already on the
+            # machine. Reached when there is no uv, or when uv could not find a
+            # suitable interpreter (it is not allowed to download one). The venv
+            # inherits the host interpreter, so cognee's floor (3.10-3.14) must
+            # hold for it; the hooks run on any 3.9+, so probe explicitly rather
+            # than build a venv cognee could never install into.
+            host_python = _find_host_python()
+            if not host_python:
                 _refuse_fallback_venv()
                 return False
             try:
                 subprocess.run(
-                    [sys.executable, "-m", "venv", str(_VENV_DIR)],
+                    [host_python, "-m", "venv", str(_VENV_DIR)],
                     check=True,
                     capture_output=True,
                     text=True,
@@ -640,6 +705,15 @@ def _ensure_local_server_running(
     if _require_absent("pre_install"):
         _ready()
         return
+
+    if managed_endpoint_enabled(config):
+        # Hard stop at the single spawn/install choke point so no call path —
+        # present or future — can boot a shadow server over a managed endpoint.
+        hook_log("managed_endpoint_boot_refused", {"base_url": service_url})
+        raise RuntimeError(
+            f"managed Cognee endpoint {service_url} is unreachable and "
+            "COGNEE_MANAGED_ENDPOINT forbids booting a local fallback server"
+        )
 
     # The server is positively absent and we're at a boot point: ensure the
     # shared venv holds the latest cognee BEFORE booting, so the server's
@@ -1855,6 +1929,9 @@ async def _start(payload: dict | None = None) -> dict:
         dataset=str(config.get("dataset", "") or "").strip(),
         host_pid=_find_codex_parent_pid(),
     )
+    # The server this launch registers on. Hooks re-read ~/.cognee/.env, so a
+    # later edit is detected against this and reported (base_url_change_notice).
+    set_launch_base_url(session_key, target_url)
     from _project_memory import begin as begin_project_memory
 
     begin_project_memory(get_dataset(config), session_id, cwd)
@@ -1897,13 +1974,21 @@ async def _start(payload: dict | None = None) -> dict:
         server_live = presence_verdict == PRESENCE_READY
     else:
         server_live = bool(target_url) and _health_ok(_health_url(target_url))
-    will_boot = (not server_live) and bool(target_url) and _is_local_url(target_url)
+    # COGNEE_MANAGED_ENDPOINT: the URL belongs to a deployment we don't own, so
+    # it is never booted. This is stronger than _run_heavy's
+    # ``managed_endpoint=not will_boot`` (connect-only for THIS call): the lock
+    # also stops the out-of-band retry and _ensure_local_server_running itself.
+    managed_locked = managed_endpoint_enabled(config)
+    will_boot = (
+        (not server_live) and bool(target_url) and _is_local_url(target_url) and not managed_locked
+    )
     hook_log(
         "endpoint_mode_selected",
         {
             "base_url": target_url,
             "server_live": server_live,
             "will_boot": will_boot,
+            "managed_endpoint": managed_locked,
             **(
                 {"presence": presence_verdict, "evidence": presence_evidence}
                 if presence_verdict
@@ -1911,6 +1996,39 @@ async def _start(payload: dict | None = None) -> dict:
             ),
         },
     )
+    if managed_locked and target_url and not server_live:
+        # Managed deployment is down: fail loudly, never fork a fallback brain.
+        hook_log("managed_endpoint_down", {"base_url": target_url})
+        print(
+            f"cognee-plugin: managed endpoint {target_url} unreachable — memory OFFLINE",
+            file=sys.stderr,
+        )
+        # The status line and the recall gate read the shared marker, not this
+        # output: without this they would keep the previous session's verdict.
+        write_connection_state("unreachable", target_url)
+        offline_message = (
+            "## ⚠ Cognee Memory OFFLINE\n"
+            f"The managed Cognee endpoint {target_url} is unreachable. "
+            "COGNEE_MANAGED_ENDPOINT is set, so no local fallback server was "
+            "started — memory recall and capture are disabled for this session.\n"
+            "Start the deployment, then start a new session (or /clear)."
+        )
+        return {
+            # Top level is where the universal ``systemMessage`` is documented
+            # and where the Antigravity adapter reads it; keep both copies.
+            "systemMessage": offline_message,
+            "hookSpecificOutput": {
+                "hookEventName": "SessionStart",
+                "systemMessage": offline_message,
+                "additionalContext": (
+                    "Cognee memory is OFFLINE for this session: the managed endpoint "
+                    f"{target_url} is unreachable and local fallback is disabled by "
+                    "COGNEE_MANAGED_ENDPOINT. Nothing is being recalled or captured. "
+                    "If durable memory matters for the current task, remind the user "
+                    "that the Cognee stack is down before proceeding."
+                ),
+            },
+        }
     if will_boot and _LAZY_BOOTSTRAP:
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
         user_id = os.environ.get("COGNEE_USER_ID", "")
@@ -1926,7 +2044,7 @@ async def _start(payload: dict | None = None) -> dict:
             boot_timeout=_HEALTH_TIMEOUT_SECONDS,
         )
         if not ok:
-            if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url):
+            if _LAZY_BOOTSTRAP and target_url and _is_local_url(target_url) and not managed_locked:
                 # Inline attempt failed; retry the heavy path out of band.
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
             else:
@@ -1945,9 +2063,8 @@ async def _start(payload: dict | None = None) -> dict:
     # an immediate improve on startup.
     touch_activity()
 
-    # Launch the idle watcher (syncs session memory to graph after the agent
-    # goes idle). Runs in both local-server and cloud modes — the watcher picks
-    # the HTTP or local sync path itself. COGNEE_IDLE_DISABLED opts out.
+    # Launch the idle watcher (update and LLM-key checks, periodic shared-memory
+    # refresh). COGNEE_IDLE_DISABLED opts out.
     if os.environ.get("COGNEE_IDLE_DISABLED", "").lower() not in (
         "1",
         "true",
@@ -2010,6 +2127,50 @@ def _update_nudge_suffix() -> str:
     )
 
 
+def _apply_sync_notice(output: dict, payload: dict | None = None) -> dict:
+    """Say, on reopening a chat, whether it reached long-term memory (SDK-1071).
+
+    The session-end sync runs after the chat is gone, so its outcome is shown
+    when the same chat is resumed: resume keeps the session id, and the
+    session's improve record says when it was last sent or why the send
+    failed. Shown once per sync, in the terminal and to the agent, and only on
+    resume: a compaction keeps the session too, but lands mid-task, where an
+    idle or auto sync's notice would only interrupt. Off with
+    ``COGNEE_PLUGIN_CITE_MEMORY=off``.
+    """
+    if str((payload or {}).get("source") or "") != "resume":
+        return output
+    try:
+        import _plugin_common
+        from _recall_text import credit_enabled, mark_notice_shown, notice_due, sync_notice
+        from config import get_session_id
+
+        if not credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
+            return output
+        session_id = get_session_id(load_config())
+        message, sync_ts = sync_notice(_plugin_common.read_improve_state(session_id))
+        if not message or not notice_due(_plugin_common._PLUGIN_DIR, session_id, sync_ts):
+            return output
+        mark_notice_shown(_plugin_common._PLUGIN_DIR, session_id, sync_ts)
+    except Exception as exc:
+        hook_log("sync_notice_failed", {"error": str(exc)[:200]})
+        return output
+    hook_log("sync_notice_shown", {"session": session_id, "sync_ts": sync_ts})
+
+    result = dict(output or {})
+    hso = dict(result.get("hookSpecificOutput") or {})
+    hso.setdefault("hookEventName", "SessionStart")
+    for field in ("systemMessage", "additionalContext"):
+        existing = str(hso.get(field) or "").strip()
+        hso[field] = f"{existing}\n\n{message}" if existing else message
+    result["hookSpecificOutput"] = hso
+    # The user sees only the top-level systemMessage: Claude Code documents it
+    # there (inside hookSpecificOutput it reached the agent but was never shown).
+    top = str(result.get("systemMessage") or "").strip()
+    result["systemMessage"] = f"{top}\n\n{message}" if top else message
+    return result
+
+
 def main():
     # First run: leave a commented ~/.cognee/.env template so one-time config
     # has a documented file to land in. Values (if any) were already loaded
@@ -2048,6 +2209,7 @@ def main():
             output = asyncio.run(_start(payload)) or {}
     except Exception as exc:
         hook_log("session_start_exception", {"error": str(exc)[:200]})
+    output = _apply_sync_notice(output, payload)
     output = _apply_host_python_warning(output)
     print(json.dumps(output))
 

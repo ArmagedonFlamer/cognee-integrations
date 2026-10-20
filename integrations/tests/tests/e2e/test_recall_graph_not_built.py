@@ -6,10 +6,11 @@ first session, and it used to log ``recall_error {verdict: unknown}`` each time 
 pure noise that also fed the health accounting. The hook now records it as
 ``recall_graph_not_built`` and leaves ``recall_error`` for real failures.
 
-Since the one-request memory contract of cognee 1.6.0 (SDK-741) the graph scope
-is the only request a plain prompt makes, so the mock's forced 404 lands on
-exactly that request: it must surface as ``recall_graph_not_built`` and nothing
-at all may surface as ``recall_error``.
+A plain prompt makes two memory requests (SDK-904): the graph scope and the
+session_context guidance scope. The mock's forced 404 lands on both. The graph
+one must surface as ``recall_graph_not_built``, the guidance one as
+``recall_guidance_absent`` (no guidance exists yet — the server answered), and
+nothing at all may surface as ``recall_error``.
 """
 
 from __future__ import annotations
@@ -40,6 +41,8 @@ def test_graph_404_is_not_a_recall_error(
         "the budget must not cut the scope loop short in this test"
     )
     not_built = [d for e, d in events if e == "recall_graph_not_built"]
+    absent = [d for e, d in events if e == "recall_guidance_absent"]
     errors = [d for e, d in events if e == "recall_error"]
     assert [d["scope"] for d in not_built] == [["graph"]], not_built
+    assert [d["scope"] for d in absent] == [["session_context"]], absent
     assert errors == [], f"a missing graph is not a recall error: {errors}"

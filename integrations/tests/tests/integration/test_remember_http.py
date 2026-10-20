@@ -58,6 +58,36 @@ def test_background_opt_out_reaches_the_wire(rh, mock_server, monkeypatch):
     assert call["form"]["run_in_background"] == "false"
 
 
+def _uploaded_names(mock_server):
+    return [n for c in mock_server.calls if c["path"] == REMEMBER for n in c.get("filenames", [])]
+
+
+def test_distinct_texts_upload_under_distinct_names(rh, mock_server):
+    # cognee >= 1.6.0 refuses (409) a known upload name with new content, so a
+    # fixed "{node_set}.txt" lost every remember after the first (#444).
+    _remember(rh, mock_server.url, content="first", node_set="user_context")
+    _remember(rh, mock_server.url, content="second", node_set="user_context")
+    first, second = _uploaded_names(mock_server)
+    assert first != second
+    for name in (first, second):
+        assert name.startswith("user_context-") and name.endswith(".txt")
+
+
+def test_same_text_reuses_its_name(rh, mock_server):
+    # Same content, same name: the server's content-hash dedup keeps it a no-op.
+    _remember(rh, mock_server.url, content="same")
+    _remember(rh, mock_server.url, content="same")
+    first, second = _uploaded_names(mock_server)
+    assert first == second == rh.text_upload_name("user_context", "same")
+
+
+def test_file_upload_keeps_its_basename(rh, mock_server, tmp_path):
+    path = tmp_path / "module.py"
+    path.write_text("x = 1\n", encoding="utf-8")
+    rh.do_remember(mock_server.url, "", "", "ds", "project_docs", file_path=str(path))
+    assert _uploaded_names(mock_server) == ["module.py"]
+
+
 def test_api_key_header_attached(rh, mock_server):
     _remember(rh, mock_server.url, api_key="cloud-key")
     call = mock_server.assert_called("POST", REMEMBER)

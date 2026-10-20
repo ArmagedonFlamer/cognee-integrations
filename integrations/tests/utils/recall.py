@@ -23,21 +23,21 @@ import types
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-#: The scopes ``_run`` dispatches, in canonical (reporting) order. Since the
-#: only_context contract of cognee 1.6.0 (SDK-741) memory is ONE graph-scope
-#: recall: its item's ``text`` already carries the conversation history, the
-#: retrieved context and the session guidance block, so the former ``session``,
-#: ``trace`` and ``session_context`` requests are gone. The optional ``code``
-#: lane is added only on prompts that arm it, so it is not part of the
-#: always-present set.
-SCOPES = ("graph",)
+#: The scopes ``_run`` dispatches, in canonical (reporting) order. Memory is
+#: two requests (SDK-904): the graph-scope ``only_context`` recall, sent
+#: WITHOUT the session id so its item carries no conversation history, and the
+#: ``session_context`` request, sent with it, for the server-rendered guidance
+#: block. The former ``session`` and ``trace`` requests are gone (SDK-741). The
+#: optional ``code`` lane is added only on prompts that arm it, so it is not
+#: part of the always-present set.
+SCOPES = ("graph", "session_context")
 
 #: The canonical order once the code lane is armed: ``_run`` appends ``code``
-#: after the memory request, so this is what ``per_scope`` reads on a prompt
-#: that names a symbol inside an indexed repo. Tests that need two requests in
-#: flight together (concurrency, one-failure containment, once-per-fan-out
+#: after the memory requests, so this is what ``per_scope`` reads on a prompt
+#: that names a symbol inside an indexed repo. Tests that need several requests
+#: in flight together (concurrency, one-failure containment, once-per-fan-out
 #: accounting) arm the lane with ``arm_code_lane`` and assert against this.
-CODE_SCOPES = ("graph", "code")
+CODE_SCOPES = ("graph", "session_context", "code")
 
 #: Base URL every driven run resolves to. Health state is keyed by service URL
 #: (SDK-356), so assertions need the exact value the hook was handed.

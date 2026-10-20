@@ -157,6 +157,48 @@ def test_code_facts_are_injected_ahead_of_memory_and_counted(lookup, monkeypatch
     assert "1 code" in _header(run.output)
 
 
+def test_a_query_facts_payload_renders_one_line_per_symbol(lookup, monkeypatch, indexed_repo):
+    """The server's JSON is for machines; the model gets ``name [kind] file:line``."""
+    payload = (
+        '{"operation": "query_facts", "facts": [{"name": "billing/pay.process_payment", '
+        '"file": "billing/pay.py", "line": 42, "symbol_kind": "function", '
+        '"relations": [{"type": "calls", "target": "billing/card.validate_card"}]}], '
+        '"total": 1, "offset": 0, "limit": 5, "has_more": false}'
+    )
+    run = drive_recall(
+        lookup,
+        monkeypatch,
+        prompt="what calls process_payment?",
+        cwd=str(indexed_repo),
+        recall={**MEMORY, "code": [{"source": "code", "text": payload}]},
+    )
+    context = run.output["hookSpecificOutput"]["additionalContext"]
+    assert "- billing/pay.process_payment [function] billing/pay.py:42" in context
+    assert "  → calls billing/card.validate_card" in context
+    assert '"operation"' not in context, "raw JSON must not reach the model"
+    assert run.detail("context_lookup_hit")["counts"]["code"] == 1
+
+
+def test_an_empty_query_facts_payload_is_a_miss_not_a_hit(lookup, monkeypatch, indexed_repo):
+    """36 of 57 armed turns on a real install injected ``{"facts": []}`` and
+    counted it as a hit (SDK-904). The server's empty answer is a miss."""
+    empty = (
+        '{"operation": "query_facts", "facts": [], "total": 0, "offset": 0, '
+        '"limit": 5, "has_more": false}'
+    )
+    run = drive_recall(
+        lookup,
+        monkeypatch,
+        prompt="what calls process_payment?",
+        cwd=str(indexed_repo),
+        recall={**MEMORY, "code": [{"source": "code", "text": empty}]},
+    )
+    context = run.output["hookSpecificOutput"]["additionalContext"]
+    assert "=== Code graph facts ===" not in context and '"facts": []' not in context
+    assert run.detail("context_lookup_hit")["counts"]["code"] == 0
+    assert "0 code" in _header(run.output)
+
+
 def test_empty_code_lane_is_not_an_error(lookup, monkeypatch, indexed_repo):
     """A seed the graph cannot resolve returns nothing server-side; the turn
     must look exactly like a normal turn that found no code facts."""

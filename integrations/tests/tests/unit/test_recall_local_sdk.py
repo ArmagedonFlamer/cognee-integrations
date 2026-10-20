@@ -1,12 +1,14 @@
 """The recall dispatch on the in-process local-SDK branch.
 
-``session-context-lookup.py`` makes one memory request per prompt (graph scope,
-``HYBRID_COMPLETION``, ``only_context``), plus the code lane when a prompt arms
-it. In HTTP mode each request is a blocking call pushed to a worker thread; on
-the local-SDK branch each is ``cognee.recall`` awaited directly, so the two
-interleave as coroutines on the hook's own event loop and each one is bounded by
-``asyncio.wait_for``. Same dispatch, different mechanism — and until now the only
-driver ran HTTP mode, so this branch shipped on inspection alone.
+``session-context-lookup.py`` makes two memory requests per prompt — the
+graph-scope ``HYBRID_COMPLETION`` ``only_context`` recall without the session
+id and the ``session_context`` guidance request with it (SDK-904) — plus the
+code lane when a prompt arms it. In HTTP mode each request is a blocking call
+pushed to a worker thread; on the local-SDK branch each is ``cognee.recall``
+awaited directly, so they interleave as coroutines on the hook's own event loop
+and each one is bounded by ``asyncio.wait_for``. Same dispatch, different
+mechanism — and until now the only driver ran HTTP mode, so this branch shipped
+on inspection alone.
 
 Contract, mirroring the HTTP tests:
   * the requests are awaited together — the prompt costs the slowest one;
@@ -14,7 +16,8 @@ Contract, mirroring the HTTP tests:
   * a request past the shared deadline is cut there (``recall_error`` with a
     ``slow`` verdict) while the other still lands;
   * ``per_scope`` reports every dispatched scope, in canonical order;
-  * the memory request carries scope, query type, only_context and the session id.
+  * the graph request carries scope, query type and only_context but NO session
+    id; the guidance request carries the session id and the ``qa`` profile.
 
 Only suites that declare ``has_local_sdk_recall`` carry the branch; the others
 skip rather than pretend.
@@ -72,17 +75,24 @@ def test_the_requests_are_awaited_together(lookup, monkeypatch):
 
 
 def test_the_sdk_call_carries_the_scope_and_query_type(lookup, monkeypatch):
-    """The wire the SDK branch speaks: one graph-scope HYBRID_COMPLETION request
-    with only_context and the session id, and nothing from the retired scopes."""
+    """The wire the SDK branch speaks: a graph-scope HYBRID_COMPLETION request
+    with only_context and NO session id (the history it would add is the
+    agent's own conversation), a session_context request with the session id,
+    and nothing from the retired scopes."""
     run = drive_recall(lookup, monkeypatch, mode="local_sdk", sdk_recall={})
 
-    assert run.calls == ["graph"], run.calls
+    assert sorted(run.calls) == sorted(SCOPES), run.calls
     memory = run.kwargs["graph"]
     assert memory["scope"] == ["graph"]
     assert memory["query_type"] == "HYBRID_COMPLETION"
     assert memory["only_context"] is True
-    assert memory["session_id"] == "sid"
+    assert memory["session_id"] == ""
     assert "context_profile" not in memory, memory
+    guidance = run.kwargs["session_context"]
+    assert guidance["scope"] == ["session_context"]
+    assert guidance["session_id"] == "sid"
+    assert guidance["context_profile"] == "qa"
+    assert guidance["query_type"] is None
 
 
 def test_the_code_lane_carries_its_dataset_and_query_on_the_sdk_wire(lookup, monkeypatch):
@@ -105,7 +115,7 @@ def test_one_raising_request_does_not_drop_the_other(lookup, monkeypatch):
         scope = kw["scope"][0]
         if scope == "code":
             raise RuntimeError("code graph exploded")
-        return [MEMORY]
+        return [MEMORY] if scope == "graph" else []
 
     run = drive_recall(lookup, monkeypatch, mode="local_sdk", sdk_recall=flaky)
 

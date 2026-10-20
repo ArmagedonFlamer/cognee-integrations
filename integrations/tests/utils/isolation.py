@@ -44,12 +44,21 @@ ISOLATED_MODULES = (
     "_dataset_access",
     "_proc",
     "_recall_http",
+    "_recall_text",
+    "_injection_budget",
+    "_injection_ledger",
+    "_evidence",
+    "_auto_memory",
+    "_session_stats",
+    "_cloud_worker",
+    "_context_cache",
     "_remember_http",
     "_code_graph",
     "_observer",
     "cognee_plugin",
     "cognee_statusline_render",
     "doctor",
+    "_auto_memory",
 )
 
 #: Env vars that make hook subprocesses deterministic in tests:

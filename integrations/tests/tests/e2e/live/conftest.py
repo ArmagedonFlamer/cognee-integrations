@@ -29,12 +29,16 @@ from utils.live import (
     build_live_env,
     cloud_api_key,
     cloud_base_url,
+    cloud_worker_pids,
+    cloud_worker_record,
     delete_test_datasets,
     free_port,
     hook_events,
+    reap_cloud_worker,
     reap_port,
     seed_plugin_venv,
     server_health,
+    uses_cloud_worker,
 )
 from utils.suites import ALL_SUITES, Suite, state_dir
 
@@ -330,10 +334,40 @@ def live_session_factory(
 
     yield _make
 
+    _reap_cloud_workers([live_suite], live_home)
     if live_port:
         reaped = reap_port(live_port)
         if reaped:
             print(f"[live] reaped server pids on {live_port}: {reaped}")
+
+
+def _reap_cloud_workers(suites, home: Path) -> None:
+    """Stop the detached cloud workers a test's sessions started (none locally)."""
+    for suite in suites:
+        if uses_cloud_worker(suite):
+            reaped = reap_cloud_worker(suite, home)
+            if reaped:
+                print(f"[live] reaped {suite.name} cloud worker pids: {reaped}")
+
+
+def _assert_cloud_worker_targets(session: LiveSession, base_url: str) -> None:
+    """SessionStart through the cloud worker: registered for ``base_url``, worker up.
+
+    The worker path picks no endpoint in the hook (no ``endpoint_mode_selected``):
+    the launch record it writes for the worker is the proof of the target.
+    """
+    record = cloud_worker_record(session.suite, session.home, session.session_id)
+    assert record, "SessionStart never registered the session with the cloud worker"
+    assert record.get("base_url") == base_url, (
+        f"plugin targeted {record.get('base_url')!r}, not the pinned {base_url!r}"
+    )
+    deadline = time.monotonic() + 30.0
+    while not cloud_worker_pids(session.suite, session.home):
+        assert time.monotonic() < deadline, (
+            "the cloud worker never started, so nothing would reach the server "
+            "(is COGNEE_IDLE_DISABLED set for this session?)"
+        )
+        time.sleep(0.5)
 
 
 @pytest.fixture
@@ -351,11 +385,18 @@ def started_session(live_session_factory, live_base_url: str, live_suite: Suite,
         run = session.start()
         assert run.ok, f"SessionStart failed (rc={run.returncode}): {run.stderr[:800]}"
 
-        modes = [d for e, d in hook_events(live_suite, live_home) if e == "endpoint_mode_selected"]
-        assert modes, "no endpoint_mode_selected event — the plugin never chose a server endpoint"
-        assert modes[-1].get("base_url") == live_base_url, (
-            f"plugin targeted {modes[-1].get('base_url')!r}, not the pinned {live_base_url!r}"
-        )
+        if uses_cloud_worker(live_suite):
+            _assert_cloud_worker_targets(session, live_base_url)
+        else:
+            modes = [
+                d for e, d in hook_events(live_suite, live_home) if e == "endpoint_mode_selected"
+            ]
+            assert modes, (
+                "no endpoint_mode_selected event — the plugin never chose a server endpoint"
+            )
+            assert modes[-1].get("base_url") == live_base_url, (
+                f"plugin targeted {modes[-1].get('base_url')!r}, not the pinned {live_base_url!r}"
+            )
 
         deadline = time.monotonic() + BOOT_DEADLINE
         while time.monotonic() < deadline:
@@ -377,12 +418,13 @@ def synced_turn(started_session, graph: GraphClient):
     """Write one turn into the graph, then keep the server up for the test.
 
     Prompt recall reads the graph only: the session cache is written, never
-    searched. On cognee >= 1.6.0 the graph item's text also carries the
-    session's own history, but only once the dataset has a graph — before the
-    first cognify the graph scope answers 404 and nothing is injected. Any
-    test that expects a recall to find something therefore pays for one real
-    sync first; this does it and waits on recall, the only honest readiness
-    gate (``wait_for_sync`` returns on any earlier ``sync_bridge_done`` too).
+    searched, and the graph request carries no session id, so a session's own
+    turns reach recall only after a sync has bridged them into the graph
+    (SDK-904). Recall also injects nothing until the dataset has a graph —
+    before the first cognify the graph scope answers 404. Any test that
+    expects a recall to find something therefore pays for one real sync
+    first; this does it and waits on recall, the only honest readiness gate
+    (``wait_for_sync`` returns on any earlier ``sync_bridge_done`` too).
 
     ``terms`` must not appear in ``query``: an ``only_context`` recall echoes
     the question back, so a term taken from it would match trivially.
@@ -467,6 +509,8 @@ def session_for(
 
         run = session.start()
         assert run.ok, f"{suite.name} SessionStart failed (rc={run.returncode}): {run.stderr[:800]}"
+        if uses_cloud_worker(suite):
+            _assert_cloud_worker_targets(session, live_base_url)
         deadline = time.monotonic() + BOOT_DEADLINE
         while time.monotonic() < deadline:
             if server_health(live_base_url) == 200:
@@ -476,6 +520,7 @@ def session_for(
 
     yield _make
 
+    _reap_cloud_workers(ALL_SUITES, live_home)
     # Local backend only — see live_session_factory for why reaping a remote
     # backend's port would kill an unrelated local process.
     if live_port:
@@ -532,7 +577,13 @@ def live_artifacts(request, live_home: Path, live_base_url: str):
             for event, detail in recall_events:
                 print(f"    {event}: {str(detail)[:300]}")
 
-        for name in ("last_recall.json", "recall-audit.log", "exit-watcher.log", "hook.log"):
+        for name in (
+            "last_recall.json",
+            "recall-audit.log",
+            "exit-watcher.log",
+            "cloud-worker.log",
+            "hook.log",
+        ):
             path = state_dir(suite, live_home) / name
             if path.exists():
                 _dump(f"{suite.name}/{name}", path.read_text(encoding="utf-8", errors="replace"))

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 /**
  * Dependency-free multipart/form-data encoder.
@@ -81,7 +81,7 @@ export interface TextIngestionOptions {
   datasetId?: string;
   nodeSet?: string[];
   runInBackground?: boolean;
-  /** Base name for generated files; item N is uploaded as `<prefix>-N.txt`. */
+  /** Base name for generated files; each text is uploaded as `<prefix>-<sha256[:32]>.txt`. */
   filenamePrefix?: string;
 }
 
@@ -89,6 +89,11 @@ export interface TextIngestionOptions {
  * Build the form parts shared by Cognee's text-ingestion endpoints.
  * Cognee derives each data item's name from the upload filename stem, so the
  * generated names show up later in dataset listings.
+ *
+ * Names carry a hash of the text, not its position: cognee >= 1.6.0 treats an
+ * upload's filename as its identity in the dataset and refuses (409) a known
+ * name with new content, so `<prefix>-1.txt` failed on every run after the
+ * first. The same text reuses its name and stays the server's dedup no-op.
  */
 export function buildTextIngestionParts(options: TextIngestionOptions): MultipartPart[] {
   const prefix = options.filenamePrefix ?? 'text';
@@ -96,10 +101,11 @@ export function buildTextIngestionParts(options: TextIngestionOptions): Multipar
 
   options.texts
     .filter((text) => typeof text === 'string' && text.trim().length > 0)
-    .forEach((text, index) => {
+    .forEach((text) => {
+      const digest = createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 32);
       parts.push({
         name: 'data',
-        filename: `${prefix}-${index + 1}.txt`,
+        filename: `${prefix}-${digest}.txt`,
         contentType: 'text/plain; charset=utf-8',
         data: Buffer.from(text, 'utf8'),
       });
