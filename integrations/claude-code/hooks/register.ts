@@ -200,9 +200,9 @@ let pickerOpen = false
 // bump TOUR_VERSION to show a rewritten tour once more. -1 is "not showing".
 const TOUR_VERSION = 1
 const TOUR_STEPS = [
-  'The dataset name is a picker ↑: pick another dataset, or "+ new dataset…" to create one',
+  'The dataset name ↑ is a picker: pick another dataset, or "+ new dataset…" to create one',
   '↑ ● means memory is connected · local/cloud shows you where your memory lives · the end of the row says what memory is doing',
-  'Claude uses memories recalled by Cognee on every prompt · /cognee-dataset <name> switches by name · /cognee-tour replays this tutorial',
+  'Claude uses memories recalled by Cognee on every prompt · type /cognee (no Enter) to see its commands · /cognee-tour replays this tutorial',
 ]
 let tourOn = true
 let tourStep = -1

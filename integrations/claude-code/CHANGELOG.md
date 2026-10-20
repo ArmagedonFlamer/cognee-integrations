@@ -17,6 +17,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   prompt.** It was not a measurement, so the row no longer shows it. The row keeps the
   connection glyph, dataset, mode, credits and what memory is doing.
 
+### Changed
+- **Clearer first-run tour.** The arrow now sits right after the dataset name it points
+  to, and the last hint says typing `/cognee` shows the plugin's commands.
+
 ## [1.7.3]
 
 ### Changed

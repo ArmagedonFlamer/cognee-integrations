@@ -517,7 +517,7 @@ test('the first session on a machine gets the tour under the row, once', async (
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
 
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /The dataset name is a picker ↑/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The dataset name ↑ is a picker/ })).toBeDefined()
   expect(await ui.find({ type: 'Button', key: 'tourNext' })).toBeDefined()
   expect(await ui.find({ type: 'Text', text: /^cognee / })).toBeDefined()
 
@@ -570,7 +570,7 @@ test('/cognee-tour replays it, and the tour row in /config turns it off', async 
   const answer = await $.command.run({ command: 'cognee-tour', args: '' })
   expect(answer.text).toContain('tour')
   const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /The dataset name is a picker ↑/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /The dataset name ↑ is a picker/ })).toBeDefined()
   await ui.unmount()
 })
 

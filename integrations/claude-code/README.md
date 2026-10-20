@@ -1111,7 +1111,7 @@ the row, each about what is right above it, with `next` and `skip` buttons:
 
 ```
 cognee [agent_sessions ▾] · local
-The dataset name is a picker ↑: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
+The dataset name ↑ is a picker: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
 ```
 
 then that the dot means memory is connected, local/cloud where it lives and the
