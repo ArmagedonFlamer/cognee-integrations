@@ -10,6 +10,16 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.2]
+
+### Changed
+- **Pinned cognee is 1.6.5** (was 1.6.3; `pyproject.toml` and `plugin.yaml`). The
+  local server the plugin starts runs that release's one new migration on its next
+  start: additive columns that count embedding tokens apart from LLM tokens. 1.6.5
+  lets typed session entries carry a `node_set` and refuses a typed entry that names
+  a different dataset than the one its session is bound to. The Claude Code, Codex,
+  Antigravity and OpenClaw plugins move to 1.6.5 at the same time.
+
 ## [1.3.1]
 
 Credentials come through Hermes only, as the plugin catalog's rule 11 requires:
