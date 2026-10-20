@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognee-integration-hermes-agent"
-version = "1.3.0"
+version = "1.3.2"
 description = "Standalone Cognee memory provider plugin for Hermes Agent."
 readme = "README.md"
 license = "Apache-2.0"
@@ -18,7 +18,7 @@ dependencies = [
     # field to raw_data there; per-document forget invalidation arrived in
     # 1.5.3); 1.6.0 is what the plugin is written against: the password-less
     # default user (SDK-740) and the only_context prompt contract (SDK-741).
-    "cognee==1.6.3",
+    "cognee==1.6.5",
 ]
 
 # The group Hermes' memory-provider loader actually scans

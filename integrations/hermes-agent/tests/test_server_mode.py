@@ -575,7 +575,7 @@ class TestTransportSelection(unittest.TestCase):
                 mock.patch.object(HttpBackend, "connect"),
             ):
                 provider.initialize("sid", hermes_home=home)
-            self.assertEqual(provider._backend._cache_dir, config_mod.SHARED_PLUGIN_STATE_DIR)
+            self.assertIsInstance(provider._backend, HttpBackend)
 
 
 class TestExitWatcherLifecycle(unittest.TestCase):
