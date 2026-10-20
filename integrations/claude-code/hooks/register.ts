@@ -6,8 +6,8 @@
 //
 //   * the status row, above the prompt on every surface: it runs the plugin's
 //     own status-line renderer in `--json` mode and lays the result out, so
-//     the band shows the row the settings-file status line shows (the badge,
-//     the counters and the tokens-saved estimate included). In a
+//     the band shows the row the settings-file status line shows (the badge
+//     included). In a
 //     terminal the module marks its session (`band/<session>.json`) and the
 //     renderer then prints nothing for it, so the row is never drawn twice;
 //     with the `band` option off the settings status line is back below;
@@ -45,11 +45,6 @@ import type { Register, RenderElement } from 'claude-code'
 
 type Activity = { kind: 'active' | 'result'; phase: string; text: string; age: number; ok: boolean; count?: number }
 
-type Counts = {
-  tokens_saved: string
-  tokens_saved_short: string
-}
-
 type Snapshot = {
   enabled: boolean
   state: string
@@ -61,7 +56,6 @@ type Snapshot = {
   billing_url?: string
   update: string
   text: string
-  counts?: Counts
 }
 
 // The brand lavender (#BC9BFF), a deeper violet on a light theme so it keeps
@@ -1299,10 +1293,6 @@ export const register: Register = (on, options) => {
     }
     parts.push(Text({ children: [' · '] }))
     parts.push(Text({ bold: true, color: purple, children: [snap?.mode ?? '…'] }))
-    const counts = snap?.counts
-    if (counts) {
-      parts.push(Text({ color: purple, bold: true, children: [` · ${counts.tokens_saved}`] }))
-    }
     if (snap?.credits) {
       // As on the text line: the balance green, red once exhausted or a
       // request was refused; the last-operation cost after it at normal

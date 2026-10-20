@@ -16,10 +16,6 @@ const SNAPSHOT = {
   credits: '',
   update: '',
   text: 'cognee: agent_sessions · local',
-  counts: {
-    tokens_saved: 'tokens saved n/a',
-    tokens_saved_short: 'saved n/a',
-  },
 }
 
 const SWITCH_LIST = {
@@ -809,11 +805,6 @@ test('credits read green on the row, red once exhausted, the last cost plain', a
   expect(balance!.props.color).toBe('green')
   const last = await ui.find({ type: 'Text', text: /last improve ~\$0.03/ })
   expect(last!.props.color).toBeUndefined()
-  // The estimate keeps the brand colour and weight even when unmeasured.
-  const estimate = await ui.find({ type: 'Text', text: /tokens saved n\/a/ })
-  expect(estimate!.props.color).toBe('#bc9bff')
-  expect(estimate!.props.bold).toBe(true)
-  expect(estimate!.props.dimColor).toBeUndefined()
   await ui.unmount()
 
   exhausted = true

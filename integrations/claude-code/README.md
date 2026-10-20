@@ -838,11 +838,11 @@ event. Irrelevant background recall does not require an announcement.
 > same either way.
 
 The status row highlights `cognee` between the connection glyph and a purple
-square, with bold dataset and location, the estimated tokens saved and what
-memory is doing. As a text line it can read:
+square, with bold dataset and location and what memory is doing. As a text
+line it can read:
 
 ```text
-● cognee manual · cloud · ~2.4k tokens saved · 3 memories used
+● cognee manual · cloud · 3 memories used
 ```
 
 The glyph in front of `cognee` is the connection: a green `●` once the server is
@@ -854,15 +854,6 @@ mode purple, the same row the mod draws above the prompt.
 - **No counters.** What the latest prompt recalled is the activity segment's
   (`3 memories used`); a session total, a per-prompt hit count and a turn
   ratio are deliberately not shown. The classic line keeps its own counters.
-- **Tokens saved**: estimated as **average tokens per recall × number of recalls × 6.9**.
-  Recall tokens mean memory context injected into Claude, estimated at one token
-  per four characters. The calculation is equivalent to cumulative injected
-  characters ÷ 4 × 6.9, rounded down after multiplication. For example, 100
-  tokens per recall across 10 recalls displays approximately 6,900 tokens saved.
-  Empty recalls contribute zero; variable-size recalls use their actual context
-  lengths. The 6.9 factor is a heuristic, not measured billing or task savings.
-  `saved n/a` means recall/context measurements are unavailable. Existing sessions
-  use their recorded cumulative recall context; no network requests are added.
 
 The renderer only reads local counters; measurement happens in the existing
 recall hook without additional requests.
@@ -931,12 +922,12 @@ Both cases show the same reason — the fix is the same either way, and `llm-sta
 what it did:
 
 ```
-● cognee agent_sessions · local · ~1.1k tokens saved · recalling…
-● cognee agent_sessions · local · ~1.4k tokens saved · 3 memories used
-● cognee agent_sessions · local · ~1.4k tokens saved · saving…
-● cognee agent_sessions · local · ~1.4k tokens saved · ✓ memory saved
-● cognee agent_sessions · local · ~1.4k tokens saved · learning from this session…
-○ cognee agent_sessions · local · tokens saved n/a · setting up memory · starting memory server…
+● cognee agent_sessions · local · recalling…
+● cognee agent_sessions · local · 3 memories used
+● cognee agent_sessions · local · saving…
+● cognee agent_sessions · local · ✓ memory saved
+● cognee agent_sessions · local · learning from this session…
+○ cognee agent_sessions · local · setting up memory · starting memory server…
 ```
 
 (`COGNEE_STATUSLINE_STYLE=classic` keeps the activity segment too, at the end of
@@ -1036,8 +1027,8 @@ the status row **above the prompt**, in the Code tab of the Claude Desktop app a
 in a terminal alike:
 
 ```
-● cognee [agent_sessions ▾] · local · ~2.4k tokens saved · 3 memories used
-⠹ cognee [agent_sessions ▾] · local · ~2.4k tokens saved · recalling…
+● cognee [agent_sessions ▾] · local · 3 memories used
+⠹ cognee [agent_sessions ▾] · local · recalling…
 ```
 
 On the desktop the row leads with cognee's waveform mark, the official icon
@@ -1049,7 +1040,7 @@ place a terminal draws the display logotype). The `icon` row in `/config`
 (`wave` or `none`) switches both off; the text line has no mark either, only the
 glyph and the wordmark. The module runs the plugin's own
 renderer in `--json` mode and lays the result
-out: the dataset, mode, tokens-saved estimate, credits,
+out: the dataset, mode, credits,
 connection reason and update nudge are the renderer's, so the row and a
 [line below the prompt](#a-line-below-the-prompt) cannot drift. While an
 operation runs a braille spinner leads the row; a failure leads it with the red
@@ -1119,7 +1110,7 @@ applies it. The dialog never edits anything else.
 the row, each about what is right above it, with `next` and `skip` buttons:
 
 ```
-cognee [agent_sessions ▾] · local · tokens saved n/a
+cognee [agent_sessions ▾] · local
 The dataset name is a picker ↑: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
 ```
 

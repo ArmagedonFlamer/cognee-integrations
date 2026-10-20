@@ -10,6 +10,13 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.4]
+
+### Removed
+- **The tokens-saved estimate is gone from the status line and the row above the
+  prompt.** It was not a measurement, so the row no longer shows it. The row keeps the
+  connection glyph, dataset, mode, credits and what memory is doing.
+
 ## [1.7.3]
 
 ### Changed
@@ -75,9 +82,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   a terminal alike, with a braille spinner while an operation runs. In a terminal
   the module marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`)
   and the renderer, run as a settings-file status line, prints nothing for a
-  marked session, so the row is not shown twice. The row carries the wordmark, the
-  counters and the tokens-saved estimate the text line shows (below), the
-  dataset as a picker, and what memory is doing; the credit inside an answer that
+  marked session, so the row is not shown twice. The row carries the wordmark and
+  the counters the text line shows (below), the dataset as a picker, and what memory is doing; the credit inside an answer that
   used memory stays the agent's own (below). It also adds what memory is doing
   after the spinner while Claude works (on the desktop for every phase; in a
   terminal only for the async phases, whose hooks show no status message of
@@ -203,13 +209,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   a dim `○` while unknown, and on a failure the red `✕ (<reason>)` leads the line
   (the row above the prompt opens with the brain and `cognee` in the brand
   lavender). No counters: the activity segment (`3 memories used`) says what
-  the latest prompt got and the tokens-saved estimate what memory spared; a
-  session total, a per-prompt hit count and a turn ratio are not shown. The
+  the latest prompt got; a session total, a per-prompt hit count and a turn ratio are not shown. The
   classic line keeps its own counters.
-- **Estimated tokens saved.** The line shows an estimate computed as injected context
-  tokens (four characters per token) × 6.9; it is a heuristic, not measured billing,
-  and shows `n/a` when unmeasured. Recall also records how much context session
-  deduplication kept out (`dedup_chars_saved`).
+- Recall records how much context session deduplication kept out
+  (`dedup_chars_saved`).
 - **Cognee searches are named in progress text.** The search, code and architecture
   skills and the session-start guidance ask the agent to say "Searching Cognee…"
   before an explicit search, and to credit recalled memory only when it was used.
