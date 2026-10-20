@@ -6,7 +6,7 @@ API key to paste and nothing to install.
 
 | Part | What it does |
 |---|---|
-| `mcp.json` | Attaches the hosted Cognee MCP server, `https://mcp.aws.cognee.ai/mcp`, as the `cognee` server |
+| `.cursor-plugin/plugin.json` | Its `mcpServers` field attaches the hosted Cognee MCP server, `https://mcp.aws.cognee.ai/mcp`, as the `cognee` server |
 | `rules/cognee-memory.mdc` | An always-on rule: Cognee is the bot's memory, recall before answering, remember durable facts, always name the dataset, show what Cognee did, confirm before deleting |
 
 Grok Bot runs in the cloud and does not run plugin hooks, so nothing saves or
