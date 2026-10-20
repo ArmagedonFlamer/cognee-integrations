@@ -1,7 +1,7 @@
 """Static checks for the Grok Bot plugin, which ships no code of its own.
 
-Grok Bot reads Cursor-format plugins: `.cursor-plugin/plugin.json`, `mcp.json` and
-`rules/*.mdc`, listed in the repository-root
+Grok Bot reads Cursor-format plugins: `.cursor-plugin/plugin.json`, which also
+declares the MCP server, and `rules/*.mdc`, listed in the repository-root
 `.cursor-plugin/marketplace.json`. A typo in any of them fails silently in the
 host (the plugin, the server or the rule just does not appear), so check them here.
 """
@@ -36,6 +36,8 @@ def test_manifest_names_the_plugin_and_matches_the_changelog():
     assert KEBAB.match(manifest["name"])
     latest = re.search(r"^## \[([^\]]+)\]", (PLUGIN / "CHANGELOG.md").read_text(), re.M)
     assert latest and latest.group(1) == manifest["version"]
+    # The description shows the version, so it is visible in Grok Bot's plugin list.
+    assert manifest["description"].endswith(f"Version {manifest['version']}.")
 
 
 def test_logo_is_a_committed_file_referenced_by_a_relative_path():
@@ -57,8 +59,11 @@ def test_marketplace_lists_the_plugin_at_its_directory():
 
 
 def test_mcp_config_points_at_the_hosted_server_without_credentials():
-    servers = _json(PLUGIN / "mcp.json")["mcpServers"]
+    # Declared inline: Grok Bot did not register the server from a separate
+    # mcp.json found by discovery, so the manifest carries it directly.
+    servers = _json(PLUGIN / ".cursor-plugin/plugin.json")["mcpServers"]
     assert servers == {"cognee": {"url": HOSTED_MCP_URL}}
+    assert not (PLUGIN / "mcp.json").exists()
 
 
 def test_the_only_component_is_one_always_on_rule():
