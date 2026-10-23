@@ -17,8 +17,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   text. No setting turns this off.
 - **Explicit remember is sanitized like automatic capture.** `cognee-remember.sh` text,
   and its `cognee-cli` fallback, now goes through the same `<private>` stripping and
-  secret patterns, whatever `COGNEE_CAPTURE` says. A `--file` upload is still sent byte
-  for byte.
+  secret patterns, whatever `COGNEE_CAPTURE` says. So does text passed to
+  `cognee-cli.sh remember|add|recall|search`, the source-checkout fallback; a file path
+  given there, like a `--file` upload, is still sent byte for byte.
 - **Queries are sanitized**: the per-prompt recall and `cognee-search.sh` with its CLI
   fallback.
 - **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it

@@ -60,3 +60,42 @@ def test_cli_fallback_gets_the_sanitized_text(
     sent = log.read_text()
     assert "[private]" in sent
     assert SECRET not in sent and "hunter2" not in sent
+
+
+def test_cognee_cli_wrapper_sanitizes_text_but_not_paths_or_options(
+    suite, temp_home, tmp_path, cli_argv
+):
+    wrapper = suite.scripts_dir / "cognee-cli.sh"
+    if not wrapper.exists():
+        pytest.skip(f"{suite.name} has no cognee-cli.sh")
+    bin_dir, log = cli_argv
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    note = tmp_path / "note.md"
+    note.write_text(f"<private>{SECRET}</private>")
+    env = {
+        **os.environ,
+        "HOME": str(temp_home),
+        "PATH": os.pathsep.join([str(bin_dir), os.environ.get("PATH", "")]),
+        "COGNEE_REPO_ROOT": str(repo),
+    }
+
+    def run(*argv):
+        log.unlink(missing_ok=True)
+        result = subprocess.run(
+            ["bash", str(wrapper), *argv], env=env, capture_output=True, text=True, timeout=60
+        )
+        assert result.returncode == 0, result.stderr
+        return log.read_text().splitlines()
+
+    text = f"keep <private>{SECRET}</private> token=hunter2"
+    assert run("remember", text, "-d", "notes") == [
+        "remember",
+        "keep [private] [redacted:credential]",
+        "-d",
+        "notes",
+    ]
+    assert run("recall", text, "-f", "pretty")[1] == "keep [private] [redacted:credential]"
+    # A path is uploaded as-is, and other subcommands are not touched.
+    assert run("add", str(note), "-d", "notes") == ["add", str(note), "-d", "notes"]
+    assert run("cognify", "-d", "notes") == ["cognify", "-d", "notes"]
