@@ -92,3 +92,55 @@ def test_private_span_and_secret_never_leave_the_hooks(
         held_text = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in held)
         sent_text = sent if route == "cloud-spool" else ""
         assert "Deploy notes [private]" in held_text + sent_text, [str(p) for p in held]
+
+
+def test_antigravity_native_turn_keeps_the_span_out(run_hook, mock_server, tmp_path, temp_home):
+    """Antigravity's adapter reads the turn from its own transcript, not the hook payload."""
+    from utils.suites import ANTIGRAVITY
+
+    transcript = tmp_path / "transcript.jsonl"
+    records = []
+    common = {
+        "conversationId": "native-private",
+        "workspacePaths": [str(tmp_path)],
+        "transcriptPath": str(transcript),
+    }
+
+    def record(**fields):
+        records.append({"status": "DONE", "step_index": len(records), **fields})
+        transcript.write_text("".join(json.dumps(row) + "\n" for row in records))
+
+    def run(script, *args, **payload):
+        result = run_hook(
+            ANTIGRAVITY,
+            "agy_hook.py",
+            script,
+            *args,
+            stdin={**common, **payload},
+            service_url=mock_server.url,
+        )
+        assert result.returncode == 0, result.stderr
+
+    mock_server.set_recall_results([{"question": "Deploy?", "answer": "Use the runbook."}])
+    record(source="USER_EXPLICIT", type="USER_INPUT", content=PROMPT)
+    run("session-context-lookup.py", invocationNum=0)
+    run("store-user-prompt.py", invocationNum=0)
+    tool = {"id": "call-0", "name": "run_command", "args": {"CommandLine": f"echo {CREDENTIAL}"}}
+    record(source="MODEL", tool_calls=[tool])
+    record(
+        source="MODEL", type="RUN_COMMAND", tool_call_id="call-0", content=f"password={CREDENTIAL}"
+    )
+    run("store-to-session.py", toolCall=tool, stepIdx=len(records) - 1)
+    record(source="MODEL", type="PLANNER_RESPONSE", content=f"<private>{SPAN_SECRET}</private> ok")
+    run("store-to-session.py", "--stop", executionNum=0, fullyIdle=True)
+
+    sent = json.dumps(mock_server.calls)
+    on_disk = _plugin_text(temp_home)
+    assert SPAN_SECRET not in sent and SPAN_SECRET not in on_disk
+    assert f"password={CREDENTIAL}" not in sent and f"password={CREDENTIAL}" not in on_disk
+    qa = [
+        call["json"]["entry"]
+        for call in mock_server.calls
+        if call["path"] == "/api/v1/remember/entry" and call["json"]["entry"]["type"] == "qa"
+    ]
+    assert qa and qa[0]["question"].startswith("Deploy notes [private]"), qa
