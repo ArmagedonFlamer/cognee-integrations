@@ -735,7 +735,10 @@ def _activity(session_id: str) -> dict:
     """What to show: ``{"kind": "active"|"result", "text": ..., "age": s}`` or {}.
 
     An active phase wins; otherwise the most recent result. A stale active phase
-    (a hook that died) is ignored rather than shown forever.
+    (a hook that died) is ignored rather than shown forever. A failed ``ready``
+    result is ignored once the connection marker says the server is up: the
+    verdict predates the marker (a boot that finished after the hook gave up),
+    and "memory unavailable" next to a green ● would contradict it.
     """
     marker = _phase_marker(session_id)
     if not marker:
@@ -759,7 +762,7 @@ def _activity(session_id: str) -> dict:
     results = marker.get("results")
     if not isinstance(results, dict):
         return {}
-    latest_kind, latest, latest_at = "", {}, -1.0
+    finished: list[tuple[float, str, dict]] = []
     for kind, entry in results.items():
         if not isinstance(entry, dict):
             continue
@@ -767,8 +770,14 @@ def _activity(session_id: str) -> dict:
             at = float(entry.get("at") or 0)
         except (TypeError, ValueError):
             continue
-        if at > latest_at:
-            latest_kind, latest, latest_at = str(kind), entry, at
+        finished.append((at, str(kind), entry))
+    finished.sort(key=lambda item: item[0], reverse=True)
+    latest_kind, latest, latest_at = "", {}, -1.0
+    for at, kind, entry in finished:
+        if kind == "ready" and entry.get("ok", True) is False and "●" in _health_prefix(session_id):
+            continue
+        latest_kind, latest, latest_at = kind, entry, at
+        break
     text = _result_label(latest_kind, latest) if latest_kind else ""
     if not text:
         return {}

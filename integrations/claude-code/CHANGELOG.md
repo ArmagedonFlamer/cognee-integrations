@@ -10,6 +10,36 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.5]
+
+### Fixed
+- **The dataset name on the status row is a picker again, reliably.** The writable
+  datasets were listed before the SessionStart hook had written the launch record
+  the listing reads, and a failed listing was never retried, so the name stayed plain
+  text for the session. The listing now starts once the hook has run, is retried
+  (five times, with a growing wait) while a server is still starting, keeps the list
+  it had when a run times out, and shows the picker whenever the server listed
+  anything, with the active dataset at the top even when it is not in the writable
+  list (SDK-1244).
+- **No more "memory unavailable" next to a live server.** When session start handed
+  a cold boot to its bootstrap worker it still recorded "not ready" on its way out;
+  once the `setting up memory` phase went stale the row fell back to that verdict.
+  The worker now owns the verdict: it keeps the phase fresh while the server boots
+  (a heartbeat every 15 s), says `memory ready` as soon as the session is registered
+  (before the code-graph pass), and the row and the text line both ignore a failed
+  verdict once the connection marker confirms the server. The row keeps watching a
+  hand-off boot past the two-minute warm-up, until the phase ends.
+- **The status row no longer breaks words in a narrow terminal.** Each segment of the
+  row is a box that never shrinks; a row too wide for the terminal drops the least
+  useful segments first (the last operation's cost, a healthy balance, the last
+  activity) and wraps the rest as whole segments. The tour hints wrap as a paragraph
+  beside their buttons, and are shorter.
+- **No blank row under the prompt.** A session whose row the hooks module draws now
+  removes the plugin's own `statusLine` entry from `~/.claude/settings.json` (Claude
+  Code reserves the row for as long as the entry exists, even when the renderer
+  prints nothing). A user's own entry is never touched; a later session without the
+  module installs the plugin's entry again.
+
 ## [1.7.4]
 
 ### Removed

@@ -991,8 +991,16 @@ Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the
 The renderer behind the row, `scripts/cognee_statusline_render.py`, is also a
 complete Claude Code `statusLine` command, through `scripts/cognee-statusline.sh`.
 Session start writes it into your settings in a session where the hooks module
-does not draw the row, and leaves settings alone where it does. You can also add
-it yourself, for instance if you prefer the line below the prompt:
+does not draw the row, and removes it again in a session where the module does:
+Claude Code keeps a status-line row reserved under the prompt for as long as the
+entry exists, even when the command prints nothing, so an entry left over from
+before the module would show as a blank row. Only the plugin's own entry is ever
+written or removed; one you set yourself is left alone either way. The last
+session to start decides: a terminal that cannot load the module (an older
+Claude Code, `--safe-mode`) installs the line again, and the next session with
+the module removes it. `COGNEE_STATUSLINE=0` stops the plugin touching the entry
+at all. You can also add it yourself, for instance if you prefer the line below
+the prompt:
 
 ```json
 "statusLine": {
@@ -1044,10 +1052,24 @@ out: the dataset, mode, credits,
 connection reason and update nudge are the renderer's, so the row and a
 [line below the prompt](#a-line-below-the-prompt) cannot drift. While an
 operation runs a braille spinner leads the row; a failure leads it with the red
-`✕ (<reason>)`, and unknown health with a dim `?`, as on the text line. The module
+`✕ (<reason>)`, and unknown health with a dim `○`, as on the text line. The module
 marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`) and the
 renderer, run as a settings-file status line, prints nothing for a marked session,
 so the row is never shown twice.
+
+The row is laid out in segments that are never split: in a terminal too narrow
+for all of them, the least useful go first (the last operation's cost, then a
+healthy credit balance, then what memory did last), and what must stay (the
+badge, the dataset, the mode, an exhausted balance, an update notice) wraps
+onto a second line as whole segments rather than breaking a word in two. The
+dataset name is a picker whenever the server listed any writable datasets;
+the listing waits for the SessionStart hook (which writes the launch record it
+reads) and is retried a few times while a server is still starting, so a slow
+start means a late picker, not a missing one. A server that session start hands
+to its bootstrap worker shows `setting up memory · starting memory server…`
+for as long as the boot runs, and `memory ready` once the session is
+registered; the row never says `memory unavailable` while the connection
+marker says the server is up.
 
 Credits read as on the text line, green, red once exhausted or a request was
 refused; where the text line prints `top up: <url>`, the row draws **top up** as a
