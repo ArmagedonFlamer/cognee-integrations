@@ -328,6 +328,18 @@ def _apply_host_python_warning(output: dict) -> dict:
     return result
 
 
+def _install_failure(via: str, exc: BaseException) -> dict:
+    """hook.log detail for a failed venv build: the exception and the tail of
+    what uv / pip said. CalledProcessError's str() is just the command and exit
+    status; the reason (no matching interpreter, disk quota, resolver error) is
+    only in stderr, and without it a failed build on a new runner image or a
+    new OS cannot be diagnosed from the log alone."""
+    stderr = getattr(exc, "stderr", "") or ""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    return {"via": via, "error": str(exc)[:300], "stderr": str(stderr).strip()[-300:]}
+
+
 def _venv_cognee_version() -> str:
     """Installed cognee version inside the plugin venv, or '' if unimportable."""
     if not _VENV_PYTHON.exists():
@@ -563,7 +575,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                 )
                 installed_via_uv = True
             except Exception as exc:
-                hook_log("cognee_install_failed", {"via": "uv", "error": str(exc)[:300]})
+                hook_log("cognee_install_failed", _install_failure("uv", exc))
 
         if not installed_via_uv and not _VENV_PYTHON.exists():
             # Fallback: stdlib venv + pip, from a Python 3.10+ already on the
@@ -599,7 +611,7 @@ def ensure_cognee_installed(timeout: float = _INSTALL_TIMEOUT_SECONDS) -> bool:
                     timeout=timeout,
                 )
             except Exception as exc:
-                hook_log("cognee_install_failed", {"via": "venv_pip", "error": str(exc)[:300]})
+                hook_log("cognee_install_failed", _install_failure("venv_pip", exc))
 
         version = _venv_cognee_version()
         if not version:
