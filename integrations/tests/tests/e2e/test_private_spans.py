@@ -151,6 +151,9 @@ def test_antigravity_native_turn_keeps_the_span_out(run_hook, mock_server, tmp_p
 def test_search_code_query_stays_valid_json(suite, temp_home, mock_server):
     # As plain text, "token=..." took the closing quote and brace with it and
     # the code lane was silently dropped.
+    bash = usable_bash()
+    if bash is None:
+        pytest.skip("the .sh wrappers are not run on Windows")
     query = json.dumps({"q": f"<private>{SPAN_SECRET}</private> token={CREDENTIAL}"})
     args = [
         str(suite.scripts_dir / "cognee-search.sh"),
@@ -161,6 +164,6 @@ def test_search_code_query_stays_valid_json(suite, temp_home, mock_server):
         query,
     ]
     env = build_env(suite, temp_home, service_url=mock_server.url, api_key="k")
-    subprocess.run([usable_bash() or "bash", *args], env=env, cwd=str(temp_home), timeout=60)
+    subprocess.run([bash, *args], env=env, cwd=str(temp_home), timeout=60)
     body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
     assert body["code_query"] == {"q": "[private] [redacted:credential]"}
