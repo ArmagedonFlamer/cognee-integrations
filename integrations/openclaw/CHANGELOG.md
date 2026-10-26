@@ -11,6 +11,17 @@ reports an update only when the published npm version changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Versions are
 date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
+## [2026.10.26]
+
+### Fixed
+- **The boot script says why the runtime could not be built.** When `uv` cannot
+  build the cognee venv and the stdlib `python3 -m venv` fallback fails too, the error
+  marker (and `openclaw cognee status`) used to read only
+  `Command '[..., '-m', 'venv', ...]' returned non-zero exit status 1`. It now keeps
+  uv's own reason first and the venv module's stderr after it, the way the pip
+  fallback already did, so a missing `ensurepip` or an interpreter the runner image
+  no longer ships is named instead of guessed.
+
 ## [2026.10.19]
 
 ### Changed

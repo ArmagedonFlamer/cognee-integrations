@@ -7,6 +7,14 @@ package version.
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.6]
+
+### Fixed
+- **A failed venv build logs why.** `cognee_install_failed` now carries the last 300
+  characters of what `uv` / `pip` printed, next to the exception. The exception alone
+  was the command and its exit status, which could not distinguish a missing
+  interpreter from a full disk when the runtime failed to build on Ubuntu 26.04.
+
 ## [1.6.5]
 
 ### Changed

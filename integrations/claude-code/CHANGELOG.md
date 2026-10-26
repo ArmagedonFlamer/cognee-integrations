@@ -39,6 +39,24 @@ project adheres to [Semantic Versioning](https://semver.org/).
   Code reserves the row for as long as the entry exists, even when the renderer
   prints nothing). A user's own entry is never touched; a later session without the
   module installs the plugin's entry again.
+- **The cloud worker creates the session's dataset before it registers the
+  session.** Registration lists that dataset, and a server that only accepts a
+  connection on a dataset the caller can already read (Cognee Cloud does) answered
+  the first attempt with `403 Forbidden`; the retry only went through once the
+  first capture had created the dataset as a side effect. The worker now issues the
+  idempotent dataset create first, so a fresh session registers on its first attempt
+  and the nightly live tier no longer logs `agent_register_failed` for every
+  claude-code session.
+- **"Saved last turn" counts what the cloud worker delivered.** In cloud mode the
+  hooks only spool a capture (`answer_buffered` / `trace_buffered`), and the delivery
+  bumped the session's aggregate save count but never the per-kind counters, so the
+  next recall reported `0 prompt / 0 trace / 0 answer` for a turn the server already
+  held. The worker now records each delivered trace and answer (and the prompt a qa
+  entry carries) the way the direct path does when its POST returns.
+- **A failed venv build logs why.** `cognee_install_failed` now carries the last 300
+  characters of what `uv` / `pip` printed, next to the exception. The exception alone
+  was the command and its exit status, which could not distinguish a missing
+  interpreter from a full disk when the runtime failed to build on Ubuntu 26.04.
 
 ## [1.7.4]
 
@@ -50,6 +68,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - **Clearer first-run tour.** The arrow now sits right after the dataset name it points
   to, and the last hint says typing `/cognee` shows the plugin's commands.
+
 
 ## [1.7.3]
 
