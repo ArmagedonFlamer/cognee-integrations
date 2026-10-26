@@ -27,7 +27,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   @Tilzen for the report and the first fix.
 - **Queries are sanitized.** The per-prompt recall (graph, session and code lanes),
   `cognee-search.sh` and its CLI fallback, the timeline topic and the evidence index
-  no longer send a span's content or a recognised secret to the server.
+  no longer send a span's content or a recognised secret to the server. A `--code-query`
+  is sanitized field by field, so it stays valid JSON.
 - **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it
   keeps and no longer copies the full text of every deduplicated memory entry. The
   `sync_payload` line in `hook.log` records the payload's field names and size instead

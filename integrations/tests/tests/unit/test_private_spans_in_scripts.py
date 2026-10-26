@@ -105,6 +105,11 @@ def test_cognee_cli_wrapper_sanitizes_text_but_not_paths_or_options(
     assert run("search", "", f"--code-query={code_query}")[2] == (
         '--code-query={"operation": "ask", "question": "deploy [private]"}'
     )
+    # A --code-query is JSON in both forms, and a credential in it keeps it valid.
+    code_query = f'{{"question": "<private>{SECRET}</private> token=hunter2", "api_key": "x"}}'
+    clean = '{"question": "[private] [redacted:credential]", "api_key": "[redacted:credential]"}'
+    assert run("search", "", "--code-query", code_query)[2:] == ["--code-query", clean]
+    assert run("search", "", f"--code-query={code_query}")[2] == f"--code-query={clean}"
     # A path is uploaded as-is, and other subcommands are not touched.
     assert run("add", str(note), "-d", "notes") == ["add", str(note), "-d", "notes"]
     assert run("cognify", "-d", "notes") == ["cognify", "-d", "notes"]

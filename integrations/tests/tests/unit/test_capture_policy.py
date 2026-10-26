@@ -517,13 +517,14 @@ def test_spans_are_stripped_whatever_the_capture_switches_say(policy, monkeypatc
 
 
 def test_sanitize_cli_prints_the_clean_text_and_fails_closed(suite, temp_home):
+    import json
     import os
     import subprocess
     import sys
 
-    def cli(text, **env):
+    def cli(*args, **env):
         return subprocess.run(
-            [sys.executable, str(suite.scripts_dir / "_capture_policy.py"), text],
+            [sys.executable, str(suite.scripts_dir / "_capture_policy.py"), *args],
             env={**os.environ, "HOME": str(temp_home), **env},
             capture_output=True,
             text=True,
@@ -534,6 +535,13 @@ def test_sanitize_cli_prints_the_clean_text_and_fails_closed(suite, temp_home):
     bad = cli("<private>SENTINEL</private>", COGNEE_CAPTURE_REDACT_PATTERNS='["["]')
     assert bad.returncode != 0 and bad.stdout == ""
     assert "SENTINEL" not in bad.stderr
+    # --json walks the document, so a credential cannot eat its closing quote and brace.
+    doc = cli("--json", '{"q": "<private>SENTINEL</private> token=abc", "api_key": "abc12345"}')
+    assert json.loads(doc.stdout) == {
+        "q": "[private] [redacted:credential]",
+        "api_key": "[redacted:credential]",
+    }
+    assert cli("--json", "find <private>SENTINEL</private> {").stdout == "find [private] {"
 
 
 def test_shared_policy_modules_are_identical_across_hosts():

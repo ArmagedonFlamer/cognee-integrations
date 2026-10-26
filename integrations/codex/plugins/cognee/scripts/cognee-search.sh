@@ -219,10 +219,11 @@ if [ -z "$QUERY" ]; then
 fi
 
 # A query is sent like any other text: <private> spans and secret shapes are
-# removed first, for the server and the CLI fallback alike.
+# removed first, for the server and the CLI fallback alike. The code query is
+# JSON, so it is sanitized field by field and stays valid JSON.
 QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" "$QUERY")" || exit 1
 if [ -n "$CODE_QUERY" ]; then
-    CODE_QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" "$CODE_QUERY")" || exit 1
+    CODE_QUERY="$(python3 "${SELF_DIR}/_capture_policy.py" --json "$CODE_QUERY")" || exit 1
 fi
 
 # A dataset other than the active one has none of this session's history, and

@@ -9,8 +9,10 @@ or in any request body, while the public text around them still arrives.
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
+from utils.isolation import build_env, usable_bash
 
 SPAN_SECRET = "SENTINEL-9f3a"
 CREDENTIAL = "hunter2"
@@ -144,3 +146,21 @@ def test_antigravity_native_turn_keeps_the_span_out(run_hook, mock_server, tmp_p
         if call["path"] == "/api/v1/remember/entry" and call["json"]["entry"]["type"] == "qa"
     ]
     assert qa and qa[0]["question"].startswith("Deploy notes [private]"), qa
+
+
+def test_search_code_query_stays_valid_json(suite, temp_home, mock_server):
+    # As plain text, "token=..." took the closing quote and brace with it and
+    # the code lane was silently dropped.
+    query = json.dumps({"q": f"<private>{SPAN_SECRET}</private> token={CREDENTIAL}"})
+    args = [
+        str(suite.scripts_dir / "cognee-search.sh"),
+        "notes",
+        "5",
+        "--code",
+        "--code-query",
+        query,
+    ]
+    env = build_env(suite, temp_home, service_url=mock_server.url, api_key="k")
+    subprocess.run([usable_bash() or "bash", *args], env=env, cwd=str(temp_home), timeout=60)
+    body = mock_server.assert_called("POST", "/api/v1/recall")["json"]
+    assert body["code_query"] == {"q": "[private] [redacted:credential]"}

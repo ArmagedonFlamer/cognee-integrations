@@ -24,7 +24,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   `cognee-cli.sh remember|add|recall|search`, the source-checkout fallback; a file path
   given there, like a `--file` upload, is still sent byte for byte.
 - **Queries are sanitized**: the per-prompt recall, `cognee-search.sh` and its CLI
-  fallback, and the timeline topic.
+  fallback, and the timeline topic. A `--code-query` (here or through `cognee-cli.sh`)
+  is sanitized field by field, so it stays valid JSON.
 - **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it
   keeps; the `sync_payload` line in `hook.log` records field names and size instead of
   the payload's first 200 characters.

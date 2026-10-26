@@ -328,17 +328,27 @@ def sanitize(value):
 
 
 def _main(argv) -> int:
-    """``python3 _capture_policy.py <text>`` prints ``sanitize(text)``.
+    """``python3 _capture_policy.py [--json] <text>`` prints ``sanitize(text)``.
 
     For the shell scripts (search queries, the remember CLI fallback). A failure
     exits non-zero with nothing on stdout, so the caller stops instead of
-    sending the raw text.
+    sending the raw text. With ``--json`` an object or array is sanitized field
+    by field, so it stays valid JSON.
     """
+    as_json = argv[:1] == ["--json"]
+    text = "".join(argv[1:2] if as_json else argv[:1])
     try:
         from _env_file import load_env_file
 
         load_env_file()  # custom patterns may live in ~/.cognee/.env
-        sys.stdout.write(sanitize(argv[0] if argv else ""))
+        try:
+            parsed = json.loads(text) if as_json else None
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            sys.stdout.write(json.dumps(sanitize(parsed), ensure_ascii=False))
+        else:
+            sys.stdout.write(sanitize(text))
     except Exception as exc:
         sys.stderr.write(f"[cognee] could not sanitize the text: {exc}\n")
         return 1
