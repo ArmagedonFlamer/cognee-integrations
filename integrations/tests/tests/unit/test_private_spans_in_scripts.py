@@ -96,6 +96,15 @@ def test_cognee_cli_wrapper_sanitizes_text_but_not_paths_or_options(
         "notes",
     ]
     assert run("recall", text, "-f", "pretty")[1] == "keep [private] [redacted:credential]"
+    # Text that starts with "-" is still text: argparse takes "- note ..." as a positional.
+    assert run("remember", f"- {text}", "-d", "notes")[1] == (
+        "- keep [private] [redacted:credential]"
+    )
+    # The joined --opt=value form keeps the option name and sanitizes the value.
+    code_query = f'{{"operation": "ask", "question": "deploy <private>{SECRET}</private>"}}'
+    assert run("search", "", f"--code-query={code_query}")[2] == (
+        '--code-query={"operation": "ask", "question": "deploy [private]"}'
+    )
     # A path is uploaded as-is, and other subcommands are not touched.
     assert run("add", str(note), "-d", "notes") == ["add", str(note), "-d", "notes"]
     assert run("cognify", "-d", "notes") == ["cognify", "-d", "notes"]

@@ -11,16 +11,29 @@ if [[ "${1:-}" == "doctor" ]]; then
 fi
 
 # Text handed to remember/add/recall/search is sanitized like everywhere else in
-# the plugin (<private> spans, then secret patterns). Options and existing paths
-# pass unchanged: a file goes up byte for byte, as with cognee-remember.sh --file.
+# the plugin (<private> spans, then secret patterns). Option names and existing
+# paths pass unchanged: a file goes up byte for byte, as with cognee-remember.sh
+# --file. The value of --opt=value is sanitized like any text, and so is text
+# that merely starts with "-" (a "- note" bullet is a positional to argparse).
 # Checked before the cd below, so relative paths resolve where they were typed.
 if [[ "${1:-}" =~ ^(remember|add|recall|search)$ ]]; then
   SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" >/dev/null 2>&1 && pwd)"
+  opt_re='^--?[A-Za-z][A-Za-z0-9-]*'
   args=("$1")
   shift
   for arg in "$@"; do
-    if [[ "$arg" == -* || -e "$arg" ]]; then
+    if [[ "$arg" =~ ${opt_re}$ || -e "$arg" ]]; then
       args+=("$arg")
+    elif [[ "$arg" =~ ${opt_re}= ]]; then
+      # Split at the first "=": the value (a JSON --code-query, say) may hold more.
+      opt="${arg%%=*}"
+      val="${arg#*=}"
+      if [[ -e "$val" ]]; then
+        args+=("$arg")
+      else
+        clean="$(python3 "${SELF_DIR}/_capture_policy.py" "$val")" || exit 1
+        args+=("${opt}=${clean}")
+      fi
     else
       clean="$(python3 "${SELF_DIR}/_capture_policy.py" "$arg")" || exit 1
       args+=("$clean")
