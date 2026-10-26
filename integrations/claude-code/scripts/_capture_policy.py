@@ -318,7 +318,11 @@ def sanitize(value):
     instruction, so neither ``COGNEE_CAPTURE`` nor ``COGNEE_CAPTURE_REDACT``
     turns that off. The secret patterns of :func:`redact` run on what is left
     and keep their own switch. Strings, dicts and lists are walked like
-    :func:`redact`; spans go first so a secret split by a span still matches.
+    :func:`redact`; spans go first so marked content disappears entirely instead
+    of leaking its kind and position as a ``[redacted:...]`` marker. A secret cut
+    by a span is not rejoined: a fixed-shape token (an AWS key ID, say) is left
+    in two pieces, while a ``key=value`` or URL secret still matches around the
+    ``[private]`` placeholder.
     """
     return redact(_strip_private_tree(value))
 
