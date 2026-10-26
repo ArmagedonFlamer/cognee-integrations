@@ -322,11 +322,6 @@ def _switch(host_key: str, rec: dict, target: str, *, force: bool) -> dict:
         if row["writable"] is not True:
             raise SwitchError(EXIT_NOT_WRITABLE, "Write permission could not be verified")
 
-    if dataset_id(target):
-        from _plugin_common import require_typed_dataset_id_support
-
-        require_typed_dataset_id_support()
-
     # 1. Sync the session we are leaving. Abort on failure unless forced — the
     #    retired triple stays in `touched`, so the final sync retries it.
     sync_ok = True

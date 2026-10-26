@@ -96,16 +96,11 @@ def test_shared_uuid_is_used_by_write_and_registration(suite, isolated_modules, 
     ident = str(uuid4())
     calls = []
     monkeypatch.setattr(
-        pc,
-        "_json_http_request",
-        lambda path, payload=None, **kw: (
-            {"paths": {"/api/v1/remember/entry": {"post": {"x-cognee-session-dataset-ids": True}}}}
-            if path == "/openapi.json"
-            else calls.append(payload) or {}
-        ),
+        pc, "_json_http_request", lambda path, payload=None, **kw: calls.append(payload) or {}
     )
     pc.remember_entry_via_http(ident, "session", {"type": "qa", "question": "q", "answer": "a"})
-    assert calls[-1]["dataset_id"] == ident and "dataset_name" not in calls[-1]
+    # Typed entries go by name only; a UUID target carries no dataset field.
+    assert "dataset_id" not in calls[-1] and "dataset_name" not in calls[-1]
     pc.register_agent_via_http(agent_session_name="connection", dataset_names=[ident])
     assert calls[-1]["dataset_ids"] == [ident] and calls[-1]["dataset_names"] == []
 
@@ -141,9 +136,7 @@ def test_rejected_old_key_does_not_block_new_reconnection(suite, isolated_module
     assert pc._load_json_file(pc._AGENT_KEY_CACHE)["blocked"] is True
 
 
-def test_provision_uses_explicit_server_for_capability_and_creation(
-    suite, isolated_modules, monkeypatch
-):
+def test_provision_uses_explicit_server_for_every_request(suite, isolated_modules, monkeypatch):
     pc = isolated_modules(suite, "_plugin_common")
     calls = []
 
@@ -153,7 +146,7 @@ def test_provision_uses_explicit_server_for_capability_and_creation(
             return {
                 "paths": {
                     "/api/v1/integrations/plugins/{plugin_key}/provision": {
-                        "post": {"parameters": [{"name": "create_only", "in": "query"}]}
+                        "post": {"x-cognee-additive-plugin-keys": True}
                     }
                 }
             }
@@ -164,7 +157,10 @@ def test_provision_uses_explicit_server_for_capability_and_creation(
         principal_key="parent", service_url="https://explicit-server.test"
     )
     assert status == "provisioned"
-    assert len(calls) == 2
+    assert [path for path, _ in calls] == [
+        "/openapi.json",
+        f"/api/v1/integrations/plugins/{pc.PLUGIN_KEY}/provision",
+    ]
     assert all(call[1]["base_url"] == "https://explicit-server.test" for call in calls)
 
 
@@ -187,47 +183,23 @@ def test_permission_rejection_never_falls_back_to_ownership(
     assert error.value.code == status
 
 
-def test_old_sdk_cannot_accept_uuid_session_writes(suite, isolated_modules, monkeypatch):
+def test_typed_entries_never_carry_a_dataset_uuid(suite, isolated_modules, monkeypatch):
+    """The server's typed path rejects ``dataset_id`` (cognee <= 1.6.x) and
+    nothing needs it: the entry is cached by session, and the dataset is named
+    by UUID on the sync. A UUID-only target sends no dataset field at all, and
+    no capability is probed first."""
     from uuid import uuid4
 
     pc = isolated_modules(suite, "_plugin_common")
     calls = []
-
-    def request(path, *args, **kwargs):
-        calls.append(path)
-        # The old SDK has a dataset_id schema field but rejects it in remember().
-        return {"paths": {"/api/v1/remember/entry": {"post": {}}}}
-
-    monkeypatch.setattr(pc, "_json_http_request", request)
-    with pytest.raises(RuntimeError, match="cannot safely store"):
-        pc.remember_entry_via_http(
-            str(uuid4()), "session", {"type": "qa", "question": "q", "answer": "a"}
-        )
-    assert calls == ["/openapi.json"]
-
-
-def test_unsupported_shared_switch_aborts_before_sync(suite, hook_module, monkeypatch):
-    from uuid import uuid4
-
-    switch = hook_module(suite, "switch-dataset.py")
-    import _plugin_common as pc
-
-    ident = str(uuid4())
-    monkeypatch.setattr(switch, "load_resolved", lambda **kw: {"user_id": "writer"})
     monkeypatch.setattr(
-        switch,
-        "list_writable_datasets",
-        lambda *args: {
-            "datasets": [{"id": ident, "name": "shared", "owner_id": "other", "writable": True}],
-            "readonly": [],
-        },
+        pc, "_json_http_request", lambda path, payload=None, **kw: calls.append((path, payload))
     )
-    monkeypatch.setattr(pc, "_json_http_request", lambda *args, **kw: {"paths": {}})
-    calls = []
-    monkeypatch.setattr(switch, "_sync_current", lambda *args: calls.append("sync"))
-    with pytest.raises(RuntimeError, match="cannot safely store"):
-        switch._switch("host", {"session_id": "old", "dataset": "owned"}, ident, force=False)
-    assert calls == []
+    pc.remember_entry_via_http(
+        str(uuid4()), "session", {"type": "qa", "question": "q", "answer": "a"}
+    )
+    assert [path for path, _ in calls] == ["/api/v1/remember/entry"]
+    assert "dataset_id" not in calls[0][1] and "dataset_name" not in calls[0][1]
 
 
 def test_owned_uuid_selection_uses_compatible_owned_name(suite, hook_module, monkeypatch):

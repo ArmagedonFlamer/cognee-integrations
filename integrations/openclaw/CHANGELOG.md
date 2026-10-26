@@ -14,6 +14,14 @@ date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 ## [Unreleased]
 
 ### Added
+- **`openclaw cognee keys`** lists the per-machine API keys of every cognee plugin agent of
+  your user (Claude Code, Codex, …), most recently used first, and `--revoke <id>
+  --plugin <key>` revokes one. Cognee's provision route now adds one key per machine and
+  caps them (cognee#6113); a full agent refuses a new machine a key, and this is how a
+  slot is freed from OpenClaw. `CogneeHttpClient` gains `listPluginStatuses`,
+  `listPluginKeys` and `revokePluginKey`.
+
+### Added
 - **`chunkSize` setting** ([#428](https://github.com/topoteretes/cognee-integrations/issues/428)).
   File sync never sent `chunk_size`, so the server chunked every memory file at its
   form default of 4096 tokens, above the input limit of embedding models such as
