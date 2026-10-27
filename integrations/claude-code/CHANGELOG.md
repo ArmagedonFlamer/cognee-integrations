@@ -57,6 +57,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   characters of what `uv` / `pip` printed, next to the exception. The exception alone
   was the command and its exit status, which could not distinguish a missing
   interpreter from a full disk when the runtime failed to build on Ubuntu 26.04.
+- **A session file is not lost to a briefly held handle on Windows.** Replacing a
+  freshly written counters or ledger file fails on Windows while another handle is
+  open on it (a reader, the indexer, an antivirus scan). The write now waits and
+  tries again a few times before giving up, so a parallel store hook keeps its count.
 
 ## [1.7.4]
 
