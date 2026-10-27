@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from utils.isolation import usable_bash
 
 INTEGRATIONS_ROOT = Path(__file__).resolve().parents[3]
 REPO_ROOT = INTEGRATIONS_ROOT.parent
@@ -539,6 +540,9 @@ def test_statusline_launcher_execs_the_cursor_renderer(plugin_root):
     assert "cli-config.json" in render
 
 
+@pytest.mark.skipif(
+    usable_bash() is None, reason="runs the POSIX launcher, which is not run on Windows"
+)
 def test_statusline_renders_from_cursor_state_without_network(plugin_root, tmp_path):
     home = tmp_path / "home"
     state = home / ".cognee-plugin" / "cursor"
@@ -737,7 +741,8 @@ def test_renderer_keeps_the_plain_text_header_the_hooks_import(plugin_root, tmp_
         [sys.executable, "-c", code, str(SCRIPTS_DIR)],
         capture_output=True,
         text=True,
-        env={"HOME": str(home), "PATH": os.environ.get("PATH", "")},
+        # Windows finds the home directory through USERPROFILE, not HOME.
+        env={"HOME": str(home), "USERPROFILE": str(home), "PATH": os.environ.get("PATH", "")},
         timeout=20,
         check=False,
     )
