@@ -19,6 +19,8 @@ from werkzeug import Request, Response
 
 from .identity_fake import IdentityFake
 
+_ENTRY_SCHEMA_REF = "#/components/schemas/RememberEntryPayload"
+
 #: Terminal cognify status the clients poll for on /api/v1/datasets/status.
 STATUS_COMPLETED = "DATASET_PROCESSING_COMPLETED"
 STATUS_ERRORED = "DATASET_PROCESSING_ERRORED"
@@ -400,7 +402,34 @@ class MockCogneeServer:
             paths["/api/v1/integrations/plugins/{plugin_key}/provision"] = {
                 "post": {"x-cognee-additive-plugin-keys": True}
             }
-        return _json(200, {"paths": paths})
+        if self.identity.typed_dataset_ids:
+            # As a real server describes it: the entry's request body, behind a
+            # $ref, lists dataset_id.
+            paths["/api/v1/remember/entry"] = {
+                "post": {
+                    "requestBody": {
+                        "content": {"application/json": {"schema": {"$ref": _ENTRY_SCHEMA_REF}}}
+                    }
+                }
+            }
+        return _json(
+            200,
+            {
+                "paths": paths,
+                "components": {
+                    "schemas": {
+                        "RememberEntryPayload": {
+                            "properties": {
+                                "dataset_id": {},
+                                "dataset_name": {},
+                                "entry": {},
+                                "session_id": {},
+                            }
+                        }
+                    }
+                },
+            },
+        )
 
     def _plugin_keys_list(self, req: Request) -> Response:
         self._record(req)

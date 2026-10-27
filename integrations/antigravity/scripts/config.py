@@ -342,7 +342,9 @@ async def ensure_dataset_ready_via_api(service_url: str, api_key: str, dataset: 
 
     ident = dataset_id(dataset)
     if ident:
-        from _plugin_common import effective_write_dataset_ids
+        from _plugin_common import effective_write_dataset_ids, require_typed_dataset_id_support
+
+        require_typed_dataset_id_support(service_url=service_url, api_key=api_key)
 
         user_id = await _user_id_via_api(service_url, api_key)
         if not user_id:
@@ -465,7 +467,7 @@ async def improve_session_local(
     reported as ``unsupported`` — there is no client-side fallback (the old
     persist path re-cognified the whole session cache on every run).
     ``trigger`` names the caller and is recorded with the session's improve
-    state on success, for the idle/auto cooldown.
+    state on success, for the auto cooldown.
 
     Serialized per session by ``improve_session_lock``, matching the HTTP path in
     ``run_session_improve``. ``store-to-session``'s background fire takes no outer

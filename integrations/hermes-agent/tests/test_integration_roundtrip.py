@@ -108,7 +108,6 @@ class TestHttpRoundTrip(unittest.TestCase):
         self.dataset = f"hermes_it_{_unique_suffix()}_{self._testMethodName[5:25]}"
 
     def _provider(self):
-        from cognee_integration_hermes import http_backend as http_backend_mod
         from cognee_integration_hermes.http_backend import HttpBackend
         from cognee_integration_hermes.provider import CogneeMemoryProvider
 
@@ -126,12 +125,10 @@ class TestHttpRoundTrip(unittest.TestCase):
             "COGNEE_RECALL_TIMEOUT": "120",
         }
         provider = CogneeMemoryProvider()
-        with (
-            mock.patch.dict("os.environ", env, clear=False),
-            # The key cache defaults to the real shared ~/.cognee-plugin; a test
-            # server on a random port must not overwrite the machine's actual key.
-            mock.patch.object(http_backend_mod, "SHARED_PLUGIN_STATE_DIR", Path(self.home.name)),
-        ):
+        # No key-cache patch: the HTTP backend keeps a resolved key in-process
+        # (http_backend._RESOLVED_KEYS) and writes no api_key.json any more, so
+        # a test server on a random port cannot touch the machine's real key.
+        with mock.patch.dict("os.environ", env, clear=False):
             provider.initialize(f"rt-{self._testMethodName}", hermes_home=self.home.name)
         self.assertIsInstance(
             provider._backend, HttpBackend, "the HTTP transport should be the default"
@@ -212,9 +209,18 @@ class TestHttpRoundTrip(unittest.TestCase):
             provider.handle_tool_call(
                 "cognee_remember", {"content": "Disposable fact about zebras."}
             )
-            found = json.loads(
-                provider.handle_tool_call("cognee_forget", {"action": "find", "terms": "zebras"})
-            )
+            # cognee_remember runs in the background (#479): the document joins
+            # the dataset a moment after the call returns, so wait for it.
+            deadline = time.monotonic() + 120
+            while True:
+                found = json.loads(
+                    provider.handle_tool_call(
+                        "cognee_forget", {"action": "find", "terms": "zebras"}
+                    )
+                )
+                if found.get("candidates") or time.monotonic() > deadline:
+                    break
+                time.sleep(2)
             self.assertNotIn("error", found, found)
             candidates = found.get("candidates") or []
             self.assertTrue(candidates, f"the stored document was not listed: {found}")
@@ -246,7 +252,7 @@ class TestHttpConnectAgainstRealServer(unittest.TestCase):
     is the one to run first when something looks wrong.
     """
 
-    def test_connect_mints_a_key_registers_and_caches(self):
+    def test_connect_finds_the_servers_key_and_registers(self):
         from cognee_integration_hermes.http_backend import HttpBackend
         from cognee_integration_hermes.server_bootstrap import ensure_local_server
 
@@ -259,19 +265,21 @@ class TestHttpConnectAgainstRealServer(unittest.TestCase):
                 system_root=str(Path(home) / "system"),
                 boot_timeout=_BOOT_TIMEOUT,
             )
-            backend = HttpBackend(cache_dir=home)
+            backend = HttpBackend()
             try:
                 backend.connect(url=url, api_key="", timeout=60.0)
                 self.assertEqual(backend.url, url)
                 self.assertTrue(backend.registered, "agent connection should register")
-                # A server with auth enabled hands back a key, which we cache; one
-                # with auth disabled needs none. Either is fine — but if a key was
-                # resolved it must have been written through for the next session.
+                # A server with auth enabled hands back a key; one with auth
+                # disabled needs none. A second connection must land on the same
+                # key, looked up on the server rather than in a file.
                 if backend.api_key:
-                    self.assertTrue(
-                        (Path(home) / "api_key.json").exists(),
-                        "a resolved key should be cached in the shared-format file",
-                    )
+                    again = HttpBackend()
+                    again.connect(url=url, api_key="", timeout=60.0)
+                    try:
+                        self.assertEqual(again.api_key, backend.api_key)
+                    finally:
+                        again.close(timeout=15.0)
             finally:
                 backend.close(timeout=15.0)
             self.assertFalse(backend.registered, "close() should unregister")

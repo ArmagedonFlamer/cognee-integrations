@@ -133,6 +133,7 @@ describe("registration", () => {
     // the roster is asserted as a whole rather than per test.
     const harness = createPluginApi(plugin);
     expect([...harness.actions.keys()].sort()).toEqual([
+      "digest",
       "forget",
       "health",
       "improve",
@@ -141,7 +142,9 @@ describe("registration", () => {
       "keys",
       "scopes",
       "setup",
+      "standup",
       "status",
+      "timeline",
       "version",
       "visualise",
     ]);

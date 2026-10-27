@@ -1,6 +1,14 @@
 ---
 name: cognee-keys
-description: Manage the API keys of this plugin's Cognee agent, one per machine. Use when the user asks to list, clean up or revoke Cognee plugin keys, when a session start says this machine is on the personal key because the agent is full, or when "cognee keys" / "key limit" / "revoke a key" comes up.
+description: >-
+  List and revoke the per-machine API keys of this plugin's Cognee agent, so a full agent
+  can give a new machine a key again.
+when_to_use: >-
+  E.g. "list the Cognee keys", "which machines have a Cognee key?", "revoke an old
+  machine's Cognee key", "the agent is full of keys", "free a Cognee key slot", or when a
+  session start says this machine is on the personal key because the agent is full. Not
+  for the LLM or server API key in ~/.cognee/.env (cognee-how-it-works), or for datasets
+  and permissions (cognee-switch-datasets).
 ---
 
 # Cognee Keys

@@ -121,6 +121,10 @@ class IdentityFake:
         # released servers, which rotate every key on provision — the plugin
         # must never provision against them.
         self.additive_keys = True
+        # False -> /openapi.json's POST /remember/entry lists no dataset_id in
+        # its request body, like an SDK that rejects typed session writes by
+        # dataset UUID; shared memory must not wire on such a server.
+        self.typed_dataset_ids = True
         # True -> /agents/register authenticates the caller's key like the real
         # route (401 for an invalid key). Off by default: most tests seed no keys.
         self.register_checks_keys = False

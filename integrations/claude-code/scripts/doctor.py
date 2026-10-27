@@ -366,6 +366,8 @@ def _resolve_env_file() -> str:
 
 def collect_report() -> dict:
     """Gather all diagnostic fields into an ordered dict."""
+    from _auto_memory import state as auto_memory_state
+
     mode = _resolve_mode()
     display_url, raw_url = _resolve_server_url()
     api_key_source = _resolve_api_key_source()
@@ -392,6 +394,7 @@ def collect_report() -> dict:
         "embedding_model": embedding_model,
         "embedding_dimensions": embedding_dimensions,
         "circuit_breaker": circuit_breaker,
+        "auto_memory": auto_memory_state(),
     }
 
 
@@ -410,6 +413,7 @@ _DISPLAY_ORDER = [
     ("Embedding Model", "embedding_model"),
     ("Embedding Dims", "embedding_dimensions"),
     ("Circuit Breaker", "circuit_breaker"),
+    ("Claude Auto Memory", "auto_memory"),
 ]
 
 

@@ -107,6 +107,24 @@ class Suite:
     #: claude-code and codex ship the same script (the doctor hint follows the
     #: tree: ``cognee-doctor.sh`` vs ``doctor.py``); Antigravity does not.
     has_recap_skills: bool
+    #: Capability (SDK-1071): recalled memory is tagged for crediting, and the
+    #: resume notice shown, without ``COGNEE_PLUGIN_CITE_MEMORY`` being set.
+    #: claude-code is on; codex starts off, because its terminal shows the
+    #: injected instruction, until it has been tried live. Antigravity has no
+    #: credit tagging at all.
+    cites_memory_by_default: bool
+    #: Behaviour: a prompt whose recall found nothing still injects the memory
+    #: header and ``(no memory matches for this prompt)``. codex injects nothing
+    #: then (SDK-1071: a "0 hits" line on most turns read as "Cognee does
+    #: nothing"); the user still sees the header.
+    injects_empty_recall: bool
+    #: Behaviour (SDK-1090): against a remote tenant the hooks only spool to disk
+    #: and one detached per-user worker (``_cloud_worker.py``) does every server
+    #: call. SessionStart registers the launch with it and returns without picking
+    #: an endpoint, and the graph bridge is the worker's ``improve_fired``, not the
+    #: local path's ``sync_bridge_done`` / ``final_sync_once_*`` events. codex and
+    #: Antigravity still talk to the tenant from the hooks.
+    has_cloud_worker: bool
 
 
 CLAUDE = Suite(
@@ -129,6 +147,9 @@ CLAUDE = Suite(
     has_local_sdk_recall=False,
     has_cross_dataset_search=True,
     has_recap_skills=True,
+    cites_memory_by_default=True,
+    injects_empty_recall=True,
+    has_cloud_worker=True,
 )
 
 CODEX = Suite(
@@ -156,6 +177,9 @@ CODEX = Suite(
     has_local_sdk_recall=False,
     has_cross_dataset_search=True,
     has_recap_skills=True,
+    cites_memory_by_default=False,
+    injects_empty_recall=False,
+    has_cloud_worker=False,
 )
 
 ANTIGRAVITY = Suite(
@@ -178,6 +202,9 @@ ANTIGRAVITY = Suite(
     has_local_sdk_recall=True,
     has_cross_dataset_search=False,
     has_recap_skills=False,
+    cites_memory_by_default=False,
+    injects_empty_recall=True,
+    has_cloud_worker=False,
 )
 
 ALL_SUITES = [CLAUDE, CODEX, ANTIGRAVITY]
