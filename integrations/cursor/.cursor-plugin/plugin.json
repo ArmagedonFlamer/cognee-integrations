@@ -9,6 +9,7 @@
   "homepage": "https://docs.cognee.ai",
   "repository": "https://github.com/topoteretes/cognee-integrations",
   "license": "Apache-2.0",
+  "logo": "assets/logo.png",
   "keywords": [
     "memory",
     "knowledge-graph",

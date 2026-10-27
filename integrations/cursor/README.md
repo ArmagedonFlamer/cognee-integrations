@@ -54,6 +54,12 @@ Cursor distributes plugins as Git repositories listed in a [marketplace](https:/
 
 Either way Cursor installs the plugin itself and keeps it updated; no files need to be copied.
 
+### Turn on third-party hooks (required)
+
+Cursor runs a plugin's hooks only when **Settings → Agents → Third-Party Imports → "Include Third-Party Plugins, Skills, and Other Configs"** is on. With it off, the plugin's skills still work when the agent uses them, but no hook runs: nothing is captured, no memory is recalled on its own, and the conversation is not saved. Turn it on, then **Developer: Reload Window**. Checked with Cursor 3.26.16.
+
+The same switch also loads the Claude Code plugins you have installed. If the Claude Code Cognee plugin is one of them, both plugins capture the same conversation; see [Known limitations](#known-limitations).
+
 ### Option B — local plugin folder (development)
 
 Cursor also loads plugins copied into `~/.cursor/plugins/local/`:
@@ -151,7 +157,31 @@ The glyph is the connection/LLM-key health (green `●`, red `✕ …` with the 
 
 With the opt-in set, `sessionStart` registers it: `scripts/_statusline_config.py` writes `statusLine` into `~/.cursor/cli-config.json` pointing at `scripts/cognee-statusline.sh` of the running plugin copy (the CLI spawns the command directly, without a shell). Without it (or with `COGNEE_STATUSLINE=false`) the plugin's own entry is removed again. A `statusLine` you configured yourself is never replaced or removed; the plugin's own entry is updated in place when the plugin moves and removed by the renderer when the plugin folder is gone. Edits take a lock, yield to a concurrent write by the CLI, keep a symlinked `cli-config.json` a symlink and keep its permissions. Knobs: `COGNEE_STATUSLINE_TIMEOUT_MS` / `COGNEE_STATUSLINE_PADDING` map to the CLI's `timeoutMs` / `padding`, `COGNEE_STATUSLINE_COUNTS=full|false` switches the recall segment to the per-scope strip or hides it. The renderer is pure-local (state files under `~/.cognee-plugin/cursor/`, no network). Register it by hand with `python3 scripts/_statusline_config.py` (`--remove` to undo); restart the CLI session to pick up a new `cli-config.json`.
 
-The Cursor IDE has no status line. There, the same text (without ANSI) is the first line of the context the plugin injects at session start and on each turn's first tool call, so the agent can relay it.
+## Status bar (Cursor IDE)
+
+The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that switches the chat's dataset. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
+
+Without it, the same text (without ANSI) is the first line of the context the plugin injects at session start and on each turn's first tool call, so the agent can relay it.
+
+## What the plugin sends and stores
+
+Everything goes to the Cognee server at `COGNEE_BASE_URL`: your own local server, or your Cognee Cloud tenant. Nothing is sent anywhere else.
+
+- **Sent per turn:** your prompt, the agent's final answer, and each tool call with its input and output (truncated), as session memory in the active dataset (`agent_sessions` by default). When the conversation ends, that session memory is turned into graph memory on the server.
+- **Sent per prompt:** the prompt as a recall query, to fetch the memory the agent gets.
+- **Redacted first:** API keys, tokens, private keys, connection strings, `Authorization` headers and similar secrets are replaced with `[redacted:<kind>]` before anything is sent. Credit lines and the plugin's own instructions are removed as well.
+- **Not sent:** reads of sensitive paths such as `.env` files and key files, and the plugin's own Cognee commands.
+- **Kept locally:** logs and per-session state under `~/.cognee-plugin/cursor/`. The API key stays in `~/.cognee/.env` or your shell, never in the plugin.
+
+| Setting | Effect |
+| --- | --- |
+| `COGNEE_CAPTURE=false` | store nothing; recall still works |
+| `COGNEE_CAPTURE_TOOLS` / `COGNEE_CAPTURE_DENY_TOOLS` | which tool calls are stored, e.g. `COGNEE_CAPTURE_DENY_TOOLS=Bash(curl:*)` |
+| `COGNEE_CAPTURE_DENY_PATHS` | more paths whose reads are never stored |
+| `COGNEE_CAPTURE_REDACT_PATTERNS` | your own regexes to redact, one per line |
+| `COGNEE_CAPTURE_REDACT=false` | turn redaction off (not recommended) |
+
+Forget something with the `cognee-forget` skill ("forget what we said about X"), which deletes the matching documents and the graph built from them.
 
 ## Known limitations
 
@@ -162,7 +192,7 @@ The Cursor IDE has no status line. There, the same text (without ANSI) is the fi
 - **Headless CLI runs (`cursor-agent -p …`) fire only `sessionStart`, `postToolUse`/`postToolUseFailure` and `sessionEnd`** (observed with CLI 2026.09.26). The prompt passed on the command line does not go through `beforeSubmitPrompt`, and `afterAgentResponse`/`stop` do not fire, so headless runs store tool traces (which later recall finds) but not the prompt or the answer, and get no recall injected. Interactive sessions get the full lifecycle.
 - **Cursor's `stop` hook has not been seen to fire** (IDE 3.16.17, CLI 2026.09.26; `~/.cognee-plugin/cursor/adapter.log` records every hook launch). That is why the QA pair is stored from `afterAgentResponse`; `credits-refresh.py`, registered on `stop`, therefore rarely runs and the credits segment of the status line may lag.
 - **Cloud agents are not supported yet.** They run project hooks only, and `install-cursor-hooks.py` writes absolute paths into your checkout that don't exist on the agent's machine. A cloud agent would also need `COGNEE_BASE_URL` and `COGNEE_API_KEY` as secrets, since it has no `~/.cognee/.env`, and `sessionStart`/`sessionEnd` don't fire there.
-- **Double capture with the Claude Code plugin.** Cursor's Claude Code compatibility layer (Settings → Agents → Third-Party Imports, on by default) also loads the *Claude Code* Cognee plugin's hooks, so both plugins capture the same conversation. You can tell when the same prompt shows up in both `~/.cognee-plugin/claude-code/hook.log` and `~/.cognee-plugin/cursor/hook.log`. Pick one: uninstall this plugin, or keep it and turn the third-party import off. That switch covers every Claude Code import (rules, skills, other hooks), not just Cognee.
+- **Double capture with the Claude Code plugin.** Cursor's Claude Code compatibility layer (Settings → Agents → Third-Party Imports, on by default) also loads the *Claude Code* Cognee plugin's hooks, so both plugins capture the same conversation. You can tell when the same prompt shows up in both `~/.cognee-plugin/claude-code/hook.log` and `~/.cognee-plugin/cursor/hook.log`. Turning the switch off is no fix: this plugin's own hooks need it on (see [Turn on third-party hooks](#turn-on-third-party-hooks-required)). Pick one plugin instead: uninstall this one, or disable the Claude Code one with `claude plugin disable cognee-memory@cognee`, which also turns Cognee off in Claude Code itself until you run `claude plugin enable cognee-memory@cognee`.
 
 ## Development
 
