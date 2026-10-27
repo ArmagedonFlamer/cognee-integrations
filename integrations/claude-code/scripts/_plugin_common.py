@@ -2209,6 +2209,28 @@ def phase_begin(phase: str, detail: str = "", session_key: Optional[str] = None)
         hook_log("phase_begin_failed", {"phase": phase, "error": str(exc)[:200]})
 
 
+def phase_touch(phase: str, session_key: Optional[str] = None) -> None:
+    """Refresh ``updated_at`` on a running ``phase`` so it never reads as dead.
+
+    The status surfaces treat an active phase older than
+    ``_PHASE_STALE_SECONDS`` as a hook that died and fall back to the last
+    result. A server boot legitimately runs for minutes; the bootstrap worker
+    touches ``setting_up`` while it waits. A no-op when another phase owns the
+    slot, or none does.
+    """
+    try:
+        path = _phase_path(session_key)
+        state = _read_phase(path)
+        current = state.get("active") if isinstance(state.get("active"), dict) else None
+        if not current or current.get("phase") != phase:
+            return
+        current["updated_at"] = time.time()
+        state["active"] = current
+        _write_json_file(path, state)
+    except Exception as exc:
+        hook_log("phase_touch_failed", {"phase": phase, "error": str(exc)[:200]})
+
+
 def phase_end(
     phase: str,
     count: Optional[int] = None,

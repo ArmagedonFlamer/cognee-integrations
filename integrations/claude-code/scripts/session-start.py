@@ -20,10 +20,12 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -54,6 +56,7 @@ from _plugin_common import (
     managed_endpoint_enabled,
     phase_begin,
     phase_end,
+    phase_touch,
     probe_health,
     quiet_hook_output,
     resolve_session_key_from_payload,
@@ -100,6 +103,10 @@ _BOOTSTRAP_ARG = "--bootstrap"
 _BOOTSTRAP_LOCK = _GLOBAL_STATE_DIR / "server-bootstrap-worker.lock"
 _SERVER_BOOT_DEADLINE_SECONDS = float(os.environ.get("COGNEE_SERVER_BOOT_DEADLINE", "") or 600.0)
 _BOOTSTRAP_LOCK_STALE_SECONDS = _SERVER_BOOT_DEADLINE_SECONDS + 60.0
+# How often the bootstrap worker refreshes the ``setting_up`` phase while it
+# boots: well inside the 90 s after which the status surfaces call an active
+# phase dead (``_plugin_common._PHASE_STALE_SECONDS``).
+_SETTING_UP_HEARTBEAT_SECONDS = 15.0
 _LAZY_BOOTSTRAP = os.environ.get("COGNEE_LAZY_BOOTSTRAP", "1").strip().lower() not in (
     "0",
     "false",
@@ -1653,10 +1660,15 @@ async def _run_heavy(
     *,
     managed_endpoint: bool,
     boot_timeout: float,
+    on_registered: Callable[[], None] | None = None,
 ) -> tuple[str, str, bool]:
     """Slow session bootstrap shared by the inline (legacy) path and the
     detached worker: server boot wait, cognee init, agent registration, dataset
     creation, and the server-ready marker.
+
+    ``on_registered`` runs once the session is registered and the connection
+    state recorded, before the code-graph pass: memory is usable from then on,
+    and the worker uses it to say so without waiting for the index.
 
     Returns ``(user_id, agent_api_key, ok)``. ``ok`` is False only on a hard
     cloud-registration failure (mirrors the legacy early-abort).
@@ -1803,6 +1815,12 @@ async def _run_heavy(
     elif service_url and probe_health(service_url, timeout=1.5) == "ready":
         write_connection_state("ready", service_url)
 
+    if on_registered is not None:
+        try:
+            on_registered()
+        except Exception as exc:
+            hook_log("phase_end_failed", {"phase": "setting_up", "error": str(exc)[:200]})
+
     # Code graph: index the repository this session opened in, or refresh it if
     # the tree moved while the agent was away. Deliberately last and inside the
     # detached worker — it must never delay the first prompt — and best-effort:
@@ -1850,43 +1868,92 @@ async def _run_bootstrap(bootstrap: dict) -> None:
     config["base_url"] = service_url
     os.environ["COGNEE_BASE_URL"] = service_url
 
-    # 1. Ensure the server is up. Only the single-flight winner spawns uvicorn;
-    #    everyone else waits for /health (the winner may still be migrating).
-    if not _health_ok(health_url):
-        with _bootstrap_singleflight() as acquired:
-            if acquired:
-                try:
-                    _ensure_local_server_running(
-                        config, health_timeout=_SERVER_BOOT_DEADLINE_SECONDS
-                    )
-                except Exception as exc:
-                    hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
-            else:
-                hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
-        if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
-            hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
-            phase_end("setting_up", session_key=session_key, ok=False)
-            return
+    # The hook began ``setting_up`` and handed the verdict to this worker. A
+    # boot (an install on a cold start) runs for minutes, past the stale window
+    # the status surfaces give an active phase; a heartbeat keeps the phase
+    # fresh until the session is registered, so the row keeps saying "setting
+    # up memory" instead of falling back to an old result.
+    heartbeat_stop = threading.Event()
 
-    # 2. Register this agent/session. Runs for every agent — NOT gated by the
-    #    boot single-flight. _run_heavy's _ensure_local_server_running is a
-    #    no-op now that the server is healthy.
-    try:
-        await _run_heavy(
-            config,
-            cwd,
-            session_id,
-            agent_session_name,
-            session_key,
-            dataset,
-            managed_endpoint=False,
-            boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
-        )
-        hook_log("bootstrap_complete", {"session_id": session_id})
+    def _heartbeat() -> None:
+        while not heartbeat_stop.wait(_SETTING_UP_HEARTBEAT_SECONDS):
+            phase_touch("setting_up", session_key=session_key)
+
+    heartbeat = threading.Thread(target=_heartbeat, name="cognee-setting-up", daemon=True)
+    heartbeat.start()
+
+    def _stop_heartbeat() -> None:
+        # ``set()`` wakes the thread but does not interrupt a touch already
+        # past its read: that touch would write ``active: setting_up`` back
+        # over the result ``phase_end`` records next, and the row would say
+        # "setting up memory" until the phase went stale. The thread leaves
+        # its wait at once, so the join returns as soon as any touch lands.
+        heartbeat_stop.set()
+        heartbeat.join(timeout=1.0)
+
+    def _registered() -> None:
+        # Memory is usable from here: the code-graph pass that follows is
+        # best-effort and must not hold the verdict back.
+        _stop_heartbeat()
+        hook_log("bootstrap_registered", {"session_id": session_id})
         phase_end("setting_up", session_key=session_key)
-    except Exception as exc:
-        hook_log("bootstrap_failed", {"error": str(exc)[:300]})
-        phase_end("setting_up", session_key=session_key, ok=False)
+
+    try:
+        # 1. Ensure the server is up. Only the single-flight winner spawns uvicorn;
+        #    everyone else waits for /health (the winner may still be migrating).
+        if not _health_ok(health_url):
+            with _bootstrap_singleflight() as acquired:
+                if acquired:
+                    try:
+                        _ensure_local_server_running(
+                            config, health_timeout=_SERVER_BOOT_DEADLINE_SECONDS
+                        )
+                    except Exception as exc:
+                        hook_log("server_bootstrap_warning", {"error": str(exc)[:200]})
+                else:
+                    hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
+            if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
+                hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
+                _stop_heartbeat()
+                phase_end("setting_up", session_key=session_key, ok=False)
+                return
+
+        # 2. Register this agent/session. Runs for every agent — NOT gated by the
+        #    boot single-flight. _run_heavy's _ensure_local_server_running is a
+        #    no-op now that the server is healthy.
+        try:
+            _, _, registered = await _run_heavy(
+                config,
+                cwd,
+                session_id,
+                agent_session_name,
+                session_key,
+                dataset,
+                managed_endpoint=False,
+                boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
+                on_registered=_registered,
+            )
+            hook_log(
+                "bootstrap_complete", {"session_id": session_id, "registered": bool(registered)}
+            )
+            if not heartbeat_stop.is_set():
+                if registered:
+                    # The heavy path came back ready without calling back.
+                    _registered()
+                else:
+                    # A refused registration is a False return, not an
+                    # exception: _run_heavy reports it and records the
+                    # connection state itself. Nothing is registered, so
+                    # memory is not ready.
+                    hook_log("bootstrap_registration_failed", {"session_id": session_id})
+                    _stop_heartbeat()
+                    phase_end("setting_up", session_key=session_key, ok=False)
+        except Exception as exc:
+            hook_log("bootstrap_failed", {"error": str(exc)[:300]})
+            _stop_heartbeat()
+            phase_end("setting_up", session_key=session_key, ok=False)
+    finally:
+        _stop_heartbeat()
 
 
 def _running_server_observer(target_url: str) -> tuple[bool, bool | None]:
@@ -2145,17 +2212,19 @@ def _ensure_statusline_configured(session_id: str = "") -> None:
     """Write the statusLine entry to ~/.claude/settings.json when safe.
 
     One row, whichever can be drawn: where the hooks module draws the row above
-    the prompt for this session, the settings file is left alone (the renderer
-    prints nothing for such a session anyway); where it does not, the line below
-    the prompt is installed, or refreshed when the plugin moved. Claude Code
-    hot-reloads settings.json, so the line becomes active on the next status
-    refresh without a restart.
+    the prompt for this session, the plugin's own entry is removed (Claude Code
+    keeps a status-line row reserved as long as the entry exists, even when the
+    renderer prints nothing for the session, which leaves a blank row under the
+    prompt); where it does not, the line below the prompt is installed, or
+    refreshed when the plugin moved. Claude Code hot-reloads settings.json, so
+    either change lands on the next status refresh without a restart. An entry
+    the user wrote is never touched either way.
     """
     if os.environ.get("COGNEE_STATUSLINE", "").lower() in {"0", "false", "no", "off"}:
         hook_log("statusline_setup_skipped", {"reason": "disabled_by_env"})
         return
     if _band_draws_this_session(session_id):
-        hook_log("statusline_setup_skipped", {"reason": "band_draws_row"})
+        _evict_own_statusline(reason="band_draws_row")
         return
 
     plugin_root = os.environ.get("CLAUDE_PLUGIN_ROOT", "")
@@ -2212,20 +2281,53 @@ def _ensure_statusline_configured(session_id: str = "") -> None:
             return
 
         settings["statusLine"] = desired
-        settings_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(settings, f, indent=2)
-                f.write("\n")
-            os.replace(tmp, settings_path)
-        except Exception:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        _write_settings(settings_path, settings)
         hook_log("statusline_configured", {"path": str(statusline_sh)})
+    except Exception as exc:
+        hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
+
+
+def _write_settings(settings_path: Path, settings: dict) -> None:
+    """Replace ~/.claude/settings.json atomically (never a torn file)."""
+    settings_path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=settings_path.parent, prefix=".settings-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, settings_path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _evict_own_statusline(reason: str) -> None:
+    """Remove the plugin's own ``statusLine`` entry from ~/.claude/settings.json.
+
+    Only an entry that runs ``cognee-statusline.sh`` is ours; a line the user
+    set themselves (a chain script of their own included) is left alone, with
+    a log line saying so. Best-effort: a settings file that cannot be read or
+    written is left as it is.
+    """
+    settings_path = Path.home() / ".claude" / "settings.json"
+    try:
+        if not settings_path.exists():
+            return
+        text = settings_path.read_text(encoding="utf-8").strip()
+        settings = json.loads(text) if text else {}
+        existing = settings.get("statusLine")
+        if not existing:
+            return
+        existing_command = existing.get("command") if isinstance(existing, dict) else None
+        if not (isinstance(existing_command, str) and "cognee-statusline.sh" in existing_command):
+            hook_log("statusline_setup_skipped", {"reason": "user_statusline_exists"})
+            return
+        settings.pop("statusLine", None)
+        _write_settings(settings_path, settings)
+        hook_log("statusline_evicted", {"reason": reason})
     except Exception as exc:
         hook_log("statusline_setup_failed", {"error": str(exc)[:200]})
 
@@ -2543,11 +2645,17 @@ async def _start(payload: dict | None = None) -> dict:
                 ),
             },
         }
+    # Whether a detached bootstrap worker owns the "memory ready" verdict: it
+    # ends ``setting_up`` once the server answers and the session is
+    # registered. This hook then records no verdict of its own: the server is
+    # still booting here, and an ``ok=False`` written now would outlive the
+    # phase and read as "memory unavailable" next to a live server.
+    worker_owns_ready = False
     if will_boot and _LAZY_BOOTSTRAP:
-        # The detached worker ends this phase once the server answers and the
-        # session is registered; the status surfaces show it meanwhile.
+        # The status surfaces show the phase meanwhile.
         phase_begin("setting_up", "starting memory server", session_key=session_key)
         _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+        worker_owns_ready = True
         user_id = os.environ.get("COGNEE_USER_ID", "")
     else:
         user_id, agent_api_key, ok = await _run_heavy(
@@ -2565,6 +2673,7 @@ async def _start(payload: dict | None = None) -> dict:
                 # Inline attempt failed; retry the heavy path out of band.
                 phase_begin("setting_up", "starting memory server", session_key=session_key)
                 _spawn_bootstrap(config, cwd, session_id, agent_session_name, session_key, dataset)
+                worker_owns_ready = True
             else:
                 phase_end("connecting", session_key=session_key, ok=False)
                 return {}
@@ -2608,7 +2717,10 @@ async def _start(payload: dict | None = None) -> dict:
     )
 
     ready = server_live or server_ready_hint(str(config.get("base_url", "") or ""))
-    phase_end("connecting", session_key=session_key, ok=bool(ready))
+    if worker_owns_ready:
+        hook_log("bootstrap_owns_ready", {"session_id": session_id, "ready_now": bool(ready)})
+    else:
+        phase_end("connecting", session_key=session_key, ok=bool(ready))
     return _with_observer_note(_session_start_guidance(mode, dataset, session_id, ready), observer)
 
 

@@ -67,7 +67,12 @@ installs the `statusLine` entry in `~/.claude/settings.json` that draws the line
 below the prompt, and refreshes it when the plugin moved. Only an entry whose
 command runs the plugin's own `cognee-statusline.sh` is ever written or
 replaced; a status line you set yourself is never touched. Nothing else in your
-Claude Code settings is touched.
+Claude Code settings is touched. The entry is one file for every session, and
+each session start writes what its own session needs: with two sessions open at
+once where only one has the module (an older CLI beside the Desktop app, a
+`--safe-mode` session beside a normal one), the one with the module removes the
+entry and the one without puts it back, so the line below the prompt in the
+session without the module can go away until its next session start.
 
 **Claude's own files.** The plugin reads the hook payloads Claude Code sends it, not
 your transcript or Claude Code's memory files, and writes to neither.
@@ -838,11 +843,11 @@ event. Irrelevant background recall does not require an announcement.
 > same either way.
 
 The status row highlights `cognee` between the connection glyph and a purple
-square, with bold dataset and location, the estimated tokens saved and what
-memory is doing. As a text line it can read:
+square, with bold dataset and location and what memory is doing. As a text
+line it can read:
 
 ```text
-● cognee manual · cloud · ~2.4k tokens saved · 3 memories used
+● cognee manual · cloud · 3 memories used
 ```
 
 The glyph in front of `cognee` is the connection: a green `●` once the server is
@@ -854,15 +859,6 @@ mode purple, the same row the mod draws above the prompt.
 - **No counters.** What the latest prompt recalled is the activity segment's
   (`3 memories used`); a session total, a per-prompt hit count and a turn
   ratio are deliberately not shown. The classic line keeps its own counters.
-- **Tokens saved**: estimated as **average tokens per recall × number of recalls × 6.9**.
-  Recall tokens mean memory context injected into Claude, estimated at one token
-  per four characters. The calculation is equivalent to cumulative injected
-  characters ÷ 4 × 6.9, rounded down after multiplication. For example, 100
-  tokens per recall across 10 recalls displays approximately 6,900 tokens saved.
-  Empty recalls contribute zero; variable-size recalls use their actual context
-  lengths. The 6.9 factor is a heuristic, not measured billing or task savings.
-  `saved n/a` means recall/context measurements are unavailable. Existing sessions
-  use their recorded cumulative recall context; no network requests are added.
 
 The renderer only reads local counters; measurement happens in the existing
 recall hook without additional requests.
@@ -931,12 +927,12 @@ Both cases show the same reason — the fix is the same either way, and `llm-sta
 what it did:
 
 ```
-● cognee agent_sessions · local · ~1.1k tokens saved · recalling…
-● cognee agent_sessions · local · ~1.4k tokens saved · 3 memories used
-● cognee agent_sessions · local · ~1.4k tokens saved · saving…
-● cognee agent_sessions · local · ~1.4k tokens saved · ✓ memory saved
-● cognee agent_sessions · local · ~1.4k tokens saved · learning from this session…
-○ cognee agent_sessions · local · tokens saved n/a · setting up memory · starting memory server…
+● cognee agent_sessions · local · recalling…
+● cognee agent_sessions · local · 3 memories used
+● cognee agent_sessions · local · saving…
+● cognee agent_sessions · local · ✓ memory saved
+● cognee agent_sessions · local · learning from this session…
+○ cognee agent_sessions · local · setting up memory · starting memory server…
 ```
 
 (`COGNEE_STATUSLINE_STYLE=classic` keeps the activity segment too, at the end of
@@ -1000,8 +996,16 @@ Use `COGNEE_SESSION_ID` to pin a session and `COGNEE_PLUGIN_DATASET` to seed the
 The renderer behind the row, `scripts/cognee_statusline_render.py`, is also a
 complete Claude Code `statusLine` command, through `scripts/cognee-statusline.sh`.
 Session start writes it into your settings in a session where the hooks module
-does not draw the row, and leaves settings alone where it does. You can also add
-it yourself, for instance if you prefer the line below the prompt:
+does not draw the row, and removes it again in a session where the module does:
+Claude Code keeps a status-line row reserved under the prompt for as long as the
+entry exists, even when the command prints nothing, so an entry left over from
+before the module would show as a blank row. Only the plugin's own entry is ever
+written or removed; one you set yourself is left alone either way. The last
+session to start decides: a terminal that cannot load the module (an older
+Claude Code, `--safe-mode`) installs the line again, and the next session with
+the module removes it. `COGNEE_STATUSLINE=0` stops the plugin touching the entry
+at all. You can also add it yourself, for instance if you prefer the line below
+the prompt:
 
 ```json
 "statusLine": {
@@ -1036,8 +1040,8 @@ the status row **above the prompt**, in the Code tab of the Claude Desktop app a
 in a terminal alike:
 
 ```
-● cognee [agent_sessions ▾] · local · ~2.4k tokens saved · 3 memories used
-⠹ cognee [agent_sessions ▾] · local · ~2.4k tokens saved · recalling…
+● cognee [agent_sessions ▾] · local · 3 memories used
+⠹ cognee [agent_sessions ▾] · local · recalling…
 ```
 
 On the desktop the row leads with cognee's waveform mark, the official icon
@@ -1049,14 +1053,28 @@ place a terminal draws the display logotype). The `icon` row in `/config`
 (`wave` or `none`) switches both off; the text line has no mark either, only the
 glyph and the wordmark. The module runs the plugin's own
 renderer in `--json` mode and lays the result
-out: the dataset, mode, tokens-saved estimate, credits,
+out: the dataset, mode, credits,
 connection reason and update nudge are the renderer's, so the row and a
 [line below the prompt](#a-line-below-the-prompt) cannot drift. While an
 operation runs a braille spinner leads the row; a failure leads it with the red
-`✕ (<reason>)`, and unknown health with a dim `?`, as on the text line. The module
+`✕ (<reason>)`, and unknown health with a dim `○`, as on the text line. The module
 marks its session (`~/.cognee-plugin/claude-code/band/<session>.json`) and the
 renderer, run as a settings-file status line, prints nothing for a marked session,
 so the row is never shown twice.
+
+The row is laid out in segments that are never split: in a terminal too narrow
+for all of them, the least useful go first (the last operation's cost, then a
+healthy credit balance, then what memory did last), and what must stay (the
+badge, the dataset, the mode, an exhausted balance, an update notice) wraps
+onto a second line as whole segments rather than breaking a word in two. The
+dataset name is a picker whenever the server listed any writable datasets;
+the listing waits for the SessionStart hook (which writes the launch record it
+reads) and is retried a few times while a server is still starting, so a slow
+start means a late picker, not a missing one. A server that session start hands
+to its bootstrap worker shows `setting up memory · starting memory server…`
+for as long as the boot runs, and `memory ready` once the session is
+registered; the row never says `memory unavailable` while the connection
+marker says the server is up.
 
 Credits read as on the text line, green, red once exhausted or a request was
 refused; where the text line prints `top up: <url>`, the row draws **top up** as a
@@ -1119,8 +1137,8 @@ applies it. The dialog never edits anything else.
 the row, each about what is right above it, with `next` and `skip` buttons:
 
 ```
-cognee [agent_sessions ▾] · local · tokens saved n/a
-The dataset name is a picker ↑: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
+cognee [agent_sessions ▾] · local
+The dataset name ↑ is a picker: pick another dataset, or "+ new dataset…" to create one  [ next ] skip
 ```
 
 then that the dot means memory is connected, local/cloud where it lives and the
