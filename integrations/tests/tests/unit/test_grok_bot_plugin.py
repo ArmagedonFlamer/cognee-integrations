@@ -18,11 +18,11 @@ HOSTED_MCP_URL = "https://mcp.aws.cognee.ai/mcp"
 
 
 def _json(path: Path) -> dict:
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _frontmatter(path: Path) -> dict[str, str]:
-    match = re.match(r"^---\n(.*?)\n---\n", path.read_text(), re.DOTALL)
+    match = re.match(r"^---\n(.*?)\n---\n", path.read_text(encoding="utf-8"), re.DOTALL)
     assert match, f"{path} has no frontmatter"
     fields = {}
     for line in match.group(1).splitlines():
@@ -34,7 +34,8 @@ def _frontmatter(path: Path) -> dict[str, str]:
 def test_manifest_names_the_plugin_and_matches_the_changelog():
     manifest = _json(PLUGIN / ".cursor-plugin/plugin.json")
     assert KEBAB.match(manifest["name"])
-    latest = re.search(r"^## \[([^\]]+)\]", (PLUGIN / "CHANGELOG.md").read_text(), re.M)
+    changelog = (PLUGIN / "CHANGELOG.md").read_text(encoding="utf-8")
+    latest = re.search(r"^## \[([^\]]+)\]", changelog, re.M)
     assert latest and latest.group(1) == manifest["version"]
     # The description shows the version, so it is visible in Grok Bot's plugin list.
     assert manifest["description"].endswith(f"Version {manifest['version']}.")
@@ -98,7 +99,7 @@ def test_skill_description_gates_every_tool_and_carries_the_key_rules():
 def test_skill_covers_every_hosted_tool_and_no_local_scripts():
     # The hosted server serves cognee-mcp's tools with cognify_status renamed to
     # check_ingestion_status, and Grok Bot has no plugin scripts to run.
-    text = (PLUGIN / "skills/cognee-memory/SKILL.md").read_text()
+    text = (PLUGIN / "skills/cognee-memory/SKILL.md").read_text(encoding="utf-8")
     for tool in ("remember", "recall", "forget", "check_ingestion_status"):
         assert f"`{tool}`" in text
     assert "dataset_name" in text and "`datasets`" in text
@@ -109,6 +110,6 @@ def test_skill_covers_every_hosted_tool_and_no_local_scripts():
 def test_skill_asks_for_a_line_showing_what_cognee_did():
     # Users of the Claude Code plugin did not notice Cognee until each answer named
     # the memories it used; the skill asks for the same, by dataset, with no tags.
-    text = (PLUGIN / "skills/cognee-memory/SKILL.md").read_text()
+    text = (PLUGIN / "skills/cognee-memory/SKILL.md").read_text(encoding="utf-8")
     assert "> 🧠 Cognee memory (<dataset>): " in text
     assert "> 🧠 Saved to Cognee (<dataset>): " in text
