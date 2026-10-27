@@ -154,6 +154,23 @@ fi
 RESULT="$(python3 "${SELF_DIR}/_remember_http.py" "$SERVICE_URL" "$API_KEY" "$CONTENT" "$DATASET" "$NODE_SET" "$FILE_PATH" "$DATASET_ID" || true)"
 
 if [ -n "$RESULT" ] && [ "$RESULT" != "UNREACHABLE" ]; then
+    # A save the server accepted gets the receipt instruction as its first line:
+    # the answer ends with a logo-led "Saved to <dataset>" line, as a recall
+    # ends with its credit.
+    case "$RESULT" in
+        *'"ok": true'*)
+            RECEIPT_HEADER="$(python3 - <<'PY' "${SELF_DIR}" "${DATASET}" 2>/dev/null || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import _plugin_common
+from _recall_text import credit_enabled, save_receipt_header
+enabled = credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
+print(save_receipt_header(enabled, sys.argv[2]))
+PY
+)"
+            [ -n "$RECEIPT_HEADER" ] && printf '%s\n' "$RECEIPT_HEADER"
+            ;;
+    esac
     printf '%s\n' "$RESULT"
 elif [ -n "$FILE_PATH" ]; then
     # No CLI fallback for file uploads: the CLI path would re-read and rename

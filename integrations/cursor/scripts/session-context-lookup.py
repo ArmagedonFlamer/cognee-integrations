@@ -67,6 +67,7 @@ from _plugin_common import (
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
+    CREDITS_OFF_NOTE,
     MemoryTags,
     begin_turn,
     code_facts,
@@ -74,6 +75,7 @@ from _recall_text import (
     credit_instruction,
     format_code_facts,
     has_credited,
+    strip_credit,
     trim_recall_text,
 )
 from cognee_statusline_render import render_status_for_host
@@ -895,10 +897,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         instruction = ""
         if tags is not None and tags.found:
             first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
-            instruction = credit_instruction(first, len(tags.found)) + "\n\n"
+            instruction = credit_instruction(first, len(tags.found), session_dataset) + "\n\n"
+        elif tags is None:
+            instruction = CREDITS_OFF_NOTE + "\n\n"
+        # Recalled memory can hold credit lines and the credit instruction from
+        # sessions that stored them (Claude Code, or before stripping existed):
+        # they are cut on the way out, so only this turn's instruction remains.
+        memory_text = strip_credit("\n".join(section_lines)).strip()
         full_context = (
             f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
-            + "\n".join(section_lines).strip()
+            + memory_text
         )
         if dataset_hint:
             full_context += f"\n\n{dataset_hint}"

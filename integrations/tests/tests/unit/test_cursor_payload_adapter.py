@@ -222,6 +222,18 @@ def test_stop_skips_a_turn_after_agent_response_already_stored(adapter, tmp_path
     assert again["assistant_message"] == "from transcript"
 
 
+def test_stop_with_answer_text_skips_a_turn_already_stored(adapter):
+    adapter.mark_answer_stored("conv-123", "gen-7")
+    payload = _payload("stop", status="completed", loop_count=0, text="the answer")
+    normalized = adapter.normalize_payload(payload, "store-to-session.py", ("--stop",))
+    assert normalized["answer_already_stored"] is True
+    assert "assistant_message" not in normalized
+    assert adapter.should_skip(normalized, "store-to-session.py", ("--stop",))
+    # Without the marker, the stop's own text is stored.
+    again = adapter.normalize_payload(payload, "store-to-session.py", ("--stop",))
+    assert again["assistant_message"] == "the answer"
+
+
 def test_a_stale_marker_from_another_turn_does_not_suppress_stop(adapter, tmp_path):
     transcript = _write_transcript(
         tmp_path / "t.jsonl", _user("q"), _assistant({"type": "text", "text": "answer"})
@@ -668,6 +680,29 @@ def test_prompt_recall_reaches_the_model_on_the_turns_first_tool_call(adapter, m
     later = dict(tool, generation_id="gen-8")
     assert "additional_context" not in fire("store-to-session.py", later)
     assert not list((adapter.state_dir() / "prompt-context").iterdir())
+
+
+def test_prompt_recall_waits_past_read_whose_context_cursor_drops(adapter, monkeypatch, capsys):
+    """Cursor accepts a Read's postToolUse additional_context but never shows it to
+    the model, so the recall stays held for the turn's next tool call."""
+    replies = {
+        "session-context-lookup.py": _cognee_reply("=== Cognee memory ===\nfacts"),
+        "store-to-session.py": json.dumps({}),
+    }
+    monkeypatch.setattr(adapter, "_run_script", lambda payload, script, flags: replies[script])
+
+    def fire(script: str, payload: dict) -> dict:
+        monkeypatch.setattr("sys.stdin", _Stdin(json.dumps(payload)))
+        assert adapter.main([script]) == 0
+        return json.loads(capsys.readouterr().out.strip())
+
+    fire("session-context-lookup.py", _payload("beforeSubmitPrompt", prompt="what changed?"))
+    read = _payload(
+        "postToolUse", tool_name="Read", tool_input={"path": "README.md"}, tool_output="x"
+    )
+    assert "additional_context" not in fire("store-to-session.py", read)
+    grep = _payload("postToolUse", tool_name="Grep", tool_input={"pattern": "x"}, tool_output="")
+    assert fire("store-to-session.py", grep)["additional_context"] == "=== Cognee memory ===\nfacts"
 
 
 def test_only_the_qa_store_consumes_the_stored_marker(adapter, tmp_path):

@@ -11,6 +11,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
 ## [0.1.0]
 
 ### Added
+- The per-prompt memory block skips `Read` tool calls and arrives with the turn's
+  next tool call: Cursor accepts a `Read`'s `additional_context` and then drops it.
+- Credit in the answer, on by default as in Claude Code: recalled items are
+  tagged `[mN]` and an answer that used one ends with a line led by the Cognee
+  logo and naming the dataset ("…, based on the agent_sessions dataset."),
+  without the tags or "Cognee memory" text. The answer check logs whether the
+  line is there. `COGNEE_PLUGIN_CITE_MEMORY=false` turns it off, and the agent is
+  then told credits are off, since memory still holds answers that had one.
+  `cognee-search.sh` prints the instruction as the first line above graph hits,
+  since Cursor shows a large result as a file, away from the hook's memory block.
+- A save ends the answer the same way, with a receipt: `cognee-remember.sh`
+  prints the instruction above a successful result ("Saved to the
+  agent_sessions dataset: …"). The answer check does not count it as a credit.
+- Credit lines, receipts and the instructions are cut from prompts, answers and
+  tool traces before they are stored, and from recalled memory and search
+  results before the agent reads them, so credits that Claude Code sessions
+  store do not come back as examples to follow.
+- Status bar extension for the Cursor IDE (`statusbar/`, classic windows only):
+  the plugin's status line in the status bar, with a click that opens a
+  dataset picker at once and lists the datasets as they load.
 - First cut of the Cursor plugin: `.cursor-plugin/plugin.json`, `hooks/hooks.json`
   in Cursor's native format, and the Cognee skills, on top of the Codex plugin's
   hook runtime (Cognee 1.6.5 pin, HTTP-only hooks, local and cloud modes).

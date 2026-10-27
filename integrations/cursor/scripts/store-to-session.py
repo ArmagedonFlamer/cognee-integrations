@@ -166,8 +166,13 @@ async def _store_tool_call(payload: dict) -> None:
         return
     if not allowed:
         return
-    tool_input = redact(tool_input)
-    tool_output = redact(tool_output)
+    from _recall_text import strip_credit_deep
+
+    # Credit lines and the plugin's credit headers stay out of stored traces:
+    # an agent that prints a search's output stores the instruction with it,
+    # and later recalls hand it back as a rule (SDK-1071).
+    tool_input = strip_credit_deep(redact(tool_input))
+    tool_output = strip_credit_deep(redact(tool_output))
     payload = redact(payload)
 
     command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
@@ -293,15 +298,14 @@ async def _store_tool_call(payload: dict) -> None:
 
 
 def _check_memory_credit(payload: dict) -> None:
-    """Check the answer's Cognee credits against the session's tags (SDK-1071).
+    """Check whether the answer credits Cognee memory (SDK-1071).
 
-    The recall hook tags each injected item ``m1``, ``m2``… and keeps a
-    memory's tag for the whole session. A cited tag the session handed out is
-    a valid credit (``earlier`` when it was not injected on this turn); one it
-    never handed out is invented. Both go to the log, which measures how
-    reliably agents credit memory, and the first valid credit switches off the
-    longer first-credit wording for the rest of the session. Local only:
-    nothing is sent anywhere.
+    The recall hook tags each injected item ``m1``, ``m2``… and asks for a
+    logo-led credit line without the tags, so this logs whether the line is
+    there and how many items the turn injected, which measures how reliably
+    agents credit memory. The first credit of memory the session was given
+    switches off the longer first-credit wording for the rest of the session.
+    Local only: nothing is sent anywhere.
     """
     import _plugin_common
     from _recall_text import MemoryTags, check_credits, credit_enabled, record_credit
@@ -313,7 +317,7 @@ def _check_memory_credit(payload: dict) -> None:
         return
     key = get_session_key()
     result = check_credits(msg, MemoryTags.load(_plugin_common._PLUGIN_DIR, key))
-    if not result["cited"] and not result["available"]:
+    if not result["credited"] and not result["available"]:
         return  # nothing injected, nothing cited: not a turn that could credit
     record_credit(_plugin_common._PLUGIN_DIR, key, result, ts=str(int(time.time())))
     hook_log("memory_credit", result)
@@ -322,6 +326,7 @@ def _check_memory_credit(payload: dict) -> None:
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
     from _capture_policy import capture_enabled, redact
+    from _recall_text import strip_credit
 
     if not capture_enabled():
         return
@@ -330,7 +335,9 @@ async def _store_assistant_stop(payload: dict) -> None:
     if not msg or msg == "null":
         return
 
-    msg = _truncate_str(msg, _MAX_ASSISTANT_BYTES)
+    msg = _truncate_str(strip_credit(msg), _MAX_ASSISTANT_BYTES)
+    if not msg:
+        return
 
     session_id, dataset, _user_id = _load_session()
     if not session_id:
@@ -345,7 +352,7 @@ async def _store_assistant_stop(payload: dict) -> None:
     # separate question-only and answer-only QA entries for the same turn.
     entry = {
         "type": "qa",
-        "question": redact(pending.get("prompt", "")),
+        "question": strip_credit(redact(pending.get("prompt", ""))),
         "answer": msg,
         "context": redact(pending.get("context", "")),
     }

@@ -261,7 +261,36 @@ RECALL_JSON="$(python3 "${SELF_DIR}/_cognee_client.py" "$SERVICE_URL" "$API_KEY"
 
 if [ -n "$RECALL_JSON" ] && [ "$RECALL_JSON" != "UNREACHABLE" ]; then
     # Server answered — authoritative, even if the result is empty.
-    printf '%s\n' "$RECALL_JSON"
+    # Graph hits get the credit instruction as their first line: a large result
+    # reaches the agent as a file, away from the hook's memory block.
+    if [ "$MODE" = "graph" ] && [ "$RECALL_JSON" != "[]" ]; then
+        CREDIT_HEADER="$(python3 - <<'PY' "${SELF_DIR}" "${DATASET}" 2>/dev/null || true
+import sys
+sys.path.insert(0, sys.argv[1])
+import _plugin_common
+from _recall_text import credit_enabled, search_credit_header
+enabled = credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT)
+print(search_credit_header(enabled, sys.argv[2]))
+PY
+)"
+        [ -n "$CREDIT_HEADER" ] && printf '%s\n' "$CREDIT_HEADER"
+    fi
+    # Stored memory can hold credit lines and the credit instruction (Claude
+    # Code sessions store them; older Cursor ones did too): they are cut from
+    # every text field on the way out, so the agent follows only the line above.
+    # The results arrive on stdin: they can be larger than an argument may be.
+    printf '%s' "$RECALL_JSON" | python3 -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+from _recall_text import strip_credit_deep
+raw = sys.stdin.read()
+try:
+    data = json.loads(raw)
+except ValueError:
+    print(raw)
+else:
+    print(json.dumps(strip_credit_deep(data)))
+' "${SELF_DIR}" 2>/dev/null || printf '%s\n' "$RECALL_JSON"
 elif [ "$MODE" = "code" ] || [ -n "$FOREIGN" ]; then
     # No CLI fallback for code searches or for another dataset: the code lane
     # exists only on the server (>= 1.5.3), and a dataset addressed by UUID

@@ -72,6 +72,11 @@ TOOL_NAME_MAP = {
     "Task": "Agent",
 }
 
+#: Tools whose postToolUse ``additional_context`` never reaches the model: the
+#: Cursor IDE (3.26) accepts it from the hook and then drops it. The held memory
+#: block waits for the turn's next tool call instead.
+CONTEXT_DROPPING_TOOLS = frozenset({"Read"})
+
 #: Inner script -> the Claude Code event it expects when no event is given.
 EVENT_FOR_SCRIPT = {
     "session-start.py": "SessionStart",
@@ -305,17 +310,19 @@ def normalize_payload(
             normalized["status"] = payload["status"]
         message = _first_str(payload, "assistant_message", "last_assistant_message", "text")
         qa_store = script == "store-to-session.py" and "--stop" in flags
-        if not message and qa_store and payload.get("hook_event_name") != "afterAgentResponse":
-            # Cursor's stop carries no text. If afterAgentResponse already
-            # stored this turn, leave the message empty so the hook is skipped
-            # instead of storing the answer twice; otherwise recover it from
-            # the transcript tail. (An afterAgentResponse without text has
-            # nothing to store and is skipped as well.) Only the QA store
-            # touches the marker: the other stop hooks (credits-refresh) must
-            # not consume it out from under the store.
+        if qa_store and payload.get("hook_event_name") != "afterAgentResponse":
+            # If afterAgentResponse already stored this turn, drop the answer
+            # so the hook is skipped instead of storing it twice, even when
+            # this stop carries the answer text too. Otherwise a stop without
+            # text recovers the answer from the transcript tail. (An
+            # afterAgentResponse without text has nothing to store and is
+            # skipped as well.) Only the QA store touches the marker: the other
+            # stop hooks (credits-refresh) must not consume it out from under
+            # the store.
             if consume_stored_marker(session, turn):
                 normalized["answer_already_stored"] = True
-            else:
+                message = ""
+            elif not message:
                 message = last_assistant_text(
                     read_transcript_tail(normalized.get("transcript_path"))
                 )
@@ -890,7 +897,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if script == "session-start.py":
         reply = with_plugin_root_context(reply)
-    if event == "PostToolUse" and record.get("session"):
+    if (
+        event == "PostToolUse"
+        and record.get("session")
+        and record.get("tool") not in CONTEXT_DROPPING_TOOLS
+    ):
         held = take_prompt_context(record["session"], record.get("turn", ""))
         if held:
             current = reply.get("additional_context")

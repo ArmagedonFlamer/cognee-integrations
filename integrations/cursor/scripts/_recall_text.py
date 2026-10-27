@@ -378,12 +378,12 @@ def format_code_facts(facts: list) -> str:
 #
 # Every recalled item the hook injects gets a short tag (``m1``, ``m2``…) and a
 # label saying where it came from. An instruction above the memory asks the
-# agent to end an answer that used memory with one ``🧠 Cognee memory [mN]: …``
-# line. Tags are numbered across the session and a memory recalled again keeps
-# its tag, so a tag always names one memory however many turns later it is
-# cited. The Stop hook checks the answer's credit line against the session's
-# tags: a cited tag that was never handed out is logged as invented. That log
-# is the measure of how reliably agents credit memory.
+# agent to end an answer that used memory with one line led by the Cognee logo,
+# and no tag or "Cognee memory" text: in Cursor the logo alone names Cognee. Tags
+# are numbered across the session and a memory recalled again keeps its tag, so
+# the agent can tell which items it was given. The Stop hook logs whether the
+# answer carries the credit line and how many items the turn injected; with no
+# tags in the line, it cannot catch an invented one.
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
@@ -396,9 +396,14 @@ TAGS_FILE = "tags.json"
 CREDIT_FILE = "credit.json"
 
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
-#: Only the credit line counts: ``arr[m1]`` in code, or the instruction's own
-#: example quoted back, is not a citation.
-_CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
+#: Only the credit line counts: a quoted line that opens with the logo link (with
+#: or without its zero-width space) and goes on to say something. A link to
+#: cognee.ai elsewhere in the answer is not a credit, and neither is the save
+#: receipt (``Saved to …``), which reports a write, not memory the answer used.
+_CREDIT_LINE_RE = re.compile(
+    r"^[ \t]*>[ \t]*\[\u200b?\]\(https?://(?:www\.)?cognee\.ai/?\)[ \t]*(?!Saved to )\S",
+    re.M,
+)
 _AGENTS = {
     "claude": "Claude Code",
     "codex": "Codex",
@@ -406,15 +411,25 @@ _AGENTS = {
     "antigravity": "Antigravity",
 }
 
+#: A link to cognee.ai whose text is one zero-width space. Cursor has no UI hook to
+#: redraw the credit line the way the Claude Code plugin does, and its chat drops
+#: colour (HTML, KaTeX), but it draws a link with the site's logo: with no visible
+#: text, the Cognee logo is all that shows.
+LOGOTYPE = "[\u200b](https://www.cognee.ai)"
+
 CREDIT_INSTRUCTION = (
     "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "
     "as [mN · where it came from]. A memory recalled again in this session keeps its "
     "tag. If your answer uses information from a tagged item, end the answer with one "
     "line:\n"
-    "> 🧠 Cognee memory [mN]: <what you remembered, and where or when it came from, "
-    "as the tag says>\n"
-    "Cite several tags as [m1, m3]. Cite only tags Cognee gave you, and only items your "
-    "answer actually used. Never credit Cognee for what you know from project "
+    f"> {LOGOTYPE} <what you remembered>, based on {{source}}.\n"
+    "Start it exactly as shown: the link text is a single zero-width space (U+200B), "
+    "so only the Cognee logo shows. The logo names Cognee: do not write the tags or "
+    'the words "Cognee memory" in the line.\n'
+    "Credit a tagged item whenever your answer states what it says, even if you also "
+    "found the same fact another way, such as your own Cognee search or a file. "
+    "Credit only items Cognee tagged, and only items your answer actually used. "
+    "Never credit Cognee for what you know from project "
     "instruction files, your own memory files, the code, or this conversation. If no "
     "tagged item was used, do not mention memory."
 )
@@ -422,6 +437,129 @@ FIRST_CREDIT_ADDENDUM = (
     "This would be the first Cognee credit in this session, so in that line also say in "
     "a few words how it connects to the earlier work."
 )
+
+#: The first line ``cognee-search.sh`` prints above a graph search's results. The
+#: hook's memory block rides on the search's tool result, and Cursor saves a large
+#: result to a file and shows the agent only a pointer to it, so the agent answers
+#: from the file, far from the instruction. Its first line carries the instruction
+#: there, without cutting the results.
+SEARCH_CREDIT_HEADER = (
+    "Cognee memory search results (JSON on the next line). If your answer uses them, "
+    f"end it with one line: > {LOGOTYPE} <what you remembered>, based on {{source}}. "
+    "The link text is a single zero-width space (U+200B), so only the Cognee logo "
+    'shows: do not write tags or the words "Cognee memory" in the line.'
+)
+
+#: Credit lines and the credit instruction, cut from a prompt, an answer or a
+#: tool trace before it is stored: stored, they come back in later recalls and
+#: searches, where an old answer that left the line off reads as an example to
+#: follow, and an old instruction reads as a rule even with credits turned off.
+#: Covers every format the plugin has asked for: ``🧠 Cognee memory [mN]``, the
+#: braille logotype and its second row, the logo link alone, and the headers
+#: ``cognee-search.sh`` and ``cognee-remember.sh`` print above their results
+#: (a trace can hold them JSON-escaped, so they are matched up to their last
+#: sentence, not to the end of the line).
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-(?:[0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}$")
+
+_STORED_CREDIT_RES = (
+    re.compile(
+        r"Crediting Cognee memory:.{0,3000}?If no tagged item was used, do not mention "
+        r"memory\.(?:[ \t]*This would be the first Cognee credit in this session[^\n]*)?",
+        re.S,
+    ),
+    re.compile(
+        r"(?:Cognee memory search results|Saved to Cognee) \(JSON on the next line\)\."
+        r".{0,700}?(?:in the line|earlier answers in memory show one)\.(?:\\n|\n)?",
+        re.S,
+    ),
+    re.compile(r"Cognee credits are off:.{0,300}?earlier answers in memory show one\.", re.S),
+    re.compile(r"^[ \t]*>[^\n]{0,40}?Cognee memory[ \t]*\[m\d+[^\n]*\n?", re.M),
+    re.compile(r"^[ \t]*>[ \t]*[⠀-⣿]+[ \t]*\n?", re.M),
+    re.compile(r"^[ \t]*>[ \t]*\[​?\]\(https?://(?:www\.)?cognee\.ai/?\)[^\n]*\n?", re.M),
+    # The same lines inside stored tool output, where line breaks are escaped
+    # (``\\n``) and a long line may be cut short: matched by the credit itself, up
+    # to the next real or escaped line break.
+    re.compile(
+        r"(?:>[ \t]*)?(?:\U0001f9e0|\[\u200b?\]\(https?://(?:www\.)?cognee\.ai/?\)|[\u2800-\u28ff]+)?"
+        r"[ \t]*Cognee memory[ \t]*\[m\d+(?:[ \t]*,[ \t]*m\d+)*\]:[^\n\\]*"
+    ),
+    re.compile(r">[ \t]*\[\u200b?\]\(https?://(?:www\.)?cognee\.ai/?\)[^\n\\]*"),
+    re.compile(r"Crediting Cognee memory:[^\n\\]*"),
+)
+
+
+def credit_source(dataset: str = "") -> str:
+    """Where a credit line says the memory came from: the dataset, by name.
+
+    A dataset addressed by UUID leaves the agent to fill in the name it searched
+    by (the cross-dataset picker shows it), rather than print the UUID.
+    """
+    name = (dataset or "").strip()
+    if not name:
+        return "Cognee memory"
+    if _UUID_RE.match(name):
+        return "the <name of the dataset you searched> dataset"
+    return f"the {name} dataset"
+
+
+#: Said instead of the credit instruction when credits are off. Memory still
+#: holds answers that ended with a credit line, and the instruction itself, from
+#: Claude Code sessions and from before credits were turned off; an agent that
+#: reads them follows them unless told otherwise.
+CREDITS_OFF_NOTE = (
+    "Cognee credits are off: do not end your answer with a Cognee credit line, a "
+    'logo link or a "Saved to" line, even where earlier answers in memory show one.'
+)
+
+#: The first line ``cognee-remember.sh`` prints above a successful save: a save
+#: ends the answer with a receipt led by the logo, the way a recall ends with
+#: its credit, so the user can see Cognee stored it and where.
+SAVE_RECEIPT_HEADER = (
+    "Saved to Cognee (JSON on the next line). End your answer with one line: "
+    f"> {LOGOTYPE} Saved to {{source}}: <what you saved, in a few words>. The link "
+    "text is a single zero-width space (U+200B), so only the Cognee logo shows: do "
+    'not write the words "Cognee memory" in the line.'
+)
+
+
+def save_receipt_header(enabled: bool, dataset: str = "") -> str:
+    """The first line of a save's output: the receipt instruction, or the off note."""
+    if not enabled:
+        return f"Saved to Cognee (JSON on the next line). {CREDITS_OFF_NOTE}"
+    return SAVE_RECEIPT_HEADER.format(source=credit_source(dataset))
+
+
+def search_credit_header(enabled: bool, dataset: str = "") -> str:
+    """The first line of a search's output: the credit instruction, or the off note."""
+    if not enabled:
+        return f"Cognee memory search results (JSON on the next line). {CREDITS_OFF_NOTE}"
+    return SEARCH_CREDIT_HEADER.format(source=credit_source(dataset))
+
+
+def strip_credit_deep(value):
+    """``value`` with :func:`strip_credit` applied to every string inside it.
+
+    For a tool trace, whose input and output may be a string, a dict or a list.
+    """
+    if isinstance(value, str):
+        return strip_credit(value)
+    if isinstance(value, dict):
+        return {key: strip_credit_deep(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [strip_credit_deep(item) for item in value]
+    return value
+
+
+def strip_credit(text: str) -> str:
+    """``text`` without credit lines or the credit instruction, for storing."""
+    if not text or "Cognee" not in text and "cognee.ai" not in text:
+        return text
+    out = text
+    for pattern in _STORED_CREDIT_RES:
+        out = pattern.sub("", out)
+    if out == text:
+        return text
+    return re.sub(r"\n{3,}", "\n\n", out).strip()
 
 
 def credit_enabled(default: bool = True) -> bool:
@@ -609,9 +747,9 @@ def begin_turn(state_dir, session_key: str) -> None:
     tags.save(state_dir, session_key)
 
 
-def credit_instruction(first_in_session: bool, found: int = 0) -> str:
+def credit_instruction(first_in_session: bool, found: int = 0, dataset: str = "") -> str:
     noun = "1 memory" if found == 1 else f"{found} memories"
-    text = CREDIT_INSTRUCTION.format(found=noun)
+    text = CREDIT_INSTRUCTION.format(found=noun, source=credit_source(dataset))
     if first_in_session:
         return f"{text} {FIRST_CREDIT_ADDENDUM}"
     return text
@@ -624,34 +762,25 @@ def has_credited(state_dir, session_key: str) -> bool:
 
 
 def check_credits(answer: str, tags: MemoryTags) -> dict:
-    """Compare the tags an answer's credit line cites with the session's tags.
+    """Whether an answer carries the credit line, against what the session was given.
 
-    Returns ``{"cited", "valid", "invented", "earlier", "available"}``: tag
-    lists in the order first cited. ``valid`` tags were handed out this
-    session; ``earlier`` are the valid ones not injected on this turn;
-    ``available`` is how many this turn injected.
+    Returns ``{"credited", "available", "known"}``: ``credited`` is whether the
+    answer has the logo-led credit line, ``available`` how many items this turn
+    injected and ``known`` how many the session has handed out. A credit with
+    ``known`` at 0 credits memory the session was never given.
     """
-    cited: list[str] = []
-    for group in _CITATION_RE.findall(answer or ""):
-        for tag in re.split(r"\s*,\s*", group):
-            if tag not in cited:
-                cited.append(tag)
-    known = {str(r.get("tag")): r for r in tags.records}
-    this_turn = {t for t, r in known.items() if r.get("turn") == tags.turn}
-    valid = [t for t in cited if t in known]
+    this_turn = [r for r in tags.records if r.get("turn") == tags.turn]
     return {
-        "cited": cited,
-        "valid": valid,
-        "invented": [t for t in cited if t not in known],
-        "earlier": [t for t in valid if t not in this_turn],
+        "credited": bool(_CREDIT_LINE_RE.search(answer or "")),
         "available": len(this_turn),
+        "known": len(tags.records),
     }
 
 
 def record_credit(state_dir, session_key: str, result: dict, ts: str = "") -> None:
-    """Count a turn that credited memory with at least one valid tag."""
+    """Count a turn that credited memory the session had been given."""
     folder = session_state_dir(state_dir, session_key)
-    if not (folder and result.get("valid")):
+    if not (folder and result.get("credited") and result.get("known")):
         return
     path = folder / CREDIT_FILE
     state = _read_json(path)
