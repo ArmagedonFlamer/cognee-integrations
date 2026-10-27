@@ -146,9 +146,11 @@ let rememberBytes = 0
 // above their sum, so a slow server is a late list, not a wiped one.
 const LIST_TIMEOUT_MS = 45_000
 // A listing that fails is tried again: it runs before the SessionStart hook
-// has written the launch record it needs, or against a server still booting.
-// The wait grows with each attempt (5 s, 10 s, ...), and after the last the
-// name stays plain text until /cognee-dataset or a switch lists again.
+// has written the launch record it needs, or against a server that is up but
+// not answering. The wait grows with each attempt (5 s, 10 s, ...), and after
+// the last the name stays plain text until the next prompt, /cognee-dataset
+// or a switch starts the attempts over. A boot the hook handed to its worker
+// is not an attempt: the listing waits for the `setting_up` phase to end.
 const LIST_RETRY_MS = 5_000
 const LIST_MAX_ATTEMPTS = 5
 // A switch syncs the session it leaves first; that can take minutes.
@@ -314,12 +316,15 @@ let datasetsListing = false
 let datasetsInFlight: Promise<void> | null = null
 let datasetsAttempts = 0
 let datasetsRetryAt = 0
+// A listing put off because the worker was still booting the server.
+let datasetsWaitingForBoot = false
 
 function resetDatasets(): void {
   switchTargets = []
   datasetsListed = false
   datasetsAttempts = 0
   datasetsRetryAt = 0
+  datasetsWaitingForBoot = false
 }
 
 // ── pure helpers ────────────────────────────────────────────────────────────
@@ -648,8 +653,10 @@ async function startPoll($: any, windowMs: number): Promise<void> {
       if (pollTicks % every === 0) await refreshSnapshot($)
     }
     // The picker's listing failed (the launch record was not written yet, the
-    // server was still booting): try again once its wait is over.
-    if (!datasetsListed && !datasetsListing && datasetsAttempts < LIST_MAX_ATTEMPTS && at >= datasetsRetryAt) {
+    // server was still booting): try again once its wait is over, or as soon
+    // as the boot it was waiting for ends (the poll may stop on this tick).
+    const bootEnded = datasetsWaitingForBoot && active?.phase !== 'setting_up'
+    if (!datasetsListed && !datasetsListing && datasetsAttempts < LIST_MAX_ATTEMPTS && (at >= datasetsRetryAt || bootEnded)) {
       void loadDatasets($)
     }
     if (!active && at > pollUntil && poll) {
@@ -845,6 +852,17 @@ async function loadDatasets($: any): Promise<void> {
   if (!sessionId) return
   // A listing already running answers for this call too.
   if (datasetsInFlight) return datasetsInFlight
+  // The server is not listening yet: the hook handed its boot to a worker,
+  // which keeps `setting_up` alive for as long as the boot runs (minutes on a
+  // cold start). Every try meanwhile would fail at once and spend the
+  // attempts before the server is up, so none is made; the poll, which runs
+  // for as long as the phase does, asks again once this wait is over.
+  if (active?.phase === 'setting_up') {
+    datasetsWaitingForBoot = true
+    datasetsRetryAt = (await $.clock.now()) + LIST_RETRY_MS
+    return
+  }
+  datasetsWaitingForBoot = false
   datasetsListing = true
   datasetsAttempts += 1
   datasetsInFlight = (async () => {
@@ -1143,9 +1161,16 @@ export const register: Register = (on, options) => {
     // Not awaited: a process spawn on the path from prompt to answer only
     // updates the row, and the poll below refreshes it a second later anyway.
     void refreshSnapshot($)
-    // A listing that never landed (a slow boot outlasted its retries) gets
-    // another go once the person is back at the prompt.
-    if (!datasetsListed && !datasetsListing && datasetsAttempts < LIST_MAX_ATTEMPTS) void loadDatasets($)
+    // A listing that never landed gets another go once the person is back at
+    // the prompt: the attempts start over, so the cap is per prompt rather
+    // than per session.
+    if (!datasetsListed && !datasetsListing) {
+      if (datasetsAttempts >= LIST_MAX_ATTEMPTS) {
+        datasetsAttempts = 0
+        datasetsRetryAt = 0
+      }
+      void loadDatasets($)
+    }
     // The turn's tool calls are saved as they happen; watch for them.
     await startPoll($, POLL_WINDOW_MS)
     return ran

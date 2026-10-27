@@ -1879,12 +1879,22 @@ async def _run_bootstrap(bootstrap: dict) -> None:
         while not heartbeat_stop.wait(_SETTING_UP_HEARTBEAT_SECONDS):
             phase_touch("setting_up", session_key=session_key)
 
-    threading.Thread(target=_heartbeat, name="cognee-setting-up", daemon=True).start()
+    heartbeat = threading.Thread(target=_heartbeat, name="cognee-setting-up", daemon=True)
+    heartbeat.start()
+
+    def _stop_heartbeat() -> None:
+        # ``set()`` wakes the thread but does not interrupt a touch already
+        # past its read: that touch would write ``active: setting_up`` back
+        # over the result ``phase_end`` records next, and the row would say
+        # "setting up memory" until the phase went stale. The thread leaves
+        # its wait at once, so the join returns as soon as any touch lands.
+        heartbeat_stop.set()
+        heartbeat.join(timeout=1.0)
 
     def _registered() -> None:
         # Memory is usable from here: the code-graph pass that follows is
         # best-effort and must not hold the verdict back.
-        heartbeat_stop.set()
+        _stop_heartbeat()
         hook_log("bootstrap_registered", {"session_id": session_id})
         phase_end("setting_up", session_key=session_key)
 
@@ -1904,7 +1914,7 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                     hook_log("bootstrap_waiting_for_peer", {"session_id": session_id})
             if not _wait_for_health(_SERVER_BOOT_DEADLINE_SECONDS, health_url):
                 hook_log("bootstrap_server_unhealthy", {"session_id": session_id})
-                heartbeat_stop.set()
+                _stop_heartbeat()
                 phase_end("setting_up", session_key=session_key, ok=False)
                 return
 
@@ -1912,7 +1922,7 @@ async def _run_bootstrap(bootstrap: dict) -> None:
         #    boot single-flight. _run_heavy's _ensure_local_server_running is a
         #    no-op now that the server is healthy.
         try:
-            await _run_heavy(
+            _, _, registered = await _run_heavy(
                 config,
                 cwd,
                 session_id,
@@ -1923,16 +1933,27 @@ async def _run_bootstrap(bootstrap: dict) -> None:
                 boot_timeout=_SERVER_BOOT_DEADLINE_SECONDS,
                 on_registered=_registered,
             )
-            hook_log("bootstrap_complete", {"session_id": session_id})
+            hook_log(
+                "bootstrap_complete", {"session_id": session_id, "registered": bool(registered)}
+            )
             if not heartbeat_stop.is_set():
-                # The heavy path returned without reaching registration.
-                _registered()
+                if registered:
+                    # The heavy path came back ready without calling back.
+                    _registered()
+                else:
+                    # A refused registration is a False return, not an
+                    # exception: _run_heavy reports it and records the
+                    # connection state itself. Nothing is registered, so
+                    # memory is not ready.
+                    hook_log("bootstrap_registration_failed", {"session_id": session_id})
+                    _stop_heartbeat()
+                    phase_end("setting_up", session_key=session_key, ok=False)
         except Exception as exc:
             hook_log("bootstrap_failed", {"error": str(exc)[:300]})
-            heartbeat_stop.set()
+            _stop_heartbeat()
             phase_end("setting_up", session_key=session_key, ok=False)
     finally:
-        heartbeat_stop.set()
+        _stop_heartbeat()
 
 
 def _running_server_observer(target_url: str) -> tuple[bool, bool | None]:

@@ -64,6 +64,8 @@ function wire(
   registrations: { tools: string[]; commands: string[] } = { tools: [], commands: [] },
   // The tool labels the engine's own row renderer would receive, in order.
   toolRows: string[] = [],
+  // What a read of a file answers; undefined reads as empty.
+  readFile: (path: string) => string | undefined = () => undefined,
 ) {
   const clock = mock.clock(on, { now: 1_700_000_000_000 })
   mock.env(on, { HOME })
@@ -84,7 +86,7 @@ function wire(
   on('session.id', () => ({ value: SESSION }))
   // No marker and no env file: an empty read (a throw from a bottom hook
   // inside a timer would end the timer in the kit, which no real file does).
-  on('fs.read', () => ({ value: '' }))
+  on('fs.read', ($, e) => ({ value: readFile(e.path) ?? '' }))
   // The registrations session start makes; a test that inspects them
   // passes `registrations` and reads it back.
   on('tool.register', ($, e) => {
@@ -978,20 +980,69 @@ test('a listing that finds no launch record yet is tried again, and the picker a
   expect(listCalls(calls).length).toBe(2)
 })
 
-test('a listing that keeps failing stops after its attempts, until asked for again', async ($, on) => {
+test('a listing that keeps failing stops after its attempts, until the next prompt or /cognee-dataset', async ($, on) => {
   const calls: Call[] = []
   const clock = wire(on, calls, { 'switch-dataset.py': () => ok(JSON.stringify({ error: 'GET /api/v1/datasets failed (HTTP 503)', code: 1 })) })
   on('prompt.submit', ($, e) => ({ text: e.text }))
   await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
-  // Five attempts in all, with a wait that grows: 5 s, 10 s, 15 s, 20 s.
+  // The wait grows: 5 s, 10 s, 15 s, 20 s. Four tries fit the poll's window
+  // after session start (at 0, 5, 15 and 30 s); the fifth comes at the prompt.
   for (let i = 0; i < 120; i += 1) await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(4)
   await $.prompt.submit({ text: 'hello' })
   for (let i = 0; i < 120; i += 1) await clock.advance(1000)
   expect(listCalls(calls).length).toBe(5)
-  // /cognee-dataset starts the attempts over.
+  // The attempts are spent: the next prompt starts them over (four more in
+  // its window, as after session start), and /cognee-dataset does too.
+  await $.prompt.submit({ text: 'again' })
+  for (let i = 0; i < 120; i += 1) await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(9)
   const answer = await $.command.run({ command: 'cognee-dataset', args: '' })
   expect(answer.text).toContain('no datasets listed')
-  expect(listCalls(calls).length).toBe(6)
+  expect(listCalls(calls).length).toBe(10)
+})
+
+test('a listing waits for a boot the hook handed to its worker instead of spending its attempts on it', async ($, on) => {
+  const calls: Call[] = []
+  let up = false
+  let markerText = ''
+  const clock = wire(
+    on,
+    calls,
+    { 'switch-dataset.py': () => (up ? ok(JSON.stringify(SWITCH_LIST)) : ok(JSON.stringify({ error: 'GET /api/v1/datasets failed (connection refused)', code: 1 }))) },
+    [],
+    undefined,
+    undefined,
+    path => (path.endsWith(`/phase/${SESSION}.json`) ? markerText : undefined),
+  )
+  const began = clock.now() / 1000
+  // What the worker's heartbeat does: the phase stays fresh while it boots.
+  const touch = () => {
+    markerText = JSON.stringify({
+      session_key: SESSION,
+      active: { phase: 'setting_up', detail: 'starting memory server', started_at: began, updated_at: clock.now() / 1000 },
+      results: {},
+    })
+  }
+  touch()
+  await $.session.start({ cwd: '/work', surface: 'terminal', isInteractive: true })
+  // Four minutes of boot, well past where five tries would have run out: no
+  // listing is run against a server that is not listening.
+  for (let s = 1; s <= 240; s += 1) {
+    await clock.advance(1000)
+    if (s % 15 === 0) touch()
+  }
+  expect(listCalls(calls).length).toBe(0)
+  // The worker registered the session and ended the phase: the poll tick
+  // that sees the phase end lists at once (it is also the poll's last tick),
+  // and the picker appears.
+  up = true
+  markerText = JSON.stringify({ session_key: SESSION, active: null, results: { ready: { at: clock.now() / 1000, ok: true } } })
+  await clock.advance(1000)
+  expect(listCalls(calls).length).toBe(1)
+  const ui = await $.ui.mount({ plugin: PLUGIN, surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Button', key: 'dataset' })).toBeDefined()
+  await ui.unmount()
 })
 
 test('a listing that times out keeps the list the row had', async ($, on) => {

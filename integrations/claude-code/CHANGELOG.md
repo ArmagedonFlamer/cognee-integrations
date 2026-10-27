@@ -20,7 +20,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (five times, with a growing wait) while a server is still starting, keeps the list
   it had when a run times out, and shows the picker whenever the server listed
   anything, with the active dataset at the top even when it is not in the writable
-  list (SDK-1244).
+  list (SDK-1244). A boot the hook handed to its worker does not spend those
+  attempts: the listing waits for the `setting up memory` phase to end and runs
+  the moment it does, and a prompt starts the attempts over, so a slow boot never
+  leaves the name plain text for the session.
 - **No more "memory unavailable" next to a live server.** When session start handed
   a cold boot to its bootstrap worker it still recorded "not ready" on its way out;
   once the `setting up memory` phase went stale the row fell back to that verdict.
@@ -28,7 +31,10 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (a heartbeat every 15 s), says `memory ready` as soon as the session is registered
   (before the code-graph pass), and the row and the text line both ignore a failed
   verdict once the connection marker confirms the server. The row keeps watching a
-  hand-off boot past the two-minute warm-up, until the phase ends.
+  hand-off boot past the two-minute warm-up, until the phase ends. A registration
+  the server refuses (a 403, a bad key) is reported as not ready, never as `memory
+  ready`, and the heartbeat is stopped before the verdict is written so a touch in
+  flight cannot bring the phase back over it.
 - **The status row no longer breaks words in a narrow terminal.** Each segment of the
   row is a box that never shrinks; a row too wide for the terminal drops the least
   useful segments first (the last operation's cost, a healthy balance, the last
@@ -38,7 +44,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   removes the plugin's own `statusLine` entry from `~/.claude/settings.json` (Claude
   Code reserves the row for as long as the entry exists, even when the renderer
   prints nothing). A user's own entry is never touched; a later session without the
-  module installs the plugin's entry again.
+  module installs the plugin's entry again (two sessions open at once, one with the
+  module and one without, each write what they need; the README says so).
 - **The cloud worker creates the session's dataset before it registers the
   session.** Registration lists that dataset, and a server that only accepts a
   connection on a dataset the caller can already read (Cognee Cloud does) answered

@@ -67,7 +67,12 @@ installs the `statusLine` entry in `~/.claude/settings.json` that draws the line
 below the prompt, and refreshes it when the plugin moved. Only an entry whose
 command runs the plugin's own `cognee-statusline.sh` is ever written or
 replaced; a status line you set yourself is never touched. Nothing else in your
-Claude Code settings is touched.
+Claude Code settings is touched. The entry is one file for every session, and
+each session start writes what its own session needs: with two sessions open at
+once where only one has the module (an older CLI beside the Desktop app, a
+`--safe-mode` session beside a normal one), the one with the module removes the
+entry and the one without puts it back, so the line below the prompt in the
+session without the module can go away until its next session start.
 
 **Claude's own files.** The plugin reads the hook payloads Claude Code sends it, not
 your transcript or Claude Code's memory files, and writes to neither.

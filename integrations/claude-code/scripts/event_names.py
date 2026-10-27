@@ -77,6 +77,7 @@ EVENT_NAMES = {
     "hook:bootstrap_complete": "bootstrap.complete",
     "hook:bootstrap_owns_ready": "bootstrap.owns_ready",
     "hook:bootstrap_registered": "bootstrap.registered",
+    "hook:bootstrap_registration_failed": "bootstrap.registration_failed",
     "hook:bootstrap_failed": "bootstrap.failed",
     "hook:bootstrap_lock_release_failed": "bootstrap.lock_release_failed",
     "hook:bootstrap_lock_unlink_failed": "bootstrap.lock_unlink_failed",

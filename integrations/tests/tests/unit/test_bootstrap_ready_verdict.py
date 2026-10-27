@@ -199,6 +199,47 @@ def test_a_registration_that_raises_is_reported_as_not_ready(session_start, monk
     assert seen["end"] == [("setting_up", {"session_key": "k", "ok": False})]
 
 
+def test_a_registration_the_heavy_path_reports_refused_is_not_ready(session_start, monkeypatch):
+    seen, _ = _worker(session_start, monkeypatch, healthy=True)
+
+    async def refused(*a, on_registered=None, **k):
+        # _run_heavy reports a refused registration (a 403, a bad key) in its
+        # return, not by raising; it never calls back.
+        return "", "", False
+
+    monkeypatch.setattr(session_start, "_run_heavy", refused)
+    asyncio.run(session_start._run_bootstrap({"session_id": "sid", "session_key": "k"}))
+    assert seen["end"] == [("setting_up", {"session_key": "k", "ok": False})]
+
+
+def test_the_heartbeat_has_stopped_before_the_verdict_is_recorded(session_start, monkeypatch):
+    import threading
+    import time
+
+    _worker(session_start, monkeypatch, healthy=True)
+    # A touch that takes longer than the heartbeat's wait, so the thread is
+    # mid-touch most of the time: a stop that does not wait for it would let
+    # the touch write a stale "setting_up" back over the ready result.
+    monkeypatch.setattr(session_start, "phase_touch", lambda phase, **kw: time.sleep(0.02))
+    heartbeat_alive_at_end: list = []
+
+    def end(phase, **kw):
+        heartbeat_alive_at_end.append(
+            any(t.name == "cognee-setting-up" and t.is_alive() for t in threading.enumerate())
+        )
+
+    monkeypatch.setattr(session_start, "phase_end", end)
+
+    async def slow_heavy(*a, on_registered=None, **k):
+        await asyncio.sleep(0.1)
+        on_registered()
+        return "", "", True
+
+    monkeypatch.setattr(session_start, "_run_heavy", slow_heavy)
+    asyncio.run(session_start._run_bootstrap({"session_id": "sid", "session_key": "k"}))
+    assert heartbeat_alive_at_end == [False]
+
+
 def test_the_heartbeat_touches_the_phase_while_the_boot_runs(session_start, monkeypatch):
     seen, touches = _worker(session_start, monkeypatch, healthy=True)
 
