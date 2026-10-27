@@ -34,7 +34,7 @@ integrations:
     registry: none
     package_name: null
     cognee_dependency: sdk
-    current_version: "1.7.3"
+    current_version: "1.7.4"
     migration_status: done
     notes: "Claude Code plugin – session storage via hooks, recall via context lookup, session-to-graph sync"
 
@@ -96,7 +96,7 @@ integrations:
     cognee_dependency: mcp
     current_version: "0.1.0"
     migration_status: done
-    notes: "Cursor-format plugin (Grok Bot's plugin catalog) that attaches the hosted Cognee MCP server (OAuth, no API key) plus an always-on rule that makes Cognee the bot's memory; listed in the root .cursor-plugin/marketplace.json"
+    notes: "Cursor-format plugin (Grok Bot's plugin catalog) that attaches the hosted Cognee MCP server (OAuth, no API key) plus a memory skill that makes Cognee the bot's memory; listed in the root .cursor-plugin/marketplace.json and .grok-plugin/marketplace.json"
 
   - slug: hermes-agent
     name: "Cognee Memory Plugin for Hermes Agent"
