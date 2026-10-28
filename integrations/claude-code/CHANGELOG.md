@@ -116,7 +116,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
 - **Clearer first-run tour.** The arrow now sits right after the dataset name it points
   to, and the last hint says typing `/cognee` shows the plugin's commands.
 
-
 ## [1.7.3]
 
 ### Changed

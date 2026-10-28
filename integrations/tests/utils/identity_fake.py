@@ -339,7 +339,7 @@ class IdentityFake:
             return 404, {"detail": "Not Found"}
         if not self.user_id_for_key(api_key):
             return 401, {"detail": "invalid api key"}
-        known = ["claude-code", "codex", "antigravity", "openclaw", "mcp", "api"]
+        known = ["claude-code", "codex", "antigravity", "cursor", "openclaw", "mcp", "api"]
         plugins = []
         for plugin_key in known:
             record = self.plugin_agents.get(plugin_key)

@@ -273,7 +273,10 @@ class MockCogneeServer:
         )
         route("/api/v1/integrations/status", "GET", self._integrations_status)
         # Exact-path routing, so each known plugin key gets its own route.
-        for plugin_key in ("claude-code", "codex", "antigravity"):
+        # "cursor" is what the Cursor plugin sends; cognee's KNOWN_PLUGINS
+        # (cognee/modules/integrations/plugins.py) has to list it as well, or a
+        # real server answers 404 and the plugin stays on the principal's key.
+        for plugin_key in ("claude-code", "codex", "antigravity", "cursor"):
             route(
                 f"/api/v1/integrations/plugins/{plugin_key}/provision",
                 "POST",

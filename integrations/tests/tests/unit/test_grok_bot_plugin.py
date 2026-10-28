@@ -34,9 +34,8 @@ def _frontmatter(path: Path) -> dict[str, str]:
 def test_manifest_names_the_plugin_and_matches_the_changelog():
     manifest = _json(PLUGIN / ".cursor-plugin/plugin.json")
     assert KEBAB.match(manifest["name"])
-    latest = re.search(
-        r"^## \[([^\]]+)\]", (PLUGIN / "CHANGELOG.md").read_text(encoding="utf-8"), re.M
-    )
+    changelog = (PLUGIN / "CHANGELOG.md").read_text(encoding="utf-8")
+    latest = re.search(r"^## \[([^\]]+)\]", changelog, re.M)
     assert latest and latest.group(1) == manifest["version"]
     # The description shows the version, so it is visible in Grok Bot's plugin list.
     assert manifest["description"].endswith(f"Version {manifest['version']}.")

@@ -10,6 +10,14 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.3]
+
+### Added
+- **`hermes cognee keys list` / `hermes cognee keys revoke <id> --plugin <key>`** manage
+  the per-machine API keys of your cognee plugin agents (Claude Code, Codex, …). Cognee's
+  provision route now adds one key per machine and caps them (cognee#6113); a full agent
+  refuses a new machine a key, and this is how a slot is freed from Hermes.
+
 ## [1.3.2]
 
 ### Changed
@@ -19,12 +27,6 @@ project adheres to [Semantic Versioning](https://semver.org/).
   lets typed session entries carry a `node_set` and refuses a typed entry that names
   a different dataset than the one its session is bound to. The Claude Code, Codex,
   Antigravity and OpenClaw plugins move to 1.6.5 at the same time.
-
-### Added
-- **`hermes cognee keys list` / `hermes cognee keys revoke <id> --plugin <key>`** manage
-  the per-machine API keys of your cognee plugin agents (Claude Code, Codex, …). Cognee's
-  provision route now adds one key per machine and caps them (cognee#6113); a full agent
-  refuses a new machine a key, and this is how a slot is freed from Hermes.
 
 ## [1.3.1]
 
