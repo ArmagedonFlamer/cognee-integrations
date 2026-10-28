@@ -19,7 +19,7 @@ The integration:
 - captures prompts, tool traces and assistant answers into Cognee session memory
 - injects relevant memory into the model's context: at session start, and per prompt on that turn's first tool call (see below)
 - syncs session memory into graph memory when the conversation ends
-- ships the Cognee skills (`memory`, `codebase`, `setup`, `cognee-forget`, `cognee-switch-datasets`, `local-ui`) so the agent can remember, search and forget on request
+- ships the Cognee skills (`memory`, `codebase`, `setup`, `cognee-forget`, `cognee-switch-datasets`, `cognee-keys`, `local-ui`) so the agent can remember, search and forget on request
 
 > **Status: 0.1.0 — first working cut.** The hook runtime is the Codex plugin's, so storage, recall, local/cloud modes, dataset switching and the skills behave as documented for [Codex](../codex/README.md) and [Claude Code](../claude-code/README.md). What is new and Cursor-specific is the payload adapter, described below. Read [Known limitations](#known-limitations) before relying on it.
 
