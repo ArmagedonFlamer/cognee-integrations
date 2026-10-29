@@ -307,3 +307,46 @@ def test_a_braille_credit_counts_and_both_rows_are_stripped(cite_on, monkeypatch
 def test_streaming_defaults_to_on_outside_hermes():
     # No hermes_cli to ask (tests, a bare install): assume the default, streaming.
     assert memory_credit._cli_streams() is True
+
+
+SIGNED = "Mika likes Yuji.\n\n> Mika likes Yuji and volleyball, based on dataset agent_sessions."
+
+
+@pytest.mark.parametrize("platform", ["tui", "cli"])
+def test_the_terminal_instruction_asks_for_an_unlabelled_line(platform):
+    text = memory_credit.credit_instruction(False, 1, "agent_sessions", platform)
+    assert "> you prefer the server over the CLI, based on dataset agent_sessions." in text
+    assert "> Cognee:" not in text
+    assert "> Cognee:" not in memory_credit.tool_credit_instruction("agent_sessions", platform)
+    # Desktop and messaging apps keep the labelled line.
+    assert "> Cognee:" in memory_credit.credit_instruction(False, 1, "agent_sessions", "desktop")
+
+
+def test_the_terminal_signs_an_unlabelled_line_with_the_logo(cite_on, monkeypatch):
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
+    top, bottom = memory_credit.LOGOTYPE
+    for platform in ("tui", "cli"):
+        out = memory_credit.render_credit(SIGNED, platform)
+        assert out == f"{SIGNED}\n\n{top}\n{bottom}"
+        assert memory_credit.has_credit(out)
+        assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: False)
+    out = memory_credit.render_credit(SIGNED, "cli")
+    assert out.endswith(
+        f"{top}  Mika likes Yuji and volleyball, based on dataset agent_sessions.  \n{bottom}"
+    )
+
+
+def test_an_ordinary_quote_is_not_signed(cite_on):
+    assert memory_credit.render_credit("> To be or not to be.", "tui") is None
+    assert not memory_credit.has_credit("> To be or not to be.")
+
+
+def test_the_provider_shapes_the_credit_for_its_platform(cite_on):
+    with fake_backend() as fake:
+        fake.results["recall"] = [{"text": "Mika likes tennis.", "source": "graph"}]
+        provider = make_provider()
+        provider._platform = "tui"
+        provider.queue_prefetch("what does mika like")
+        out = provider.prefetch("what does mika like")
+    assert "the Cognee logo is added under it" in out

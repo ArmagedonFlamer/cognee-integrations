@@ -69,8 +69,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   answer that used them with one plain line, `> Cognee: <what it remembered>, based on
   dataset <name>`. A `transform_llm_output` hook replaces `Cognee:` with the Cognee pixel logo in
   the brand purple in Hermes Desktop (KaTeX rules on the logo's five-row grid), so the logo is
-  always exact; in the terminal chats (`hermes --tui` and `hermes`) the Cognee logo in
-  braille is appended below the streamed credit line (a replaced answer would show twice),
+  always exact; in the terminal chats (`hermes --tui` and `hermes`) the agent writes the line
+  without the `Cognee:` label and the Cognee logo in braille is appended below it as a
+  signature (a replaced answer would show twice),
   or, in the classic chat with streaming off, replaces the line with the sentence beside it; messaging apps keep the plain line for now. (Asking the agent to copy a braille logo itself failed live: it dropped
   cells, lost the colour markup and copied the placeholder.) The credit is noted and stripped
   before the turn is stored. On by default; `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
