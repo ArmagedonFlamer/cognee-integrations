@@ -45,44 +45,88 @@ ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 #: logotype, one dot row taller). The markdown line break after the first row
 #: keeps the rows together in a rendered chat.
 LOGOTYPE = ("⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯", "⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓")
-_CREDIT_FORMAT = f"> {LOGOTYPE[0]} <what you remembered>, based on {{source}}.\\\n> {LOGOTYPE[1]}"
+#: The logo's colour where the chat renders it: Hermes Desktop renders KaTeX
+#: (``$…$``), and ``\color`` is the only way to colour text there. A mid purple
+#: between the Cognee wordmark's light and dark shades, readable on either theme.
+LOGO_COLOR = "#9F7AEA"
+#: Platforms whose chat renders inline math. Elsewhere (the terminal, messaging
+#: apps) the KaTeX would show as source, so the logo stays plain braille.
+COLOR_PLATFORMS = frozenset({"desktop"})
 
-CREDIT_INSTRUCTION = (
-    "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "
-    "as [mN · where it came from]. A memory recalled again in this session keeps its "
-    "tag. If your answer uses information from a tagged item, end the answer with these "
-    "two lines:\n"
-    f"{_CREDIT_FORMAT}\n"
-    "Copy both braille rows exactly, including the backslash ending the first line: "
-    "together they are the Cognee logo. The logo names Cognee, so do not write the tags "
-    'or the words "Cognee memory" in these lines. Credit only items Cognee tagged, and '
-    "only items your answer actually used. Never credit Cognee for what you know from "
-    "project instruction files, your own memory files, the code, or this conversation. "
-    "If no tagged item was used, do not mention memory."
-)
 FIRST_CREDIT_ADDENDUM = (
     "This would be the first Cognee credit in this session, so after what you remembered "
     "also say in a few words how it connects to the earlier work."
 )
-#: The same instruction for results of the agent's own ``cognee_recall`` call.
-TOOL_CREDIT_INSTRUCTION = (
-    "Each result is tagged [mN · where it came from]. If your answer uses one, end it with "
-    "these two lines, copying both braille rows exactly (they are the Cognee logo):\n"
-    f"{_CREDIT_FORMAT}\n"
-    'Do not write the tags or the words "Cognee memory" in them, and credit only results '
-    "your answer actually used."
-)
+
+
+def logo_rows(colored: bool = False) -> tuple[str, str]:
+    """The logo's two rows, wrapped in KaTeX colour when the chat renders it."""
+    if not colored:
+        return LOGOTYPE
+    return tuple("$\\color{%s}{\\text{%s}}$" % (LOGO_COLOR, row) for row in LOGOTYPE)
+
+
+def _credit_lines(source: str, colored: bool) -> str:
+    top, bottom = logo_rows(colored)
+    return f"> {top} <what you remembered>, based on {source}.\\\n> {bottom}"
+
+
+def _copy_rule(colored: bool) -> str:
+    if colored:
+        return (
+            "Copy both lines exactly as shown, including the $…$ around each braille row "
+            "(it colours the logo) and the backslash ending the first line: together they "
+            "are the Cognee logo."
+        )
+    return (
+        "Copy both braille rows exactly, including the backslash ending the first line: "
+        "together they are the Cognee logo."
+    )
+
+
+def credit_instruction(
+    first_in_session: bool, found: int, source: str = "", colored: bool = False
+) -> str:
+    noun = "1 memory" if found == 1 else f"{found} memories"
+    text = (
+        f"Crediting Cognee memory: Cognee found {noun} for this prompt, each tagged below "
+        "as [mN · where it came from]. A memory recalled again in this session keeps its "
+        "tag. If your answer uses information from a tagged item, end the answer with these "
+        "two lines:\n"
+        f"{_credit_lines(source or 'Cognee memory', colored)}\n"
+        f"{_copy_rule(colored)} The logo names Cognee, so do not write the tags "
+        'or the words "Cognee memory" in these lines. Credit only items Cognee tagged, and '
+        "only items your answer actually used. Never credit Cognee for what you know from "
+        "project instruction files, your own memory files, the code, or this conversation. "
+        "If no tagged item was used, do not mention memory."
+    )
+    return f"{text} {FIRST_CREDIT_ADDENDUM}" if first_in_session else text
+
+
+def tool_credit_instruction(source: str = "", colored: bool = False) -> str:
+    """The same instruction for results of the agent's own ``cognee_recall`` call."""
+    return (
+        "Each result is tagged [mN · where it came from]. If your answer uses one, end it with "
+        "these two lines:\n"
+        f"{_credit_lines(source or 'Cognee memory', colored)}\n"
+        f"{_copy_rule(colored)} "
+        'Do not write the tags or the words "Cognee memory" in them, and credit only results '
+        "your answer actually used."
+    )
+
 
 #: A credit: a quoted line that opens with the logo's first row and goes on to
 #: say something. The logo alone, or braille elsewhere, is not one.
-_CREDIT_RE = re.compile(rf"^[ \t]*>[ \t]*{LOGOTYPE[0]}[ \t]*\S", re.M)
+_KATEX_OPEN = r"(?:\$\\color\{[^}\n]*\}\{\\text\{)?"
+_KATEX_CLOSE = r"(?:\}\}\$)?"
+_CREDIT_RE = re.compile(rf"^[ \t]*>[ \t]*{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE}[ \t]+\S", re.M)
 #: Tags cited the way the Claude Code and Codex plugins ask (``Cognee memory
 #: [m2]``); ``arr[m1]`` in code is not a citation.
 _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
 #: Lines cut before storing: a quoted line led by braille (either logo row, any
 #: logotype version) and the older ``🧠 Cognee memory [mN]`` line.
 _STRIP_RES = (
-    re.compile(r"^[ \t]*>[ \t]*[\u2800-\u28ff]{6,}[^\n]*(?:\n|$)", re.M),
+    re.compile(rf"^[ \t]*>[ \t]*{_KATEX_OPEN}[\u2800-\u28ff]{{6,}}[^\n]*(?:\n|$)", re.M),
     re.compile(r"^[ \t]*(?:>[ \t]*)?🧠?[ \t]*Cognee memory[ \t]*\[m\d+[^\n]*(?:\n|$)", re.M),
 )
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
@@ -115,16 +159,6 @@ def passage_origin(passage: str) -> str:
     if date:
         return f"{agent} session learning, {date.group(1)}"
     return f"{agent} session"
-
-
-def credit_instruction(first_in_session: bool, found: int, source: str = "") -> str:
-    noun = "1 memory" if found == 1 else f"{found} memories"
-    text = CREDIT_INSTRUCTION.format(found=noun, source=source or "Cognee memory")
-    return f"{text} {FIRST_CREDIT_ADDENDUM}" if first_in_session else text
-
-
-def tool_credit_instruction(source: str = "") -> str:
-    return TOOL_CREDIT_INSTRUCTION.format(source=source or "Cognee memory")
 
 
 def has_credit(answer: str) -> bool:
