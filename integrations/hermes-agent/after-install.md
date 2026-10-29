@@ -9,7 +9,7 @@ hermes memory setup cognee
 
 This makes Cognee the memory provider and asks for a mode:
 
-- **remote** — Cognee Cloud or a self-hosted cognee server. You'll be asked for
+- **remote** (the default) — Cognee Cloud or a self-hosted cognee server. You'll be asked for
   the service URL and an API key (for Cognee Cloud, both come from
   https://platform.cognee.ai/). Nothing else to install.
 - **local** — the plugin runs a cognee server on your machine (shared with the
