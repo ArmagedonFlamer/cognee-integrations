@@ -1,14 +1,21 @@
 """Crediting Cognee memory in the answer, as the Claude Code, Codex and Cursor plugins do.
 
 Every recalled item the agent is given gets a short tag (``m1``, ``m2``…) and a
-label saying where it came from. An instruction above the memory asks the agent
-to end an answer that used memory with one ``🧠 Cognee memory [mN]: …`` line.
-Tags are numbered across the session and a memory recalled again keeps its tag,
-so a tag names one memory however many turns later it is cited.
+label saying where it came from, so it can tell Cognee's items from everything
+else it knows. An instruction above the memory asks the agent to end an answer
+that used them with the Cognee logo, drawn in braille, and what it remembered:
 
-When the turn is stored, the answer's credit line is checked against the tags
-handed out (a cited tag never handed out is logged as invented) and stripped, so
-the credit is never stored back into memory as if it were part of the answer.
+    > ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯ Mika likes tennis, based on agent_sessions.\
+    > ⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
+
+That is the Cursor plugin's line with its logo link swapped for braille: Hermes
+Desktop draws an icon only for the hosts in its own brand list, which has no
+cognee.ai, and the terminal shows a link as text, while braille shows the same
+everywhere. Tags are numbered across the session and a memory recalled again
+keeps its tag.
+
+When the turn is stored, the answer's credit is noted and stripped, so it is
+never stored back into memory as if it were part of the answer.
 
 The provider lives for the whole session, so the tags live in memory: no state
 files, unlike the hook-based plugins. ``COGNEE_PLUGIN_CITE_MEMORY=off`` turns it
@@ -34,34 +41,50 @@ from .recall_text import (
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
+#: "COGNEE" six dots tall, as two braille rows (the Claude Code terminal
+#: logotype, one dot row taller). The markdown line break after the first row
+#: keeps the rows together in a rendered chat.
+LOGOTYPE = ("⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯", "⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓")
+_CREDIT_FORMAT = f"> {LOGOTYPE[0]} <what you remembered>, based on {{source}}.\\\n> {LOGOTYPE[1]}"
+
 CREDIT_INSTRUCTION = (
     "Crediting Cognee memory: Cognee found {found} for this prompt, each tagged below "
     "as [mN · where it came from]. A memory recalled again in this session keeps its "
-    "tag. If your answer uses information from a tagged item, end the answer with one "
-    "line:\n"
-    "> 🧠 Cognee memory [mN]: <what you remembered, and where or when it came from, "
-    "as the tag says>\n"
-    "Cite several tags as [m1, m3]. Cite only tags Cognee gave you, and only items your "
-    "answer actually used. Never credit Cognee for what you know from project "
-    "instruction files, your own memory files, the code, or this conversation. If no "
-    "tagged item was used, do not mention memory."
+    "tag. If your answer uses information from a tagged item, end the answer with these "
+    "two lines:\n"
+    f"{_CREDIT_FORMAT}\n"
+    "Copy both braille rows exactly, including the backslash ending the first line: "
+    "together they are the Cognee logo. The logo names Cognee, so do not write the tags "
+    'or the words "Cognee memory" in these lines. Credit only items Cognee tagged, and '
+    "only items your answer actually used. Never credit Cognee for what you know from "
+    "project instruction files, your own memory files, the code, or this conversation. "
+    "If no tagged item was used, do not mention memory."
 )
 FIRST_CREDIT_ADDENDUM = (
-    "This would be the first Cognee credit in this session, so in that line also say in "
-    "a few words how it connects to the earlier work."
+    "This would be the first Cognee credit in this session, so after what you remembered "
+    "also say in a few words how it connects to the earlier work."
 )
 #: The same instruction for results of the agent's own ``cognee_recall`` call.
 TOOL_CREDIT_INSTRUCTION = (
-    "Each result is tagged [mN · where it came from]. If your answer uses one, end it "
-    "with one line: > 🧠 Cognee memory [mN]: <what you remembered, and where or when it "
-    "came from>. Cite only these tags, and only results your answer actually used."
+    "Each result is tagged [mN · where it came from]. If your answer uses one, end it with "
+    "these two lines, copying both braille rows exactly (they are the Cognee logo):\n"
+    f"{_CREDIT_FORMAT}\n"
+    'Do not write the tags or the words "Cognee memory" in them, and credit only results '
+    "your answer actually used."
 )
 
-#: Only the credit line counts: ``arr[m1]`` in code, or the instruction's own
-#: example quoted back, is not a citation.
+#: A credit: a quoted line that opens with the logo's first row and goes on to
+#: say something. The logo alone, or braille elsewhere, is not one.
+_CREDIT_RE = re.compile(rf"^[ \t]*>[ \t]*{LOGOTYPE[0]}[ \t]*\S", re.M)
+#: Tags cited the way the Claude Code and Codex plugins ask (``Cognee memory
+#: [m2]``); ``arr[m1]`` in code is not a citation.
 _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
-#: A whole credit line, with or without the quote marker, for stripping.
-_CREDIT_LINE_RE = re.compile(r"^[ \t]*(?:>[ \t]*)?🧠?[ \t]*Cognee memory[ \t]*\[m\d+[^\n]*$", re.M)
+#: Lines cut before storing: a quoted line led by braille (either logo row, any
+#: logotype version) and the older ``🧠 Cognee memory [mN]`` line.
+_STRIP_RES = (
+    re.compile(r"^[ \t]*>[ \t]*[\u2800-\u28ff]{6,}[^\n]*(?:\n|$)", re.M),
+    re.compile(r"^[ \t]*(?:>[ \t]*)?🧠?[ \t]*Cognee memory[ \t]*\[m\d+[^\n]*(?:\n|$)", re.M),
+)
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
 _AGENTS = {
     "claude": "Claude Code",
@@ -94,17 +117,28 @@ def passage_origin(passage: str) -> str:
     return f"{agent} session"
 
 
-def credit_instruction(first_in_session: bool, found: int) -> str:
+def credit_instruction(first_in_session: bool, found: int, source: str = "") -> str:
     noun = "1 memory" if found == 1 else f"{found} memories"
-    text = CREDIT_INSTRUCTION.format(found=noun)
+    text = CREDIT_INSTRUCTION.format(found=noun, source=source or "Cognee memory")
     return f"{text} {FIRST_CREDIT_ADDENDUM}" if first_in_session else text
 
 
+def tool_credit_instruction(source: str = "") -> str:
+    return TOOL_CREDIT_INSTRUCTION.format(source=source or "Cognee memory")
+
+
+def has_credit(answer: str) -> bool:
+    """Whether an answer carries a credit, the logo line or an older tag line."""
+    return bool(answer) and bool(_CREDIT_RE.search(answer) or _CITATION_RE.search(answer))
+
+
 def strip_credit_lines(answer: str) -> str:
-    """The answer without its credit line(s), for storing."""
-    if not answer or "Cognee memory" not in answer:
+    """The answer without its credit lines, for storing."""
+    if not answer:
         return answer
-    return _CREDIT_LINE_RE.sub("", answer).rstrip()
+    for pattern in _STRIP_RES:
+        answer = pattern.sub("", answer)
+    return answer.rstrip()
 
 
 def _memory_id(kind: str, text: str) -> str:
@@ -192,12 +226,15 @@ class MemoryTags:
         return "\n\n".join(blocks).strip()
 
     def check(self, answer: str) -> dict:
-        """Compare the tags an answer's credit line cites with the session's tags.
+        """What the answer credited: the logo line, and any tags it cites.
 
-        Returns ``{"cited", "valid", "invented", "earlier", "available"}``;
-        ``earlier`` are valid tags not given on this turn, ``available`` how
-        many this turn gave. A valid citation marks the session as credited.
+        Returns ``{"credited", "cited", "valid", "invented", "earlier",
+        "available"}``. The logo line carries no tags, so ``credited`` says
+        whether it is there; the tag lists cover an answer citing tags the way
+        the Claude Code and Codex plugins ask. Either marks the session as
+        credited, which drops the first-credit addendum from later turns.
         """
+        logo = bool(_CREDIT_RE.search(answer or ""))
         cited: list[str] = []
         for group in _CITATION_RE.findall(answer or ""):
             for tag in re.split(r"\s*,\s*", group):
@@ -207,9 +244,10 @@ class MemoryTags:
             known = {r["tag"]: r for r in self.records}
             this_turn = {t for t, r in known.items() if r.get("turn") == self.turn}
             valid = [t for t in cited if t in known]
-            if valid:
+            if valid or (logo and self.records):
                 self.credited = True
         return {
+            "credited": logo or bool(valid),
             "cited": cited,
             "valid": valid,
             "invented": [t for t in cited if t not in known],

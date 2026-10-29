@@ -828,11 +828,10 @@ class CogneeMemoryProvider(MemoryProvider):
         session handed out, then stripped: the credit says where the answer
         came from and must not be stored back as part of it.
         """
-        if assistant_content and "Cognee memory" in assistant_content:
+        if memory_credit.has_credit(assistant_content or ""):
             result = self._credit.check(assistant_content)
-            if result["cited"]:
-                logger.info("cognee memory_credit %s", json.dumps(result))
-            assistant_content = memory_credit.strip_credit_lines(assistant_content)
+            logger.info("cognee memory_credit %s", json.dumps(result, ensure_ascii=False))
+        assistant_content = memory_credit.strip_credit_lines(assistant_content or "")
         if not self._is_usable() or not self._writes_enabled:
             return
         settings = capture_policy.policy_from_config(self._config)
@@ -1806,7 +1805,9 @@ class CogneeMemoryProvider(MemoryProvider):
                     instruction = ""
                     if cite and credit.found:
                         instruction = (
-                            memory_credit.credit_instruction(not credit.credited, len(credit.found))
+                            memory_credit.credit_instruction(
+                                not credit.credited, len(credit.found), self._dataset
+                            )
                             + "\n\n"
                         )
                     self._prefetch_result = instruction + header + "\n\n".join(blocks)
@@ -1870,7 +1871,7 @@ class CogneeMemoryProvider(MemoryProvider):
                         else "Cognee recall"
                     )
                     item["tag"] = self._credit.label("recall", origin, item["text"])
-                envelope["credit"] = memory_credit.TOOL_CREDIT_INSTRUCTION
+                envelope["credit"] = memory_credit.tool_credit_instruction(self._dataset)
             if overflow:
                 # Non-empty results still warn: mean-pooled vectors match
                 # *something*, so plausible-but-wrong hits are the overflow's
