@@ -56,6 +56,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   The plugin description, `after-install.md`, the README and the `hermes cognee install` /
   `cognee-hermes-install` hints now give the same steps: install, run
   `hermes memory setup cognee` in a terminal, start a new chat.
+- **Local mode works without an LLM key.** cognee 1.6.5 then builds memory with local
+  models (GLiNER extraction, fastembed embeddings) installed into the runtime and downloaded
+  on the first build (about 1.5 GB); recall returns the matching stored text. The setup's LLM
+  key prompt says a blank answer means local models, the server's no-key message says the
+  same instead of "memory will not be built", and the README explains that the embedder
+  sticks to the store (with how to add a key later).
 - **The local server no longer reads `~/.cognee-plugin/.env`.** cognee >= 1.6.2 loads the
   first `.env` found walking up from its working directory, with that file overriding the
   environment; from the plugin's state directory the walk reached `~/.cognee-plugin/.env`,
