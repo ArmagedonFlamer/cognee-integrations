@@ -67,9 +67,9 @@ Python package with the `hermes_agent.plugins` entry point.
 
 ### Prerequisites
 
-- **Python 3.10 or newer.** This integration imports cognee in-process
-  (`requires-python = ">=3.10"` in `pyproject.toml`), so it inherits cognee's
-  own floor; `pip` refuses to install it on 3.9. Note that macOS's Xcode
+- **Python 3.10 or newer** (`requires-python = ">=3.10"` in `pyproject.toml`),
+  cognee's own floor, since local mode runs cognee in Hermes's interpreter;
+  `pip` refuses to install it on 3.9. Note that macOS's Xcode
   Command Line Tools ship Python 3.9.6 — use a Homebrew, python.org or
   [uv](https://docs.astral.sh/uv/)-managed 3.10+ interpreter instead.
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) installed — see
@@ -77,11 +77,18 @@ Python package with the `hermes_agent.plugins` entry point.
   (The install one-liner is quoted there rather than here: the catalog's install
   scanner flags a piped shell script even inside a README, and a clean scan is
   one less thing for a catalog reviewer to read past.)
-- **Local mode:** an LLM API key (e.g. OpenAI) — cognee uses it to build the
-  knowledge graph on your machine.
+- **Local mode:** the `cognee` package in Hermes's Python environment
+  (`cognee==1.6.5`, listed in `local-mode-requirements.txt`) and an LLM API key
+  (e.g. OpenAI), which cognee uses to build the knowledge graph on your machine.
+  The plugin does not install cognee: Hermes installs every plugin into its own
+  environment, and cognee's dependencies conflict with Hermes's pinned ones
+  there, which would refuse the install for Cloud users too. Without cognee,
+  local mode still connects to a cognee server already running on port 8011,
+  such as one another cognee plugin started.
 - **Cloud mode:** a Cognee Cloud tenant URL and API key from your
-  [Cognee Cloud dashboard](https://platform.cognee.ai/). No LLM key needed —
-  the tenant runs the models.
+  [Cognee Cloud dashboard](https://platform.cognee.ai/). No LLM key and no
+  cognee package needed — the tenant runs the models, and the plugin talks to
+  it over plain HTTP.
 
 ### 1. Install the plugin
 

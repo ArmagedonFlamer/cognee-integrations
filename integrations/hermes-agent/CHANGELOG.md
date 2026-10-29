@@ -10,6 +10,23 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0]
+
+### Changed
+- **cognee is no longer a dependency.** Hermes resolves every plugin into its own shared
+  environment, and cognee 1.6.5's pins conflict with Hermes extras there
+  (`huggingface-hub<1` against `hermes-agent[trace-upload]`, and litellm's `boto3` floor
+  against `hermes-agent[bedrock]` on older Hermes builds), so `hermes plugins enable cognee`
+  was refused for everyone, Cloud users included. Remote mode is plain HTTP and never
+  imported cognee, so it now installs and runs on any Hermes. `pyproject.toml` declares no
+  dependencies and `plugin.yaml` no `pip_dependencies`.
+- **Local and embedded mode need cognee installed separately** (`cognee==1.6.5`, listed in
+  `local-mode-requirements.txt`). Without it, local mode still uses a cognee server already
+  running on the local port (for example one another cognee plugin started); otherwise both
+  modes fail at startup with a message pointing to remote mode, instead of an import error.
+  The provider reports itself available without cognee only when a service URL is set, and
+  `hermes memory setup` defaults to remote mode when cognee is missing.
+
 ## [1.3.3]
 
 ### Added

@@ -1,0 +1,4 @@
+# The cognee release local and embedded mode run. Not a dependency of the
+# plugin (see pyproject.toml); kept equal to LOCAL_COGNEE_REQUIREMENT in
+# cognee_integration_hermes/config.py by tests/test_local_mode_requirement.py.
+cognee==1.6.5
