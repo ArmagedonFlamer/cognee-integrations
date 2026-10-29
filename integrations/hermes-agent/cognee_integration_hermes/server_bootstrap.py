@@ -251,6 +251,24 @@ def default_server_log_path() -> str:
     return str(log_dir / "server.log")
 
 
+class ServerStillStartingError(RuntimeError):
+    """The server we started is alive but not healthy when the caller stopped waiting.
+
+    A first start on an existing store runs migrations before the server answers,
+    which can take minutes. The caller can keep waiting off the hot path with
+    :func:`wait_for_server` (never by calling :func:`ensure_local_server` again,
+    which would start a second server on the same store).
+    """
+
+    def __init__(self, message, *, url, port, proc, log_path, remaining):
+        super().__init__(message)
+        self.url = url
+        self.port = port
+        self.proc = proc
+        self.log_path = log_path
+        self.remaining = remaining
+
+
 def ensure_local_server(
     port,
     *,
@@ -258,6 +276,7 @@ def ensure_local_server(
     system_root="",
     log_path=None,
     boot_timeout=float(DEFAULT_SERVER_BOOT_TIMEOUT),
+    wait=None,
 ):
     """Return the URL of a healthy local cognee server, starting one if needed.
 
@@ -266,6 +285,11 @@ def ensure_local_server(
     for a server that is actually coming up. A dead spawn with nothing listening
     on the port raises immediately: waiting cannot fix a missing dependency or a
     crash, and a 10-minute hang would stall every Hermes session start.
+
+    ``wait`` caps how long this call blocks (default: all of ``boot_timeout``).
+    When it runs out while the server we started is still alive, it raises
+    :class:`ServerStillStartingError` with what :func:`wait_for_server` needs to
+    wait out the rest of ``boot_timeout``.
 
     Raises RuntimeError when the spawn is dead and the port unowned, or when the
     server does not become healthy within boot_timeout.
@@ -292,7 +316,8 @@ def ensure_local_server(
         # real problem (missing uvicorn, permission denied) — log it for diagnostics.
         spawn_error = exc
         logger.warning("cognee server spawn attempt failed (will still poll /health): %s", exc)
-    deadline = time.monotonic() + float(boot_timeout)
+    foreground = float(boot_timeout) if wait is None else min(float(wait), float(boot_timeout))
+    deadline = time.monotonic() + foreground
     while time.monotonic() < deadline:
         if health_ok(url):
             return url
@@ -311,7 +336,35 @@ def ensure_local_server(
                 "See %s for the server output." % (cause, port, log_path)
             )
         time.sleep(1.0)
+    remaining = float(boot_timeout) - foreground
+    if remaining > 0 and proc is not None and proc.poll() is None:
+        raise ServerStillStartingError(
+            "cognee local server at %s is still starting after %ss (a first start on an "
+            "existing store migrates it, which can take minutes). See %s."
+            % (url, int(foreground), log_path),
+            url=url,
+            port=port,
+            proc=proc,
+            log_path=log_path,
+            remaining=remaining,
+        )
     raise RuntimeError(
         "cognee local server did not become healthy at %s within %ss. "
         "See %s for the server output." % (url, boot_timeout, log_path)
     )
+
+
+def wait_for_server(starting: ServerStillStartingError) -> bool:
+    """Keep waiting for a server :func:`ensure_local_server` left starting.
+
+    True once it answers /health; False when it exits with nothing listening, or
+    when the rest of the boot deadline runs out. Never starts another server.
+    """
+    deadline = time.monotonic() + starting.remaining
+    while time.monotonic() < deadline:
+        if health_ok(starting.url):
+            return True
+        if starting.proc.poll() is not None and not port_bound(starting.port):
+            return False
+        time.sleep(2.0)
+    return False
