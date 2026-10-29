@@ -473,8 +473,11 @@ class CogneeMemoryProvider(MemoryProvider):
                 env_values["COGNEE_API_KEY"] = api_key
         else:
             file_values["service_url"] = ""
+            # Local mode drops the remote connection whole: a Cognee Cloud key left
+            # behind would be sent to the local server, which rejects it.
             env_values["COGNEE_BASE_URL"] = ""
             env_values["COGNEE_SERVICE_URL"] = ""  # clear deprecated alias
+            env_values["COGNEE_API_KEY"] = ""
             llm_key = _prompt_secret("LLM API key", keep=bool(current.get("llm_api_key")))
             if llm_key:
                 env_values["LLM_API_KEY"] = llm_key

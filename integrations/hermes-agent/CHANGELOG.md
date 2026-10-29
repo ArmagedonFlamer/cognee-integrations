@@ -43,11 +43,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   starting a second server). A server that fails now reports its own cause (exit code, log
   path) instead of a generic list of port, dependency and `COGNEE_EMBEDDED` suggestions.
 - **Switching from Cloud to local mode no longer leaves every call failing with 401.** Local
-  setup clears `COGNEE_BASE_URL` but not `COGNEE_API_KEY`, and a configured key always won,
-  so the Cognee Cloud key went to the local server. For a local server, a `COGNEE_API_KEY`
-  from the environment is now checked once (`GET /api/v1/datasets`); if the server answers
-  401/403 the plugin says so in the log and uses the local server's own key, as it does with
-  no key set. A key the server accepts, or that cannot be checked, is used as before.
+  setup cleared `COGNEE_BASE_URL` but not `COGNEE_API_KEY`, and a configured key always won,
+  so the Cognee Cloud key went to the local server. Choosing local in `hermes memory setup
+  cognee` now clears both. For setups switched before this release (or a key set by hand), a
+  `COGNEE_API_KEY` from the environment is checked once against a local server
+  (`GET /api/v1/datasets`); if it answers 401/403 the plugin says so in the log and uses the
+  local server's own key, as it does with no key set. A key the server accepts, or that
+  cannot be checked, is used as before.
 
 ## [1.4.0]
 
