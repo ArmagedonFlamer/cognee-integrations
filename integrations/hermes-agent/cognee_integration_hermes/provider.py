@@ -83,6 +83,22 @@ except ImportError:  # pragma: no cover - Hermes without the helper, or outside 
 logger = logging.getLogger(__name__)
 
 _BREAKER_THRESHOLD = 5
+# Cognee first, Hermes' built-in memory as the fallback. Only ever shown while
+# Cognee is usable: when it is not, the provider adds nothing and the agent has
+# only Hermes' memory, which is the fallback working as intended.
+_MEMORY_STEER = (
+    "Cognee is your primary long-term memory. For anything about the user, their "
+    "people, projects or earlier work, answer from the recalled Cognee memory (the "
+    "'## Cognee Memory' block on each prompt) or search it with cognee_recall. Hermes' "
+    "built-in memory notes (MEMORY.md, USER.md) are the fallback, for when Cognee has "
+    "nothing on the question: if they disagree with Cognee, go with Cognee and point out "
+    "the difference. Store durable knowledge with cognee_remember, not the built-in "
+    "memory tool."
+)
+_BLOCK_STEER = (
+    "Recalled from Cognee, your primary memory: answer from this before Hermes' built-in "
+    "memory notes, and if they disagree, go with Cognee and say so."
+)
 # How long session start blocks on a local server that is not answering yet. A
 # fresh store boots in well under a minute; a first start on an existing store
 # can migrate for many minutes, and holding the user's first message that long
@@ -763,11 +779,7 @@ class CogneeMemoryProvider(MemoryProvider):
         # and openclaw's memorySteer: without it the agent reaches for the host's
         # native memory files by habit and the graph never hears about it.
         if str_to_bool(self._config.get("memory_steer"), True):
-            steer = str(self._config.get("memory_steer_text") or "").strip() or (
-                "Cognee is the preferred, authoritative long-term memory. Consult "
-                "recalled Cognee context first, and store durable knowledge through "
-                "the cognee tools rather than Hermes' built-in memory."
-            )
+            steer = str(self._config.get("memory_steer_text") or "").strip() or _MEMORY_STEER
             lines.append(steer)
         return "\n".join(lines)
 
@@ -781,6 +793,11 @@ class CogneeMemoryProvider(MemoryProvider):
             self._prefetch_result = ""
         if not result:
             return ""
+        # The system prompt's steer is far from the answer, and Hermes' own memory
+        # notes sit right beside it; the same rule next to the recalled memory is
+        # what keeps an agent from answering from a stale built-in note.
+        if str_to_bool(self._config.get("memory_steer"), True):
+            return f"## Cognee Memory\n{_BLOCK_STEER}\n{result}"
         return f"## Cognee Memory\n{result}"
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
