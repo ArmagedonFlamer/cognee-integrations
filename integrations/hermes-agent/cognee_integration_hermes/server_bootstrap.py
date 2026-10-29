@@ -133,10 +133,13 @@ def server_workdir():
 
 
 def _warn_no_llm_key(env):
-    """Say once, at boot, that the server will have no LLM key.
+    """Say once, at boot, that the server runs without an LLM key.
 
-    Without it cognify and improve fail later, and only server.log says so. A
-    keyless provider (Ollama) needs none, so it gets no warning.
+    cognee >= 1.6 then builds memory with local models (GLiNER extraction,
+    fastembed embeddings), downloaded on the first build, and recall returns
+    stored text rather than generated answers; worth knowing, and the embedder
+    choice sticks to the store. A keyless provider (Ollama) needs no key, so it
+    gets no message.
     """
     global _warned_no_llm_key
     provider = str(env.get("LLM_PROVIDER") or "").strip().lower()
@@ -144,14 +147,45 @@ def _warn_no_llm_key(env):
         return
     _warned_no_llm_key = True
     logger.warning(
-        "Starting the local cognee server without an LLM key: memory will not be "
-        "built. Run `hermes memory setup cognee` (or set LLM_API_KEY in Hermes' .env); "
-        "keys kept only for the other cognee plugins are not read by this one."
+        "Starting the local cognee server without an LLM key: cognee builds memory with "
+        "local models instead (GLiNER extraction and fastembed embeddings, about 1.5 GB "
+        "downloaded on the first build), and recall returns stored text rather than "
+        "generated answers. For LLM extraction, set an LLM key with `hermes memory setup "
+        "cognee`; keys kept only for the other cognee plugins are not read by this one."
     )
+
+
+def _isolated_env_file():
+    """An empty ``.env`` the server is told to load instead of searching for one.
+
+    cognee >= 1.6.2 loads the first ``.env`` found walking up from its working
+    directory and lets it override the environment. From the plugin's state
+    directory that walk reaches ``~/.cognee-plugin/.env``, the file the *other*
+    cognee plugins keep their keys in, so the server would run on their LLM key
+    and settings instead of the ones Hermes passes in. ``COGNEE_ENV_FILE`` names
+    the one file to load and stops the search; this one is empty on purpose.
+    """
+    path = os.path.join(server_workdir(), "cognee-server.env")
+    try:
+        if not os.path.isfile(path):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "# Left empty on purpose: the Hermes cognee plugin starts its local\n"
+                    "# server with COGNEE_ENV_FILE pointing here, so the server reads its\n"
+                    "# settings from Hermes rather than from a .env found above this folder.\n"
+                )
+    except OSError:
+        return None
+    return path
 
 
 def _spawn(port, data_root, system_root, log_path, python=None):
     env = dict(os.environ)
+    # An explicit COGNEE_ENV_FILE from the user wins; otherwise pin an empty one.
+    if not env.get("COGNEE_ENV_FILE"):
+        isolated = _isolated_env_file()
+        if isolated:
+            env["COGNEE_ENV_FILE"] = isolated
     # The server's API keys come from Hermes (the profile's secret scope), never
     # from a file the plugin reads itself: the plugin-catalog rules forbid that,
     # and under a multi-profile gateway os.environ may hold another profile's.

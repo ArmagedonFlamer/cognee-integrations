@@ -77,9 +77,10 @@ Python package with the `hermes_agent.plugins` entry point.
   [Cognee Cloud dashboard](https://platform.cognee.ai/). Nothing else: no LLM key
   and no cognee package — the tenant runs the models, and the plugin talks to it
   over plain HTTP.
-- **Local mode:** an LLM API key (e.g. OpenAI), which cognee uses to build the
-  knowledge graph on your machine, and about 1 GB of disk for the cognee runtime,
-  which the setup installs for you (step 2b). It lives in a private environment,
+- **Local mode:** about 1 GB of disk for the cognee runtime, which the setup
+  installs for you (step 2b), and optionally an LLM API key (e.g. OpenAI), which
+  cognee uses to build the knowledge graph. Without a key it uses local models
+  instead (about 1.5 GB more, see 2b). It lives in a private environment,
   `~/.cognee-plugin/hermes/runtime/venv`, because Hermes installs every plugin into
   one shared environment, where cognee's dependencies conflict with Hermes's pinned
   ones and would refuse the install for Cloud users too.
@@ -149,7 +150,8 @@ the tenant, authenticated with your API key via `X-Api-Key`.
 
 #### 2b. Local
 
-Type **local** at the mode prompt and paste your LLM API key when asked. If the
+Type **local** at the mode prompt and paste your LLM API key when asked, or leave
+it blank to run without one (below). If the
 cognee runtime is not installed yet, the wizard offers to install it:
 `cognee==1.6.5` and its dependencies, about 1 GB from PyPI, into
 `~/.cognee-plugin/hermes/runtime/venv`. With uv on your PATH that takes under a
@@ -162,6 +164,23 @@ To install, update or remove the runtime on its own:
 hermes cognee install-runtime   # install, or move it to the plugin's pinned cognee
 hermes cognee remove-runtime    # delete it (your data in ~/.cognee is kept)
 ```
+
+**Without an LLM key**, cognee builds memory with local models: the GLiNER
+extractor for the graph and the fastembed `BAAI/bge-small-en-v1.5` embedder. The
+first graph build installs CPU PyTorch and `gliner2` into the runtime (about
+800 MB more) and downloads the GLiNER model (about 750 MB); later builds take
+seconds. Recall then returns the stored text that matches rather than a
+generated answer, and the graphs are simpler than with an LLM. For an LLM on your
+machine instead, set `LLM_PROVIDER=ollama` (see
+[Local models via Ollama](#local-models-via-ollama-embedding-settings)).
+
+> **The embedder sticks to the store.** Keyless mode embeds with fastembed
+> (384 dimensions); adding an LLM key later switches cognee's default embedder
+> to OpenAI, and the existing store then refuses it with
+> `EmbeddingDimensionMismatchError`. To add a key to a keyless store, also set
+> `EMBEDDING_PROVIDER=fastembed` and `EMBEDDING_MODEL=BAAI/bge-small-en-v1.5` in
+> `~/.hermes/.env`, or start a new store (`COGNEE_DATA_ROOT`,
+> `COGNEE_SYSTEM_ROOT`).
 
 At session start the plugin starts a cognee server on `127.0.0.1:8011` from that
 runtime — or attaches to one that a sibling cognee plugin (Claude Code, Codex,
@@ -534,6 +553,43 @@ session id. It takes `query`, an optional `search_type` and `top_k`. The raw
 session-cache scopes (`session`, `trace`) and the `auto` scope are never
 requested: turns and traces are written to the session cache, which `improve()`
 promotes into the graph at session end, but they are not searched as raw entries.
+
+### Memory credit in the answer
+
+On by default, as in the Cursor and Claude Code plugins. When an answer uses
+recalled memory, it ends with the Cognee logo, drawn in braille, and what was
+remembered:
+
+```
+> ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯ Mika likes tennis, based on agent_sessions.\
+> ⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
+```
+
+The two braille rows spell COGNEE; the backslash is a markdown line break that
+keeps them together in a rendered chat. It is the Cursor plugin's line with its
+logo link replaced by braille: Hermes Desktop draws an icon only for the sites in
+its own brand list, which has no cognee.ai, and the terminal shows links as
+text, while braille looks the same everywhere.
+
+How it works:
+
+- Every recalled item the agent is given is tagged `m1`, `m2`… with where it came
+  from: a Claude Code, Codex, Cursor or Hermes session, a dated session learning,
+  a document, graph entities or facts, code-graph facts, or agent guidance. That
+  covers the per-prompt memory block and the results of the agent's own
+  `cognee_recall` calls. Tags are numbered across the conversation, and a memory
+  recalled again keeps its tag.
+- On turns where memory was given, an instruction above it says how many memories
+  Cognee found and asks the agent to add the credit only when the answer used a
+  tagged item, never for what it knows from instruction files, its own memory
+  files, the code or the conversation. The line names the dataset, not the tags.
+  The first credit in a conversation also says in a few words how it connects to
+  the earlier work.
+- When the turn is stored, the credit is noted (logged as `cognee memory_credit`
+  at INFO) and stripped, so it is never stored back into memory as part of the
+  answer.
+
+Turn it off with `COGNEE_PLUGIN_CITE_MEMORY=off` in `~/.hermes/.env`.
 
 ### Capture policy and redaction
 

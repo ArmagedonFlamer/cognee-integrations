@@ -56,6 +56,27 @@ project adheres to [Semantic Versioning](https://semver.org/).
   The plugin description, `after-install.md`, the README and the `hermes cognee install` /
   `cognee-hermes-install` hints now give the same steps: install, run
   `hermes memory setup cognee` in a terminal, start a new chat.
+- **Memory credit in the answer**, as in the Cursor and Claude Code plugins: recalled items
+  (the per-prompt memory block and `cognee_recall` results) are tagged `[mN · where it came
+  from]` with one numbering per conversation, and an instruction asks the agent to end an
+  answer that used them with the Cognee logo in braille (two rows, six dots tall) and what it
+  remembered, `based on <dataset>`. Braille instead of Cursor's logo link: Hermes Desktop
+  draws icons only for the sites in its own brand list, which has no cognee.ai. The credit is
+  noted and stripped before the turn is stored. On by default;
+  `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
+- **Local mode works without an LLM key.** cognee 1.6.5 then builds memory with local
+  models (GLiNER extraction, fastembed embeddings) installed into the runtime and downloaded
+  on the first build (about 1.5 GB); recall returns the matching stored text. The setup's LLM
+  key prompt says a blank answer means local models, the server's no-key message says the
+  same instead of "memory will not be built", and the README explains that the embedder
+  sticks to the store (with how to add a key later).
+- **The local server no longer reads `~/.cognee-plugin/.env`.** cognee >= 1.6.2 loads the
+  first `.env` found walking up from its working directory, with that file overriding the
+  environment; from the plugin's state directory the walk reached `~/.cognee-plugin/.env`,
+  the file the other cognee plugins keep their keys in, so the server ran on their LLM key and
+  settings instead of the ones Hermes passed in. The server now starts with `COGNEE_ENV_FILE`
+  pointing at an empty file of the plugin's own (`~/.cognee-plugin/hermes/cognee-server.env`);
+  a `COGNEE_ENV_FILE` you set yourself still wins.
 - CI installs `local-mode-requirements.txt` (the same pin) for the tests that run against
   cognee, and runs them with `uv run --no-sync` so the install is kept.
 

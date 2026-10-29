@@ -14,8 +14,9 @@ This makes Cognee the memory provider and asks for a mode:
   https://platform.cognee.ai/). Nothing else to install.
 - **local** — the plugin runs a cognee server on your machine (shared with the
   Claude Code / Codex / OpenClaw cognee plugins, if you use them). You'll be
-  asked for an LLM API key, which cognee uses to build the knowledge graph,
-  and offered to install the cognee runtime (`cognee==1.6.5`, about 1 GB from
+  asked for an LLM API key, which cognee uses to build the knowledge graph
+  (leave it blank to use local models instead), and offered to install the
+  cognee runtime (`cognee==1.6.5`, about 1 GB from
   PyPI) into a private environment kept apart from Hermes's own. You can also
   install it later with `hermes cognee install-runtime`.
 
