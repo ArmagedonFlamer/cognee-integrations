@@ -30,6 +30,26 @@ project adheres to [Semantic Versioning](https://semver.org/).
   A cognee installed into Hermes's environment by hand still starts the server, and a server
   another cognee plugin already runs on the port is still used. Embedded mode
   (`COGNEE_EMBEDDED=true`) still needs cognee in Hermes's own environment.
+- **Local mode is available once its runtime is ready, LLM key or not.** It used to report
+  unavailable without `LLM_API_KEY`, which wrongly refused keyless providers (Ollama) and
+  turned Cognee off in a Hermes Desktop or gateway process started before `hermes memory
+  setup` saved the key, with no hint why. The server bootstrap already warns by name when it
+  starts without a key. Setup now also says to restart Desktop or the gateway after saving keys.
+- **A local server that is still starting no longer holds the session for up to 10 minutes.**
+  Session start waits 90 seconds; if the server it started is alive but not answering yet
+  (a first start migrating an existing `~/.cognee`), the session starts anyway, Cognee's tools
+  answer that the server is still starting and where its log is, and the provider connects in
+  the background once `/health` answers (within the same 10-minute boot deadline, never by
+  starting a second server). A server that fails now reports its own cause (exit code, log
+  path) instead of a generic list of port, dependency and `COGNEE_EMBEDDED` suggestions.
+- **Switching from Cloud to local mode no longer leaves every call failing with 401.** Local
+  setup cleared `COGNEE_BASE_URL` but not `COGNEE_API_KEY`, and a configured key always won,
+  so the Cognee Cloud key went to the local server. Choosing local in `hermes memory setup
+  cognee` now clears both. For setups switched before this release (or a key set by hand), a
+  `COGNEE_API_KEY` from the environment is checked once against a local server
+  (`GET /api/v1/datasets`); if it answers 401/403 the plugin says so in the log and uses the
+  local server's own key, as it does with no key set. A key the server accepts, or that
+  cannot be checked, is used as before.
 
 ## [1.4.0]
 

@@ -62,7 +62,10 @@ def test_manifests_declare_no_python_dependencies():
         ({"service_url": "https://tenant.example"}, True, True),
         ({"llm_api_key": "sk"}, False, False),
         ({"llm_api_key": "sk"}, True, True),
-        ({}, True, False),
+        # Ollama needs no key, and a gateway may not have loaded a new one yet;
+        # the server bootstrap warns when it starts without a key.
+        ({}, True, True),
+        ({}, False, False),
     ],
 )
 def test_is_available(config, cognee, expected):
@@ -112,3 +115,39 @@ def test_embedded_mode_without_cognee_says_so():
     with mock.patch("cognee_integration_hermes.backend.has_cognee", return_value=False):
         with pytest.raises(CogneeNotInstalledError, match="embedded mode"):
             backend.configure_local_roots(data_root="/tmp/d", system_root="/tmp/s")
+
+
+def _run_setup(mode, current):
+    answers = {"Mode": mode}
+    saved = {}
+    with (
+        mock.patch.object(provider_mod, "load_config", return_value=current),
+        mock.patch.object(
+            provider_mod,
+            "_prompt",
+            side_effect=lambda label, default="": answers.get(label, default),
+        ),
+        mock.patch.object(provider_mod, "_prompt_secret", return_value=""),
+        mock.patch.object(provider_mod, "_prompt_bool", side_effect=lambda label, default: default),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=True),
+        mock.patch.object(provider_mod, "save_plugin_config"),
+        mock.patch.object(
+            provider_mod, "save_env_vars", side_effect=lambda values, home: saved.update(values)
+        ),
+    ):
+        provider_mod.CogneeMemoryProvider(backend=FakeBackend()).post_setup("/tmp/hh", {})
+    return saved
+
+
+def test_switching_to_local_clears_the_cloud_url_and_key():
+    cloud = {"service_url": "https://tenant.example", "api_key": "cloud-key"}
+    saved = _run_setup("local", cloud)
+    assert saved["COGNEE_BASE_URL"] == ""
+    assert saved["COGNEE_SERVICE_URL"] == ""
+    assert saved["COGNEE_API_KEY"] == ""
+
+
+def test_staying_remote_keeps_the_key():
+    cloud = {"service_url": "https://tenant.example", "api_key": "cloud-key"}
+    saved = _run_setup("remote", cloud)
+    assert "COGNEE_API_KEY" not in saved  # blank answer keeps the current key

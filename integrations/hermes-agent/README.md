@@ -144,7 +144,9 @@ cp -R cognee-integrations/integrations/hermes-agent/. ~/.hermes/plugins/cognee/
 hermes memory setup cognee
 ```
 
-Choose **Mode: local**, and paste your LLM API key when asked. If the cognee
+Choose **Mode: local**, and paste your LLM API key when asked. Hermes Desktop
+and gateway services read `~/.hermes/.env` only when they start, so restart them
+after the setup saves a key. If the cognee
 runtime is not installed yet, the wizard offers to install it: `cognee==1.6.5`
 and its dependencies, about 1 GB from PyPI, into
 `~/.cognee-plugin/hermes/runtime/venv`. With uv on your PATH that takes under a
@@ -166,8 +168,20 @@ Hermes's own environment by hand also still works.
 On your next `hermes` session the plugin starts a cognee server on
 `127.0.0.1:8011` — or attaches to one that a sibling cognee plugin (Claude
 Code, Codex, OpenClaw) already runs — with storage in `~/.cognee`. The very
-first boot runs database migrations and can take a couple of minutes; after
-that it's instant.
+first boot runs database migrations; on a fresh store that takes under a minute,
+and after that it's instant.
+
+> **An existing `~/.cognee` can take much longer the first time.** If another
+> cognee plugin has filled `~/.cognee` with an older cognee version, the first
+> start migrates every stored table to the runtime's format before the server
+> answers, which can take many minutes on a large store (cognee 1.6.5's vector
+> table migration also holds a whole table in memory while it rewrites it). The
+> session does not wait for it: after 90 seconds it starts with Cognee's tools
+> answering "still starting", and Cognee turns on in that session once the
+> server is ready (`~/.cognee-plugin/hermes/server.log` shows progress). Do not
+> stop the server while it migrates. To keep Hermes's local store apart, set
+> `COGNEE_DATA_ROOT` and `COGNEE_SYSTEM_ROOT` to another folder before the first
+> start.
 
 Verify it's connected:
 

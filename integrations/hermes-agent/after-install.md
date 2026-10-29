@@ -22,7 +22,9 @@ This makes Cognee the memory provider and asks for a mode:
 `hermes plugins enable cognee` and the Desktop toggle do not make Cognee the
 memory provider; `hermes memory setup cognee` does.
 
-Start a new `hermes` session afterwards to activate memory, then verify with
+Start a new `hermes` session afterwards to activate memory. Hermes Desktop and
+gateway services read `~/.hermes/.env` when they start, so quit and reopen the
+Desktop app (or restart the service) after the setup saves keys. Then verify with
 `hermes memory status` (Provider: cognee) and `hermes cognee status`.
 
 ## Updates

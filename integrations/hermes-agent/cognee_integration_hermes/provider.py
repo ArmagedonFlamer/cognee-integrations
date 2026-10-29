@@ -53,7 +53,12 @@ from .schemas import (
     REMEMBER_SCHEMA,
     SWITCH_DATASET_SCHEMA,
 )
-from .server_bootstrap import ensure_local_server
+from .server_bootstrap import (
+    ServerStillStartingError,
+    default_server_log_path,
+    ensure_local_server,
+    wait_for_server,
+)
 
 try:
     from agent.memory_provider import MemoryProvider
@@ -65,9 +70,23 @@ except ImportError:  # pragma: no cover - lets package smoke tests run outside H
             raise NotImplementedError
 
 
+try:
+    from agent.memory_provider import spawn_context_thread
+except ImportError:  # pragma: no cover - Hermes without the helper, or outside Hermes.
+
+    def spawn_context_thread(target, *, name, daemon=True, args=(), kwargs=None):
+        return threading.Thread(target=target, args=args, kwargs=kwargs, name=name, daemon=daemon)
+
+
 logger = logging.getLogger(__name__)
 
 _BREAKER_THRESHOLD = 5
+# How long session start blocks on a local server that is not answering yet. A
+# fresh store boots in well under a minute; a first start on an existing store
+# can migrate for many minutes, and holding the user's first message that long
+# shows them only a spinner. Past this, the session starts and the provider
+# finishes connecting in the background (up to the full boot timeout).
+_SESSION_START_WAIT_SECS = 90.0
 _BREAKER_COOLDOWN_SECS = 120
 
 
@@ -279,6 +298,10 @@ class CogneeMemoryProvider(MemoryProvider):
         self._injected_backend = backend
         self._backend: MemoryBackend = backend or default_backend()
         self._initialized = False
+        # Set while a local server that was still starting is waited for in the
+        # background; _start_error holds why that wait gave up.
+        self._starting = False
+        self._start_error = ""
         self._remote_mode = False
         # Set once a detached worker has taken this session's improve-then-
         # unregister; from then on this process must not touch either.
@@ -347,7 +370,11 @@ class CogneeMemoryProvider(MemoryProvider):
         # Remote mode is plain HTTP; only local and embedded mode run cognee here.
         if cfg.get("service_url"):
             return True
-        return runtime_env.local_ready() and bool(cfg.get("llm_api_key"))
+        # No LLM-key check: a keyless provider (Ollama) needs none, and a key
+        # written by `hermes memory setup` after a long-running gateway started
+        # is not in that process yet — "unavailable" would hide both, while the
+        # server bootstrap warns by name when it starts without one.
+        return runtime_env.local_ready()
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
@@ -446,8 +473,11 @@ class CogneeMemoryProvider(MemoryProvider):
                 env_values["COGNEE_API_KEY"] = api_key
         else:
             file_values["service_url"] = ""
+            # Local mode drops the remote connection whole: a Cognee Cloud key left
+            # behind would be sent to the local server, which rejects it.
             env_values["COGNEE_BASE_URL"] = ""
             env_values["COGNEE_SERVICE_URL"] = ""  # clear deprecated alias
+            env_values["COGNEE_API_KEY"] = ""
             llm_key = _prompt_secret("LLM API key", keep=bool(current.get("llm_api_key")))
             if llm_key:
                 env_values["LLM_API_KEY"] = llm_key
@@ -477,7 +507,11 @@ class CogneeMemoryProvider(MemoryProvider):
         print("  Provider config saved to cognee.json")
         if env_values:
             print("  Secrets saved to .env")
-        print("\n  Start a new Hermes session to activate Cognee memory.\n")
+        print("\n  Start a new Hermes session to activate Cognee memory.")
+        if env_values:
+            print("  Hermes Desktop or a gateway service reads .env when it starts:")
+            print("  restart it so it picks up the keys saved here.")
+        print()
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._hermes_home = kwargs.get("hermes_home")
@@ -547,29 +581,31 @@ class CogneeMemoryProvider(MemoryProvider):
                 # so the store is the same no matter which plugin spawned the server
                 # on this port first.
                 data_root, system_root = self._local_roots()
+                boot_timeout = float(
+                    self._config.get("server_boot_timeout", DEFAULT_SERVER_BOOT_TIMEOUT)
+                )
                 local_url = ensure_local_server(
                     int(self._config.get("local_port") or DEFAULT_LOCAL_PORT),
                     data_root=data_root,
                     system_root=system_root,
-                    boot_timeout=float(
-                        self._config.get("server_boot_timeout", DEFAULT_SERVER_BOOT_TIMEOUT)
-                    ),
+                    boot_timeout=boot_timeout,
+                    wait=min(boot_timeout, _SESSION_START_WAIT_SECS),
                 )
                 self._backend.connect(url=local_url, api_key="", timeout=30)
                 self._remote_mode = True
             except CogneeNotInstalledError:
-                # Already says what to do; the generic advice below (check the
-                # port, try COGNEE_EMBEDDED=true) would only mislead.
+                # Already says what to do.
                 raise
+            except ServerStillStartingError as starting:
+                logger.warning("%s Cognee memory turns on once it is ready.", starting)
+                self._remote_mode = True
+                self._starting = True
+                spawn_context_thread(
+                    self._finish_starting, args=(starting,), name="cognee-hermes-server-start"
+                ).start()
+                return
             except Exception as exc:
-                raise RuntimeError(
-                    "cognee local server failed to start, which is required for safe "
-                    "concurrent DB access. Check for a port conflict on "
-                    f"{self._config.get('local_port') or DEFAULT_LOCAL_PORT}, "
-                    "missing dependencies "
-                    "(uvicorn/cognee), or permissions. To run single-process in-process "
-                    "instead (no concurrency safety), set COGNEE_EMBEDDED=true."
-                ) from exc
+                raise RuntimeError(f"cognee local server failed to start: {exc}") from exc
 
         # Identity only matters in embedded mode (a local relational DB exists to
         # hold the user). In server/remote mode the server owns identity via the
@@ -590,6 +626,10 @@ class CogneeMemoryProvider(MemoryProvider):
                     "Cognee identity initialization failed; using backend default user: %s", exc
                 )
 
+        self._complete_initialization()
+
+    def _complete_initialization(self) -> None:
+        """The connected half of initialize(); the background start runs it too."""
         self._ensure_dataset()
         self._arm_exit_watcher()
         self._initialized = True
@@ -601,6 +641,25 @@ class CogneeMemoryProvider(MemoryProvider):
         if self._can_buffer() and self._writes_enabled:
             # Writes an earlier run could not deliver; replayed off the startup path.
             self._replay_in_background()
+
+    def _finish_starting(self, starting: ServerStillStartingError) -> None:
+        """Wait out a local server that was still starting, then connect."""
+        try:
+            if not wait_for_server(starting):
+                self._start_error = (
+                    f"cognee local server at {starting.url} did not become ready. "
+                    f"See {starting.log_path}."
+                )
+                logger.warning("%s", self._start_error)
+                return
+            self._backend.connect(url=starting.url, api_key="", timeout=30)
+            self._complete_initialization()
+            logger.info("cognee local server is ready; Cognee memory is on.")
+        except Exception as exc:
+            self._start_error = f"cognee local server started but connecting failed: {exc}"
+            logger.warning("%s", self._start_error)
+        finally:
+            self._starting = False
 
     def _ensure_dataset(self) -> None:
         """Create-or-return the dataset up front, like the other plugins do.
@@ -661,15 +720,22 @@ class CogneeMemoryProvider(MemoryProvider):
         return self._initialized
 
     def _unavailable_envelope(self) -> str:
-        return json.dumps(
-            {
-                "error": (
-                    "Cognee memory is unavailable: initialization did not complete. "
-                    "Check the Hermes logs for the cause and `hermes cognee status` "
-                    "for the current configuration."
-                )
-            }
-        )
+        if self._starting:
+            message = (
+                "Cognee memory is not ready yet: the local cognee server is still starting "
+                "(a first start on an existing store migrates it, which can take several "
+                "minutes). It turns on in this session once the server is ready; see "
+                f"{default_server_log_path()} for progress."
+            )
+        elif self._start_error:
+            message = f"Cognee memory is unavailable: {self._start_error}"
+        else:
+            message = (
+                "Cognee memory is unavailable: initialization did not complete. "
+                "Check the Hermes logs for the cause and `hermes cognee status` "
+                "for the current configuration."
+            )
+        return json.dumps({"error": message})
 
     def system_prompt_block(self) -> str:
         # Never advertise memory the model cannot actually use.
