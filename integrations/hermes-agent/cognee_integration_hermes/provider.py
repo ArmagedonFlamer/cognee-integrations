@@ -446,11 +446,11 @@ class CogneeMemoryProvider(MemoryProvider):
             print("  PyPI). Remote mode needs nothing installed.")
 
         current = load_config(hermes_home)
-        # Remote is the default. Re-running setup on an install that already chose
-        # local keeps local as the default, so changing another setting does not
-        # flip the mode.
-        default_mode = "local" if _chose_local(hermes_home) and local_ready else "remote"
-        mode = _prompt("Mode", default=default_mode).strip().lower()
+        if _chose_local(hermes_home):
+            print("  Current mode: local (type `local` to keep it)")
+        elif current.get("service_url"):
+            print("  Current mode: remote")
+        mode = _prompt("Mode", default="remote").strip().lower()
         remote = mode in {"remote", "cloud", "service"}
 
         env_values: dict[str, str] = {}
