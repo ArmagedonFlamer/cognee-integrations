@@ -184,9 +184,13 @@ def _default_mode(tmp_path, saved_config, runtime_ready):
         (None, False, "remote"),  # first setup
         (None, True, "remote"),  # first setup, runtime already there
         ({"service_url": "https://tenant.example"}, True, "remote"),  # was remote
-        ({"service_url": ""}, True, "local"),  # was local: re-running keeps it
-        ({"service_url": ""}, False, "remote"),  # was local, runtime gone
+        ({"service_url": ""}, True, "remote"),  # was local: still offers remote
     ],
 )
 def test_setup_defaults_to_remote(tmp_path, saved_config, runtime_ready, expected):
     assert _default_mode(tmp_path, saved_config, runtime_ready) == expected
+
+
+def test_a_local_install_is_told_its_current_mode(tmp_path, capsys):
+    _default_mode(tmp_path, {"service_url": ""}, True)
+    assert "Current mode: local" in capsys.readouterr().out
