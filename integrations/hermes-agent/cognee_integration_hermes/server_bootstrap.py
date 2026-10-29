@@ -22,6 +22,7 @@ import time
 import urllib.error
 import urllib.request
 
+from .backend import CogneeNotInstalledError, cognee_not_installed_message, has_cognee
 from .config import (
     DEFAULT_SERVER_BOOT_TIMEOUT,
     DEFAULT_USER_EMAIL,
@@ -271,6 +272,11 @@ def ensure_local_server(
     url = "http://127.0.0.1:%d" % int(port)
     if health_ok(url):
         return url
+    # A server another cognee plugin started is used above without cognee here;
+    # spawning one runs `python -m uvicorn cognee.api.client:app` in this
+    # interpreter, so without the package it can only fail.
+    if not has_cognee():
+        raise CogneeNotInstalledError(cognee_not_installed_message("local"))
     if log_path is None:
         log_path = default_server_log_path()
     proc = None

@@ -14,6 +14,8 @@ Then select `cognee` and pick a mode:
 - **local** — the plugin runs a cognee server on your machine (shared with the
   Claude Code / Codex / OpenClaw cognee plugins, if you use them). You'll be
   asked for an LLM API key, which cognee uses to build the knowledge graph.
+  This needs the `cognee` package (`cognee==1.6.5`), which the plugin does not
+  install because its dependencies conflict with Hermes's own.
 - **remote** — connect to Cognee Cloud or a self-hosted server. You'll be asked
   for the service URL and an API key (for Cognee Cloud, both come from
   https://platform.cognee.ai/).

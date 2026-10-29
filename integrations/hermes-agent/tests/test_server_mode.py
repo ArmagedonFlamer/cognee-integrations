@@ -68,6 +68,13 @@ def _dead_child(returncode=3):
 
 
 class TestEnsureLocalServer(unittest.TestCase):
+    def setUp(self):
+        # _spawn is faked throughout, so the package itself is never needed; the
+        # missing-package path is covered in test_local_mode_requirement.py.
+        patcher = mock.patch.object(sb, "has_cognee", return_value=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_already_healthy_does_not_spawn(self):
         with (
             mock.patch.object(sb, "health_ok", return_value=True),

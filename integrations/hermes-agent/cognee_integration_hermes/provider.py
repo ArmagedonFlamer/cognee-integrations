@@ -21,7 +21,13 @@ from . import (
     recap,
     write_buffer,
 )
-from .backend import MemoryBackend, build_backend, default_backend, has_cognee
+from .backend import (
+    CogneeNotInstalledError,
+    MemoryBackend,
+    build_backend,
+    default_backend,
+    has_cognee,
+)
 from .config import (
     DEFAULT_DATASET,
     DEFAULT_IDENTITY_EMAIL,
@@ -336,10 +342,11 @@ class CogneeMemoryProvider(MemoryProvider):
     def is_available(self) -> bool:
         # Must stay network-free: Hermes calls this for every provider during
         # discovery, before anything is started.
-        if not has_cognee():
-            return False
         cfg = load_config()
-        return bool(cfg.get("service_url") or cfg.get("llm_api_key"))
+        # Remote mode is plain HTTP; only local and embedded mode run cognee here.
+        if cfg.get("service_url"):
+            return True
+        return has_cognee() and bool(cfg.get("llm_api_key"))
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
@@ -401,11 +408,15 @@ class CogneeMemoryProvider(MemoryProvider):
         print("\nCognee memory setup")
         print("-" * 40)
         print("  Deployment:")
-        print("    local  - embedded Cognee in the Hermes process")
+        print("    local  - a cognee server on this machine")
         print("    remote - Cognee service or Cognee Cloud")
+        local_ready = has_cognee()
+        if not local_ready:
+            print("  Local mode needs the cognee package, which is not installed;")
+            print("  remote mode works without it.")
 
         current = load_config(hermes_home)
-        default_mode = "remote" if current.get("service_url") else "local"
+        default_mode = "remote" if current.get("service_url") or not local_ready else "local"
         mode = _prompt("Mode", default=default_mode).strip().lower()
         remote = mode in {"remote", "cloud", "service"}
 
@@ -542,6 +553,10 @@ class CogneeMemoryProvider(MemoryProvider):
                 )
                 self._backend.connect(url=local_url, api_key="", timeout=30)
                 self._remote_mode = True
+            except CogneeNotInstalledError:
+                # Already says what to do; the generic advice below (check the
+                # port, try COGNEE_EMBEDDED=true) would only mislead.
+                raise
             except Exception as exc:
                 raise RuntimeError(
                     "cognee local server failed to start, which is required for safe "
