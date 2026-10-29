@@ -36,6 +36,7 @@ from .config import (
     DEFAULT_SERVER_BOOT_TIMEOUT,
     LOCAL_COGNEE_REQUIREMENT,
     SHARED_PLUGIN_STATE_DIR,
+    config_path,
     load_config,
     resolve_hermes_home,
     resolve_local_roots,
@@ -436,8 +437,8 @@ class CogneeMemoryProvider(MemoryProvider):
         print("\nCognee memory setup")
         print("-" * 40)
         print("  Deployment:")
+        print("    remote - Cognee Cloud or another cognee server (default)")
         print("    local  - a cognee server on this machine")
-        print("    remote - Cognee service or Cognee Cloud")
         local_ready = runtime_env.local_ready()
         if not local_ready:
             print("  Local mode needs a cognee runtime, which is not installed yet: picking")
@@ -445,7 +446,10 @@ class CogneeMemoryProvider(MemoryProvider):
             print("  PyPI). Remote mode needs nothing installed.")
 
         current = load_config(hermes_home)
-        default_mode = "remote" if current.get("service_url") or not local_ready else "local"
+        # Remote is the default. Re-running setup on an install that already chose
+        # local keeps local as the default, so changing another setting does not
+        # flip the mode.
+        default_mode = "local" if _chose_local(hermes_home) and local_ready else "remote"
         mode = _prompt("Mode", default=default_mode).strip().lower()
         remote = mode in {"remote", "cloud", "service"}
 
@@ -2391,6 +2395,16 @@ def _prompt(label: str, default: str | None = None) -> str:
     except (EOFError, KeyboardInterrupt):
         value = ""
     return value or (default or "")
+
+
+def _chose_local(hermes_home: str) -> bool:
+    """True when an earlier setup saved local mode (an explicit empty service_url)."""
+    path = config_path(hermes_home)
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8")) if path else {}
+    except (OSError, ValueError):
+        return False
+    return isinstance(saved, dict) and saved.get("service_url") == ""
 
 
 def _offer_runtime_install() -> None:

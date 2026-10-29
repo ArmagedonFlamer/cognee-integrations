@@ -138,13 +138,32 @@ mkdir -p ~/.hermes/plugins/cognee
 cp -R cognee-integrations/integrations/hermes-agent/. ~/.hermes/plugins/cognee/
 ```
 
-### 2a. Connect locally
+### 2a. Connect to Cognee Cloud (default)
+
+Grab your tenant URL (`https://tenant-xxx.aws.cognee.ai`) and an API key from
+the [Cognee Cloud dashboard](https://platform.cognee.ai/), then run the setup and
+accept the default **Mode: remote**:
+
+```bash
+hermes memory setup cognee     # Mode: remote -> tenant URL + API key
+```
+
+Start a new `hermes` session. Verify: `hermes memory status` shows
+`Provider: cognee` and `hermes cognee status` shows your tenant URL. Then, in a
+`hermes` chat: *"Remember that my favorite editor is Helix"* — the agent should
+call `cognee_remember`. Start a fresh conversation (`/new`) and ask *"What's my
+favorite editor?"* — it should recall it via `cognee_recall`. Nothing runs locally in this
+mode — no server is spawned and no LLM key is used; every request goes to the
+tenant, authenticated with your API key via `X-Api-Key`.
+
+### 2b. Connect locally
 
 ```bash
 hermes memory setup cognee
 ```
 
-Choose **Mode: local**, and paste your LLM API key when asked. Hermes Desktop
+Choose **Mode: local** (setup defaults to remote), and paste your LLM API key
+when asked. Hermes Desktop
 and gateway services read `~/.hermes/.env` only when they start, so restart them
 after the setup saves a key. If the cognee
 runtime is not installed yet, the wizard offers to install it: `cognee==1.6.5`
@@ -190,25 +209,7 @@ hermes cognee status                    # shows mode, dataset, service URL
 curl -s http://127.0.0.1:8011/health    # the server answers
 ```
 
-Then, in a `hermes` chat: *"Remember that my favorite editor is Helix"* — the
-agent should call `cognee_remember`. Start a fresh conversation (`/new`) and
-ask *"What's my favorite editor?"* — it should recall it via `cognee_recall`.
-
-### 2b. Connect to Cognee Cloud
-
-Grab your tenant URL (`https://tenant-xxx.aws.cognee.ai`) and an API key from
-the [Cognee Cloud dashboard](https://platform.cognee.ai/), then run the same
-wizard and choose **Mode: remote**:
-
-```bash
-hermes memory setup cognee     # Mode: remote -> tenant URL + API key
-```
-
-Start a new `hermes` session. Verify: `hermes memory status` shows
-`Provider: cognee`, `hermes cognee status` shows your tenant URL, and the same
-remember-`/new`-recall chat round trip works. Nothing runs locally in this
-mode — no server is spawned and no LLM key is used; every request goes to the
-tenant, authenticated with your API key via `X-Api-Key`.
+Then try the same remember-`/new`-recall round trip as in 2a.
 
 > **Switching modes? Re-run the wizard.** Values in `~/.hermes/cognee.json`
 > take precedence over environment variables, and a local setup records
@@ -255,11 +256,11 @@ automatically from your config:
 
 | Mode | When it's used | How it talks to cognee |
 | --- | --- | --- |
-| **local-server** (default) | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
-| **remote** | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
+| **remote** (setup's default) | `COGNEE_BASE_URL` is set | thin client to your managed / cloud cognee |
+| **local-server** | no `COGNEE_BASE_URL`, `COGNEE_EMBEDDED` unset | ensures a local cognee server is running and connects as a thin client |
 | **embedded** | `COGNEE_EMBEDDED=true` | runs cognee in-process |
 
-**Why local-server is the default.** cognee's local stores (SQLite, Kuzu/Ladybug,
+**Why local mode runs a server.** cognee's local stores (SQLite, Kuzu/Ladybug,
 LanceDB) are single-writer. Driving them in-process from the agent's background
 threads — or from a second Hermes process sharing the same `data_root` — risks
 `database is locked` errors and corruption. A local cognee server is the single
