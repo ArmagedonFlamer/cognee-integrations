@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .backend import CogneeNotInstalledError, cognee_not_installed_message, has_cognee
+from .backend import CogneeNotInstalledError, cognee_not_installed_message
 from .config import (
     DEFAULT_SERVER_BOOT_TIMEOUT,
     DEFAULT_USER_EMAIL,
@@ -32,6 +32,7 @@ from .config import (
     ollama_embedding_pins,
     secret,
 )
+from .runtime_env import server_python
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +150,7 @@ def _warn_no_llm_key(env):
     )
 
 
-def _spawn(port, data_root, system_root, log_path):
+def _spawn(port, data_root, system_root, log_path, python=None):
     env = dict(os.environ)
     # The server's API keys come from Hermes (the profile's secret scope), never
     # from a file the plugin reads itself: the plugin-catalog rules forbid that,
@@ -213,7 +214,7 @@ def _spawn(port, data_root, system_root, log_path):
     try:
         return subprocess.Popen(
             [
-                sys.executable,
+                python or sys.executable,
                 "-m",
                 "uvicorn",
                 "cognee.api.client:app",
@@ -273,16 +274,18 @@ def ensure_local_server(
     if health_ok(url):
         return url
     # A server another cognee plugin started is used above without cognee here;
-    # spawning one runs `python -m uvicorn cognee.api.client:app` in this
-    # interpreter, so without the package it can only fail.
-    if not has_cognee():
+    # spawning one runs `python -m uvicorn cognee.api.client:app`, which needs an
+    # interpreter that has cognee: the plugin's runtime venv (runtime_env), or
+    # Hermes's own when cognee was installed into it by hand.
+    python = server_python()
+    if python is None:
         raise CogneeNotInstalledError(cognee_not_installed_message("local"))
     if log_path is None:
         log_path = default_server_log_path()
     proc = None
     spawn_error = None
     try:
-        proc = _spawn(port, data_root, system_root, log_path)
+        proc = _spawn(port, data_root, system_root, log_path, python=python)
     except Exception as exc:
         # A spawn failure may just be a port-bind race with another starter, in
         # which case health polling below will still succeed. But it may also be a

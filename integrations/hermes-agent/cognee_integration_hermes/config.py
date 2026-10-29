@@ -43,7 +43,8 @@ DEFAULT_USER_PASSWORD = "default_password"
 # environment, where cognee's pins (huggingface-hub<1, litellm's boto3 floor)
 # conflict with Hermes extras and refuse the whole install — including for
 # Cloud users, who never import cognee. Remote mode is plain HTTP; local mode
-# needs this installed, or a cognee server already running on the local port.
+# runs its server from a private venv holding this (runtime_env.py), and
+# embedded mode needs it installed into Hermes's environment by hand.
 # local-mode-requirements.txt carries the same pin (a test keeps them equal).
 # 1.5.4 is the floor (code-graph indexing moved its repo-spec form field to
 # raw_data there); 1.6.0 is what the plugin is written against: the password-less

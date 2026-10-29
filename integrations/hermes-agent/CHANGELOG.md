@@ -10,6 +10,27 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0]
+
+### Added
+- **Local mode runs from a private cognee runtime.** The plugin installs `cognee==1.6.5`
+  into a venv of its own, `~/.cognee-plugin/hermes/runtime/venv`, and starts the local
+  server from it, so local mode works again without putting cognee into Hermes's
+  environment, where its dependencies conflict with Hermes's. The venv is built from the
+  interpreter running Hermes, with uv when it is on PATH (never downloading an interpreter)
+  or stdlib `venv` + pip otherwise; about 1 GB from PyPI. One runtime serves every Hermes
+  profile, as the server does.
+- **It is installed only on request:** `hermes memory setup cognee` offers it when you choose
+  local mode, and `hermes cognee install-runtime` installs it, or moves it to the plugin's
+  pinned cognee after an update; `hermes cognee remove-runtime` deletes it. Nothing is
+  downloaded when a session starts. `hermes cognee status` shows a "Local runtime" line.
+
+### Changed
+- Without the runtime, local mode's startup error now names `hermes cognee install-runtime`.
+  A cognee installed into Hermes's environment by hand still starts the server, and a server
+  another cognee plugin already runs on the port is still used. Embedded mode
+  (`COGNEE_EMBEDDED=true`) still needs cognee in Hermes's own environment.
+
 ## [1.4.0]
 
 ### Changed
