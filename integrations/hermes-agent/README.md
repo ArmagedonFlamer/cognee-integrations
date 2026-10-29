@@ -557,11 +557,19 @@ promotes into the graph at session end, but they are not searched as raw entries
 ### Memory credit in the answer
 
 On by default, as in the Cursor and Claude Code plugins. When an answer uses
-recalled memory, the agent says so in one line at the end:
+recalled memory, it ends with the Cognee logo, drawn in braille, and what was
+remembered:
 
 ```
-> 🧠 Cognee memory [m2]: on Oct 3 (Codex session) you chose the server over the CLI.
+> ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯ Mika likes tennis, based on agent_sessions.\
+> ⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
 ```
+
+The two braille rows spell COGNEE; the backslash is a markdown line break that
+keeps them together in a rendered chat. It is the Cursor plugin's line with its
+logo link replaced by braille: Hermes Desktop draws an icon only for the sites in
+its own brand list, which has no cognee.ai, and the terminal shows links as
+text, while braille looks the same everywhere.
 
 How it works:
 
@@ -572,13 +580,14 @@ How it works:
   `cognee_recall` calls. Tags are numbered across the conversation, and a memory
   recalled again keeps its tag.
 - On turns where memory was given, an instruction above it says how many memories
-  Cognee found and asks the agent to add the credit line only when the answer used
-  a tagged item, never for what it knows from instruction files, its own memory
-  files, the code or the conversation. The first credit in a conversation also
-  says in a few words how it connects to the earlier work.
-- When the turn is stored, the credit line is checked against the tags handed
-  out (cited, valid, invented, earlier; logged as `cognee memory_credit` at INFO)
-  and stripped, so it is never stored back into memory as part of the answer.
+  Cognee found and asks the agent to add the credit only when the answer used a
+  tagged item, never for what it knows from instruction files, its own memory
+  files, the code or the conversation. The line names the dataset, not the tags.
+  The first credit in a conversation also says in a few words how it connects to
+  the earlier work.
+- When the turn is stored, the credit is noted (logged as `cognee memory_credit`
+  at INFO) and stripped, so it is never stored back into memory as part of the
+  answer.
 
 Turn it off with `COGNEE_PLUGIN_CITE_MEMORY=off` in `~/.hermes/.env`.
 

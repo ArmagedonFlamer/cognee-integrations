@@ -1,9 +1,9 @@
 """Crediting Cognee memory in the answer (memory_credit), as the Cursor and Codex plugins do.
 
 Recalled items are tagged ``[mN · origin]`` with one numbering per conversation,
-an instruction asks the agent to end an answer that used them with a
-``🧠 Cognee memory [mN]: …`` line, and that line is checked and stripped before
-the turn is stored.
+an instruction asks the agent to end an answer that used them with the Cognee
+logo in braille and what it remembered, and that credit is noted and stripped
+before the turn is stored.
 """
 
 import json
@@ -65,6 +65,7 @@ def test_check_separates_valid_invented_and_earlier_tags():
     tags.label("recall", "x", "second")
     result = tags.check("Done.\n> 🧠 Cognee memory [m2, m1, m9]: you said so.")
     assert result == {
+        "credited": True,
         "cited": ["m2", "m1", "m9"],
         "valid": ["m2", "m1"],
         "invented": ["m9"],
@@ -82,7 +83,40 @@ def test_code_that_looks_like_a_tag_is_not_a_citation():
     assert tags.credited is False
 
 
-def test_the_credit_line_is_stripped_and_the_answer_kept():
+LOGO_CREDIT = (
+    "Mika likes tennis.\n\n"
+    f"> {memory_credit.LOGOTYPE[0]} Mika likes tennis, based on agent_sessions.\\\n"
+    f"> {memory_credit.LOGOTYPE[1]}"
+)
+
+
+def test_the_instruction_shows_both_logo_rows_and_the_source():
+    text = memory_credit.credit_instruction(False, 1, "agent_sessions")
+    first_row = f"> {memory_credit.LOGOTYPE[0]} <what you remembered>, based on agent_sessions."
+    assert first_row + "\\\n" in text
+    assert f"> {memory_credit.LOGOTYPE[1]}" in text
+    assert 'do not write the tags or the words "Cognee memory"' in text
+
+
+def test_the_logo_line_counts_as_a_credit():
+    tags = memory_credit.MemoryTags()
+    tags.begin_turn()
+    tags.label("recall", "x", "Mika likes tennis.")
+    assert memory_credit.has_credit(LOGO_CREDIT)
+    assert tags.check(LOGO_CREDIT)["credited"] is True
+    assert tags.credited is True
+
+
+def test_braille_without_text_or_quote_is_not_a_credit():
+    assert not memory_credit.has_credit(f"> {memory_credit.LOGOTYPE[0]}")
+    assert not memory_credit.has_credit(f"see {memory_credit.LOGOTYPE[0]} here")
+
+
+def test_both_logo_rows_are_stripped_and_the_answer_kept():
+    assert memory_credit.strip_credit_lines(LOGO_CREDIT) == "Mika likes tennis."
+
+
+def test_older_credit_lines_are_stripped_too():
     answer = "Mika likes tennis.\n\n> 🧠 Cognee memory [m3]: from a Codex session."
     assert memory_credit.strip_credit_lines(answer) == "Mika likes tennis."
     assert memory_credit.strip_credit_lines("x = arr[m1]") == "x = arr[m1]"
@@ -126,20 +160,17 @@ def test_recall_tool_results_are_tagged(cite_on):
         provider = make_provider()
         out = json.loads(provider.handle_tool_call("cognee_recall", {"query": "mika"}))
     assert out["results"][0]["tag"] == "[m1 · Cognee recall]"
-    assert "Cognee memory [mN]" in out["credit"]
+    assert memory_credit.LOGOTYPE[0] in out["credit"] and memory_credit.LOGOTYPE[1] in out["credit"]
 
 
 def test_the_stored_answer_has_no_credit_line(cite_on):
     with fake_backend() as fake:
         provider = make_provider()
-        provider.sync_turn(
-            "what does mika like?",
-            "Mika likes tennis.\n\n> 🧠 Cognee memory [m1]: from a Codex session.",
-        )
+        provider.sync_turn("what does mika like?", LOGO_CREDIT)
         assert fake.wait("remember_session")
         stored = json.dumps(
             [fake.kwargs_for(name) for name in ("remember_session", "remember_entry")],
             ensure_ascii=False,
         )
     assert "Mika likes tennis." in stored
-    assert "Cognee memory [m1]" not in stored
+    assert memory_credit.LOGOTYPE[0] not in stored and memory_credit.LOGOTYPE[1] not in stored
