@@ -45,16 +45,17 @@ ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 #: "COGNEE" six dots tall as two braille rows: the logo the plugin draws in the
 #: terminal UI (an earlier version asked agents to copy it, which they did badly).
 LOGOTYPE = ("⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯", "⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓")
-#: Platforms whose chat shows each line of an answer as written (no KaTeX): there
-#: the credit line becomes the braille logo, the sentence beside its first row and
-#: the second row on the line below. ``tui`` is ``hermes --tui`` (and Desktop's
-#: embedded terminal pane).
-BRAILLE_PLATFORMS = frozenset({"tui"})
-#: The classic terminal chat (``hermes``). It gets the braille logo too, but it
-#: streams answers by default, and Hermes prints a *replaced* answer a second time
-#: after a stream (only an appended suffix is shown cleanly). So with streaming on
-#: the logo is appended below the streamed credit line; with it off, the line is
-#: replaced as in the TUI.
+#: Terminal chats, which show each line of an answer as written (no KaTeX): there
+#: the credit gets the braille logo. ``tui`` is ``hermes --tui`` (and Desktop's
+#: embedded terminal pane), ``cli`` the classic ``hermes`` chat.
+BRAILLE_PLATFORMS = frozenset({"tui", "cli"})
+#: Both stream the answer before the hook runs, and neither shows a *replaced*
+#: answer cleanly: the classic CLI prints it a second time, and the TUI keeps the
+#: streamed text and adds the new answer under it (it dedupes only a final that
+#: starts with what was streamed). So the logo is appended below the streamed
+#: credit line. The TUI always streams; the classic CLI only with
+#: ``display.streaming`` on (the default), and with it off the line is replaced by
+#: the logo with the sentence beside it.
 CLI_PLATFORM = "cli"
 #: The Cognee logo's purple (the brand's pixel-logo artwork).
 LOGO_COLOR = "#BC9BFF"
@@ -200,11 +201,11 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
     """The answer with its ``> Cognee:`` line drawn for ``platform``, or None to leave it.
 
     The ``transform_llm_output`` hook's work. In Hermes Desktop the line becomes the
-    Cognee pixel logo, half an em of space and the sentence; in the terminal UI, the
-    braille logo with the sentence beside its first row. The quote marker goes either
-    way: Desktop draws a blockquote with a quotation mark, the TUI with a bar. The
-    classic CLI gets the same braille form, or, while it streams, the logo appended
-    below the streamed line (see ``CLI_PLATFORM``). Messaging apps are left as written.
+    Cognee pixel logo, half an em of space and the sentence (no quote marker: Desktop
+    draws a blockquote with a quotation mark). In the terminal UI and the streaming
+    classic CLI the braille logo is appended below the streamed line; the
+    non-streaming classic CLI gets the logo with the sentence beside its first row
+    (see ``CLI_PLATFORM``). Messaging apps are left as written.
     """
     if not credit_enabled() or not response_text:
         return None
@@ -212,13 +213,14 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
     if platform in COLOR_PLATFORMS and _PLAIN_CREDIT_RE.search(response_text):
         drawn = WORDMARK[:-1] + LOGO_SPACE + "$"
         return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{drawn} ", response_text)
-    if platform not in BRAILLE_PLATFORMS and platform != CLI_PLATFORM:
+    if platform not in BRAILLE_PLATFORMS:
         return None
     if not _PLAIN_CREDIT_LINE_RE.search(response_text):
         return None
-    if platform == CLI_PLATFORM and _cli_streams():
-        # Append-only: the streamed text stays, the logo goes underneath it.
-        return f"{response_text.rstrip()}\n{LOGOTYPE[0]}\n{LOGOTYPE[1]}"
+    if platform != CLI_PLATFORM or _cli_streams():
+        # Append-only: the streamed text stays, the logo goes underneath it, after a
+        # blank line so it is not drawn inside the quote.
+        return f"{response_text.rstrip()}\n\n{LOGOTYPE[0]}\n{LOGOTYPE[1]}"
     # Two trailing spaces: a markdown hard break, so a renderer that joins the lines
     # of a paragraph (the classic CLI's ``final_response_markdown: render``) keeps
     # the rows stacked; invisible where lines are shown as written.

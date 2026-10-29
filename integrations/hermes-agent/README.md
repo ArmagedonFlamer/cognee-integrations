@@ -576,19 +576,24 @@ logo's five-row grid, about a capital letter tall, followed by half an em of spa
 quotation mark). The logo is always exact
 because the agent only writes the plain line. The rewritten answer is what
 Hermes stores, so each credited answer carries about 800 characters of LaTeX in
-the chat history. In the terminal UI (`hermes --tui`) it becomes the
-Cognee logo in braille, the sentence beside its first row:
+the chat history.
+
+In the terminal chats, the terminal UI (`hermes --tui`) and the classic chat
+(`hermes`), the answer streams to the screen before the hook runs, so the
+`> Cognee: …` line stays and the Cognee logo in braille is printed under it:
 
 ```
-⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯  Mika likes Yuji and volleyball, based on dataset agent_sessions.
+> Cognee: Mika likes Yuji and volleyball, based on dataset agent_sessions.
+
+⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯
 ⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
 ```
 
-The classic terminal chat (`hermes`) gets the braille logo too. With streaming on
-(Hermes' default `display.streaming: true`) the streamed `> Cognee: …` line stays
-and the logo is printed under it: Hermes prints a replaced answer a second time
-after a stream, but an appended suffix only once. With streaming off, the line is
-replaced as in the terminal UI. Messaging apps show the plain line for now.
+Rewriting the line instead would show the answer twice: the classic chat prints a
+replaced answer again, and the terminal UI keeps the streamed text and adds the new
+answer under it. With streaming off in the classic chat
+(`hermes config set display.streaming false`), the line is replaced by the logo with
+the sentence beside its first row. Messaging apps show the plain line for now.
 
 How it works:
 
