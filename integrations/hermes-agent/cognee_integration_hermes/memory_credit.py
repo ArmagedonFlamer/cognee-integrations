@@ -106,9 +106,9 @@ def pixel_logo(word: str = "COGNEE", square: float = LOGO_SQUARE_EM) -> str:
 
 
 WORDMARK = pixel_logo()
-#: Space between the logo and the sentence after it: one em, drawn by KaTeX (plain
-#: spaces collapse in markdown).
-LOGO_SPACE = "\\quad"
+#: Space between the logo and the sentence after it: half an em, about two spaces,
+#: drawn by KaTeX (plain spaces collapse in markdown).
+LOGO_SPACE = "\\enspace"
 
 FIRST_CREDIT_ADDENDUM = (
     "This would be the first Cognee credit in this session, so in that line also say in a "
@@ -117,10 +117,14 @@ FIRST_CREDIT_ADDENDUM = (
 
 
 def _credit_rule(source: str) -> str:
+    # The dataset is named as "dataset <name>": a bare name such as "agent_sessions"
+    # reads as a person or a document ("agent_sessions says…").
+    where = f"dataset {source}" if source else "Cognee memory"
     return (
         'end the answer with one line that starts with "> Cognee:" and says, in your own '
-        f"words, what you remembered and that it is based on {source}. For example:\n"
-        f"> Cognee: you prefer the server over the CLI, based on {source}.\n"
+        f'words, what you remembered and that it is based on {where}. Write "{where}" '
+        f"exactly so. For example:\n"
+        f"> Cognee: you prefer the server over the CLI, based on {where}.\n"
         "Do not copy the example, and do not write the tags in that line."
     )
 
@@ -131,7 +135,7 @@ def credit_instruction(first_in_session: bool, found: int, source: str = "") -> 
         f"Crediting Cognee memory: Cognee found {noun} for this prompt, each tagged below "
         "as [mN · where it came from]. A memory recalled again in this session keeps its "
         "tag. If your answer uses information from a tagged item, "
-        f"{_credit_rule(source or 'Cognee memory')} Credit only items Cognee tagged, and "
+        f"{_credit_rule(source)} Credit only items Cognee tagged, and "
         "only items your answer actually used. Never credit Cognee for what you know from "
         "project instruction files, your own memory files, the code, or this conversation. "
         "If no tagged item was used, do not mention memory."
@@ -143,7 +147,7 @@ def tool_credit_instruction(source: str = "") -> str:
     """The same instruction for results of the agent's own ``cognee_recall`` call."""
     return (
         "Each result is tagged [mN · where it came from]. If your answer uses one, "
-        f"{_credit_rule(source or 'Cognee memory')} Credit only results your answer "
+        f"{_credit_rule(source)} Credit only results your answer "
         "actually used."
     )
 
@@ -159,7 +163,7 @@ _KATEX_CLOSE = r"(?:\}\}\$)?"
 _DRAWN = (
     r"(?:\$\\color\{[^}\n]*\}\{\\textbf\{COGNEE\}\}\$"
     r"|\$\\color\{[^}\n]*\}\{(?:\\rule\[[^\]\n]*\]\{[^}\n]*\}\{[^}\n]*\}|\\kern-?[\d.]+em)+\}"
-    r"(?:\\quad|\\qquad)?\$)"
+    r"(?:\\enspace|\\quad|\\qquad)?\$)"
 )
 _LEAD = (
     rf"(?:>[ \t]*(?:Cognee:|{_DRAWN}|{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE})"
@@ -182,7 +186,7 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
     """The answer with its ``> Cognee:`` line drawn for ``platform``, or None to leave it.
 
     The ``transform_llm_output`` hook's work: in Hermes Desktop the line becomes the
-    Cognee pixel logo, an em of space and the sentence. The quote marker goes, since
+    Cognee pixel logo, half an em of space and the sentence. The quote marker goes, since
     Desktop draws a blockquote with a quotation mark. Other platforms are left as
     written for now.
     """

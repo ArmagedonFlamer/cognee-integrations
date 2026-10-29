@@ -67,7 +67,7 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (the per-prompt memory block and `cognee_recall` results) are tagged `[mN · where it came
   from]` with one numbering per conversation, and an instruction asks the agent to end an
   answer that used them with one plain line, `> Cognee: <what it remembered>, based on
-  <dataset>`. A `transform_llm_output` hook replaces `Cognee:` with the Cognee pixel logo in
+  dataset <name>`. A `transform_llm_output` hook replaces `Cognee:` with the Cognee pixel logo in
   the brand purple in Hermes Desktop (KaTeX rules on the logo's five-row grid), so the logo is
   always exact; other platforms keep the
   plain line for now. (Asking the agent to copy a braille logo itself failed live: it dropped
