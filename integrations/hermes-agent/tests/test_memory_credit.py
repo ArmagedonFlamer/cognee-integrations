@@ -1,9 +1,10 @@
 """Crediting Cognee memory in the answer (memory_credit), as the Cursor and Codex plugins do.
 
 Recalled items are tagged ``[mN · origin]`` with one numbering per conversation,
-an instruction asks the agent to end an answer that used them with the Cognee
-logo in braille and what it remembered, and that credit is noted and stripped
-before the turn is stored.
+an instruction asks the agent to end an answer that used them with a plain
+``> Cognee: …`` line, the ``transform_llm_output`` hook draws it as a purple
+COGNEE wordmark in Hermes Desktop, and the credit is noted and stripped before
+the turn is stored.
 """
 
 import json
@@ -83,43 +84,82 @@ def test_code_that_looks_like_a_tag_is_not_a_citation():
     assert tags.credited is False
 
 
-LOGO_CREDIT = (
-    "Mika likes tennis.\n\n"
-    f"> {memory_credit.LOGOTYPE[0]} Mika likes tennis, based on agent_sessions.\\\n"
+PLAIN = "Mika likes Yuji.\n\n> Cognee: Mika likes Yuji and volleyball, based on agent_sessions."
+RENDERED = (
+    "Mika likes Yuji.\n\n"
+    f"> {memory_credit.WORDMARK} Mika likes Yuji and volleyball, based on agent_sessions."
+)
+OLD_BRAILLE = (
+    "Mika likes Yuji.\n\n"
+    f"> {memory_credit.LOGOTYPE[0]} Mika likes Yuji, based on agent_sessions.\\\n"
     f"> {memory_credit.LOGOTYPE[1]}"
 )
 
 
-def test_the_instruction_shows_both_logo_rows_and_the_source():
+def test_the_instruction_asks_for_a_plain_line_with_the_source():
     text = memory_credit.credit_instruction(False, 1, "agent_sessions")
-    first_row = f"> {memory_credit.LOGOTYPE[0]} <what you remembered>, based on agent_sessions."
-    assert first_row + "\\\n" in text
-    assert f"> {memory_credit.LOGOTYPE[1]}" in text
-    assert 'do not write the tags or the words "Cognee memory"' in text
+    assert '"> Cognee:"' in text
+    assert "> Cognee: you prefer the server over the CLI, based on agent_sessions." in text
+    assert "Do not copy the example" in text
+    assert "\u2800" not in text and not any("\u2800" <= c <= "\u28ff" for c in text)
 
 
-def test_the_logo_line_counts_as_a_credit():
+def test_desktop_gets_the_purple_wordmark(cite_on):
+    assert memory_credit.WORDMARK == "$\\color{#9F7AEA}{\\textbf{COGNEE}}$"
+    assert memory_credit.render_credit(PLAIN, "desktop") == RENDERED
+
+
+@pytest.mark.parametrize("platform", ["cli", "telegram", ""])
+def test_other_platforms_keep_the_plain_line_for_now(platform):
+    assert memory_credit.render_credit(PLAIN, platform) is None
+
+
+def test_nothing_to_draw_without_a_credit_line_or_with_credit_off(monkeypatch):
+    assert memory_credit.render_credit("Mika likes Yuji.", "desktop") is None
+    monkeypatch.setenv("COGNEE_PLUGIN_CITE_MEMORY", "off")
+    assert memory_credit.render_credit(PLAIN, "desktop") is None
+
+
+def test_every_credit_form_counts_and_is_stripped():
+    for answer in (PLAIN, RENDERED, OLD_BRAILLE):
+        assert memory_credit.has_credit(answer), answer
+        assert memory_credit.strip_credit_lines(answer) == "Mika likes Yuji."
+
+
+def test_a_bare_label_is_not_a_credit():
+    assert not memory_credit.has_credit("> Cognee:")
+    assert not memory_credit.has_credit("Cognee: is a memory layer")
+
+
+def test_the_credit_marks_the_session_as_credited():
     tags = memory_credit.MemoryTags()
     tags.begin_turn()
-    tags.label("recall", "x", "Mika likes tennis.")
-    assert memory_credit.has_credit(LOGO_CREDIT)
-    assert tags.check(LOGO_CREDIT)["credited"] is True
+    tags.label("recall", "x", "Mika likes Yuji.")
+    assert tags.check(RENDERED)["credited"] is True
     assert tags.credited is True
-
-
-def test_braille_without_text_or_quote_is_not_a_credit():
-    assert not memory_credit.has_credit(f"> {memory_credit.LOGOTYPE[0]}")
-    assert not memory_credit.has_credit(f"see {memory_credit.LOGOTYPE[0]} here")
-
-
-def test_both_logo_rows_are_stripped_and_the_answer_kept():
-    assert memory_credit.strip_credit_lines(LOGO_CREDIT) == "Mika likes tennis."
 
 
 def test_older_credit_lines_are_stripped_too():
     answer = "Mika likes tennis.\n\n> 🧠 Cognee memory [m3]: from a Codex session."
     assert memory_credit.strip_credit_lines(answer) == "Mika likes tennis."
     assert memory_credit.strip_credit_lines("x = arr[m1]") == "x = arr[m1]"
+
+
+def test_the_plugin_registers_the_hook(cite_on):
+    from cognee_integration_hermes import register, transform_llm_output
+
+    registered = {}
+
+    class Ctx:
+        def register_memory_provider(self, provider):
+            registered["provider"] = provider
+
+        def register_hook(self, name, callback):
+            registered[name] = callback
+
+    register(Ctx())
+    assert registered["transform_llm_output"] is transform_llm_output
+    assert transform_llm_output(response_text=PLAIN, platform="desktop", session_id="s") == RENDERED
 
 
 def test_the_first_credit_asks_how_it_connects():
@@ -160,54 +200,37 @@ def test_recall_tool_results_are_tagged(cite_on):
         provider = make_provider()
         out = json.loads(provider.handle_tool_call("cognee_recall", {"query": "mika"}))
     assert out["results"][0]["tag"] == "[m1 · Cognee recall]"
-    assert memory_credit.LOGOTYPE[0] in out["credit"] and memory_credit.LOGOTYPE[1] in out["credit"]
+    assert '"> Cognee:"' in out["credit"]
 
 
 def test_the_stored_answer_has_no_credit_line(cite_on):
     with fake_backend() as fake:
         provider = make_provider()
-        provider.sync_turn("what does mika like?", LOGO_CREDIT)
+        provider.sync_turn("what does mika like?", RENDERED)
         assert fake.wait("remember_session")
         stored = json.dumps(
             [fake.kwargs_for(name) for name in ("remember_session", "remember_entry")],
             ensure_ascii=False,
         )
-    assert "Mika likes tennis." in stored
-    assert memory_credit.LOGOTYPE[0] not in stored and memory_credit.LOGOTYPE[1] not in stored
+    assert "Mika likes Yuji." in stored
+    assert "COGNEE" not in stored and "Cognee:" not in stored
 
 
-PURPLE = memory_credit.logo_rows(colored=True)
-PURPLE_CREDIT = (
-    "Mika likes tennis.\n\n"
-    f"> {PURPLE[0]} Mika likes tennis, based on agent_sessions.\\\n"
-    f"> {PURPLE[1]}"
-)
+def test_the_plugin_root_registers_the_hook_too():
+    # Directory installs (the catalog) load the plugin root's __init__.py, not the package.
+    import importlib.util
 
+    spec = importlib.util.spec_from_file_location("hermes_plugin_root", ROOT / "__init__.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    registered = {}
 
-def test_the_coloured_logo_wraps_each_row_in_katex_colour():
-    assert (
-        PURPLE[0]
-        == f"$\\color{{{memory_credit.LOGO_COLOR}}}{{\\text{{{memory_credit.LOGOTYPE[0]}}}}}$"
-    )
-    text = memory_credit.credit_instruction(False, 1, "agent_sessions", colored=True)
-    assert f"> {PURPLE[0]} <what you remembered>, based on agent_sessions." in text
-    assert f"> {PURPLE[1]}" in text
-    assert "$…$ around each braille row" in text
+    class Ctx:
+        def register_memory_provider(self, provider):
+            registered["provider"] = provider
 
+        def register_hook(self, name, callback):
+            registered[name] = callback
 
-def test_a_coloured_credit_counts_and_is_stripped():
-    assert memory_credit.has_credit(PURPLE_CREDIT)
-    assert not memory_credit.has_credit(f"> {PURPLE[0]}")
-    assert memory_credit.strip_credit_lines(PURPLE_CREDIT) == "Mika likes tennis."
-
-
-@pytest.mark.parametrize(("platform", "coloured"), [("desktop", True), ("cli", False), ("", False)])
-def test_the_logo_is_purple_only_where_the_chat_renders_math(cite_on, platform, coloured):
-    with fake_backend() as fake:
-        fake.results["recall"] = [{"text": "Mika likes tennis.", "source": "graph"}]
-        provider = make_provider()
-        provider._platform = platform
-        provider.queue_prefetch("what does mika like")
-        out = provider.prefetch("what does mika like")
-    assert ("\\color{" in out) is coloured
-    assert memory_credit.LOGOTYPE[0] in out
+    module.register(Ctx())
+    assert "provider" in registered and "transform_llm_output" in registered
