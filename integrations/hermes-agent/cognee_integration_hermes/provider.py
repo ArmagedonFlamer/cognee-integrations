@@ -366,6 +366,7 @@ class CogneeMemoryProvider(MemoryProvider):
         # Tags for crediting memory in the answer (memory_credit): one numbering
         # per conversation, shared by auto-recall and the cognee_recall tool.
         self._credit = memory_credit.MemoryTags()
+        self._platform = ""
         # Prompts in a row whose memory recall only timed out (guarded by
         # _breaker_lock); see _SLOW_STREAK_THRESHOLD.
         self._slow_streak = 0
@@ -539,6 +540,9 @@ class CogneeMemoryProvider(MemoryProvider):
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._hermes_home = kwargs.get("hermes_home")
+        # Where the chat is shown ("cli", "desktop", a messaging platform): the
+        # credit's logo is coloured only where the chat renders inline math.
+        self._platform = str(kwargs.get("platform") or "").strip().lower()
         self._config = load_config(self._hermes_home)
         self._session_id = session_id
         configured = str(self._config.get("dataset") or DEFAULT_DATASET)
@@ -1823,11 +1827,18 @@ class CogneeMemoryProvider(MemoryProvider):
                     if cite and credit.found:
                         instruction = (
                             memory_credit.credit_instruction(
-                                not credit.credited, len(credit.found), self._dataset
+                                not credit.credited,
+                                len(credit.found),
+                                self._dataset,
+                                colored=self._colored_credit(),
                             )
                             + "\n\n"
                         )
                     self._prefetch_result = instruction + header + "\n\n".join(blocks)
+
+    def _colored_credit(self) -> bool:
+        """Whether this chat renders the credit's logo in colour (KaTeX)."""
+        return self._platform in memory_credit.COLOR_PLATFORMS
 
     def _char_limit(self, key: str, default: int) -> int:
         """A non-negative character limit from config; 0 disables it."""
@@ -1888,7 +1899,9 @@ class CogneeMemoryProvider(MemoryProvider):
                         else "Cognee recall"
                     )
                     item["tag"] = self._credit.label("recall", origin, item["text"])
-                envelope["credit"] = memory_credit.tool_credit_instruction(self._dataset)
+                envelope["credit"] = memory_credit.tool_credit_instruction(
+                    self._dataset, colored=self._colored_credit()
+                )
             if overflow:
                 # Non-empty results still warn: mean-pooled vectors match
                 # *something*, so plausible-but-wrong hits are the overflow's
