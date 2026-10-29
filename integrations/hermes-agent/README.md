@@ -55,7 +55,12 @@ Python package with the `hermes_agent.plugins` entry point.
   built in the background, so a slow LLM never turns a stored fact into a
   reported timeout.
 - Mirrors explicit Hermes memory writes through `on_memory_write`, and steers
-  the agent to prefer Cognee over Hermes' built-in memory files.
+  the agent to Cognee first: Hermes' built-in memory notes (`MEMORY.md`,
+  `USER.md`) are the fallback for when Cognee has nothing on a question, and
+  when the two disagree the agent goes with Cognee and says so. The rule is in
+  the system prompt and again on each prompt's Cognee memory block
+  (`COGNEE_MEMORY_STEER=false` turns both off). While Cognee is unavailable the
+  plugin adds nothing, so the agent simply uses Hermes' memory.
 - Works with Cognee Cloud or another cognee server out of the box, or with a
   local cognee server run from a private cognee runtime the setup installs.
 - Closes every session out of process, the way the other cognee plugins do: a
