@@ -347,7 +347,11 @@ class CogneeMemoryProvider(MemoryProvider):
         # Remote mode is plain HTTP; only local and embedded mode run cognee here.
         if cfg.get("service_url"):
             return True
-        return runtime_env.local_ready() and bool(cfg.get("llm_api_key"))
+        # No LLM-key check: a keyless provider (Ollama) needs none, and a key
+        # written by `hermes memory setup` after a long-running gateway started
+        # is not in that process yet — "unavailable" would hide both, while the
+        # server bootstrap warns by name when it starts without one.
+        return runtime_env.local_ready()
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
@@ -477,7 +481,11 @@ class CogneeMemoryProvider(MemoryProvider):
         print("  Provider config saved to cognee.json")
         if env_values:
             print("  Secrets saved to .env")
-        print("\n  Start a new Hermes session to activate Cognee memory.\n")
+        print("\n  Start a new Hermes session to activate Cognee memory.")
+        if env_values:
+            print("  Hermes Desktop or a gateway service reads .env when it starts:")
+            print("  restart it so it picks up the keys saved here.")
+        print()
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._hermes_home = kwargs.get("hermes_home")

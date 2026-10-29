@@ -144,7 +144,9 @@ cp -R cognee-integrations/integrations/hermes-agent/. ~/.hermes/plugins/cognee/
 hermes memory setup cognee
 ```
 
-Choose **Mode: local**, and paste your LLM API key when asked. If the cognee
+Choose **Mode: local**, and paste your LLM API key when asked. Hermes Desktop
+and gateway services read `~/.hermes/.env` only when they start, so restart them
+after the setup saves a key. If the cognee
 runtime is not installed yet, the wizard offers to install it: `cognee==1.6.5`
 and its dependencies, about 1 GB from PyPI, into
 `~/.cognee-plugin/hermes/runtime/venv`. With uv on your PATH that takes under a
