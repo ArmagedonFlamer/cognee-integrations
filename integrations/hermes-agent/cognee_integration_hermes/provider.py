@@ -17,6 +17,7 @@ from . import (
     code_graph,
     dataset_overrides,
     exit_watcher,
+    memory_credit,
     recall_text,
     recap,
     runtime_env,
@@ -346,6 +347,9 @@ class CogneeMemoryProvider(MemoryProvider):
         self._turns_seen = 0
         self._turns_with_hits = 0
         self._hits_total = 0
+        # Tags for crediting memory in the answer (memory_credit): one numbering
+        # per conversation, shared by auto-recall and the cognee_recall tool.
+        self._credit = memory_credit.MemoryTags()
         # Prompts in a row whose memory recall only timed out (guarded by
         # _breaker_lock); see _SLOW_STREAK_THRESHOLD.
         self._slow_streak = 0
@@ -819,7 +823,16 @@ class CogneeMemoryProvider(MemoryProvider):
         A write the server never received is queued and replayed later
         (``write_buffer``); while the breaker is open, writes go straight to
         the queue.
+
+        The answer's memory-credit line is checked against the tags this
+        session handed out, then stripped: the credit says where the answer
+        came from and must not be stored back as part of it.
         """
+        if assistant_content and "Cognee memory" in assistant_content:
+            result = self._credit.check(assistant_content)
+            if result["cited"]:
+                logger.info("cognee memory_credit %s", json.dumps(result))
+            assistant_content = memory_credit.strip_credit_lines(assistant_content)
         if not self._is_usable() or not self._writes_enabled:
             return
         settings = capture_policy.policy_from_config(self._config)
@@ -1360,6 +1373,7 @@ class CogneeMemoryProvider(MemoryProvider):
                 self._turns_seen = 0
                 self._turns_with_hits = 0
                 self._hits_total = 0
+                self._credit = memory_credit.MemoryTags()
 
     def on_memory_write(
         self,
@@ -1603,6 +1617,10 @@ class CogneeMemoryProvider(MemoryProvider):
         then caps the whole injection (guidance first, then memory, then code),
         the same rules as the claude-code, codex and openclaw plugins.
         """
+        # A new turn before anything can fail: a prompt whose recall returns
+        # early has no tags of its own.
+        credit = self._credit
+        credit.begin_turn()
         budget = self._config.get("recall_budget")
         deadline = time.monotonic() + (20.0 if budget is None else float(budget))
         recall_timeout = self._timeout("recall_timeout", 120)
@@ -1763,6 +1781,14 @@ class CogneeMemoryProvider(MemoryProvider):
         kept_memories = [text for text in capped[1 : 1 + len(memories)] if text.strip()]
         kept_code = [block for block in capped[1 + len(memories) :] if block.strip()]
 
+        cite = memory_credit.credit_enabled()
+        if cite:
+            kept_memories = [credit.tag_graph(text) for text in kept_memories]
+            kept_code = [f"{credit.label('code', 'code graph', b)}\n{b}" for b in kept_code]
+            if kept_guidance.strip():
+                guide = kept_guidance.strip()
+                kept_guidance = f"{credit.label('guidance', 'agent guidance', guide)}\n{guide}"
+
         blocks = [f"<{_MEMORY_LANE}>\n{text}\n</{_MEMORY_LANE}>" for text in kept_memories]
         blocks.extend(kept_code)
         if kept_guidance.strip():
@@ -1777,7 +1803,13 @@ class CogneeMemoryProvider(MemoryProvider):
                     self._hits_total += hits
                 if generation == self._prefetch_generation:
                     header = self._hit_header(hits) if hits else ""
-                    self._prefetch_result = header + "\n\n".join(blocks)
+                    instruction = ""
+                    if cite and credit.found:
+                        instruction = (
+                            memory_credit.credit_instruction(not credit.credited, len(credit.found))
+                            + "\n\n"
+                        )
+                    self._prefetch_result = instruction + header + "\n\n".join(blocks)
 
     def _char_limit(self, key: str, default: int) -> int:
         """A non-negative character limit from config; 0 disables it."""
@@ -1830,6 +1862,15 @@ class CogneeMemoryProvider(MemoryProvider):
                     return json.dumps({"error": overflow, "count": 0})
                 return json.dumps({"result": "No relevant Cognee memory found.", "count": 0})
             envelope: dict[str, Any] = {"results": items, "count": len(items)}
+            if memory_credit.credit_enabled():
+                for item in items:
+                    origin = (
+                        memory_credit.passage_origin(item["text"])
+                        if recall_text.passage_session_id(item["text"])
+                        else "Cognee recall"
+                    )
+                    item["tag"] = self._credit.label("recall", origin, item["text"])
+                envelope["credit"] = memory_credit.TOOL_CREDIT_INSTRUCTION
             if overflow:
                 # Non-empty results still warn: mean-pooled vectors match
                 # *something*, so plausible-but-wrong hits are the overflow's
