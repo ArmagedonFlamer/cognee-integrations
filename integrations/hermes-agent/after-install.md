@@ -1,7 +1,7 @@
 # Cognee Hermes Memory Plugin
 
 The Cognee memory plugin has been installed. It does nothing until it is your
-memory provider, so finish with one command:
+memory provider, so finish with one command in a terminal:
 
 ```bash
 hermes memory setup cognee
