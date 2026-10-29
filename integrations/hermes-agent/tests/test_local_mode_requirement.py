@@ -6,6 +6,7 @@ the package declares no cognee at all, and the two paths that run cognee in this
 interpreter (spawning a local server, embedded mode) check for it themselves.
 """
 
+import json
 import sys
 from pathlib import Path
 from unittest import mock
@@ -151,3 +152,41 @@ def test_staying_remote_keeps_the_key():
     cloud = {"service_url": "https://tenant.example", "api_key": "cloud-key"}
     saved = _run_setup("remote", cloud)
     assert "COGNEE_API_KEY" not in saved  # blank answer keeps the current key
+
+
+def _default_mode(tmp_path, saved_config, runtime_ready):
+    if saved_config is not None:
+        (tmp_path / "cognee.json").write_text(json.dumps(saved_config))
+    offered = {}
+
+    def prompt(label, default=""):
+        if label == "Mode":
+            offered["mode"] = default
+        return default
+
+    with (
+        mock.patch.object(provider_mod, "load_config", return_value={}),
+        mock.patch.object(provider_mod, "config_path", return_value=tmp_path / "cognee.json"),
+        mock.patch.object(provider_mod, "_prompt", side_effect=prompt),
+        mock.patch.object(provider_mod, "_prompt_secret", return_value=""),
+        mock.patch.object(provider_mod, "_prompt_bool", return_value=False),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=runtime_ready),
+        mock.patch.object(provider_mod, "save_plugin_config"),
+        mock.patch.object(provider_mod, "save_env_vars"),
+    ):
+        provider_mod.CogneeMemoryProvider(backend=FakeBackend()).post_setup(str(tmp_path), {})
+    return offered["mode"]
+
+
+@pytest.mark.parametrize(
+    ("saved_config", "runtime_ready", "expected"),
+    [
+        (None, False, "remote"),  # first setup
+        (None, True, "remote"),  # first setup, runtime already there
+        ({"service_url": "https://tenant.example"}, True, "remote"),  # was remote
+        ({"service_url": ""}, True, "local"),  # was local: re-running keeps it
+        ({"service_url": ""}, False, "remote"),  # was local, runtime gone
+    ],
+)
+def test_setup_defaults_to_remote(tmp_path, saved_config, runtime_ready, expected):
+    assert _default_mode(tmp_path, saved_config, runtime_ready) == expected
