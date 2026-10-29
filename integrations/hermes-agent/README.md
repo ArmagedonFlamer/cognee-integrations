@@ -568,10 +568,13 @@ recalled memory, the agent ends it with one plain line:
 > Cognee: Mika likes Yuji and volleyball, based on agent_sessions.
 ```
 
-In Hermes Desktop the plugin draws `Cognee:` as a purple bold **COGNEE**
-wordmark (KaTeX, `$\color{#9F7AEA}{\textbf{COGNEE}}$`, which Desktop renders),
-through Hermes' `transform_llm_output` hook, so the logo is always exact: the
-agent only writes the plain line. The terminal and messaging apps show the plain
+In Hermes Desktop the plugin replaces `Cognee:` with the Cognee pixel logo in the
+brand purple (`#BC9BFF`), through Hermes' `transform_llm_output` hook. It is drawn
+in KaTeX, which Desktop renders: one coloured `\rule` per run of squares on the
+logo's five-row grid, about a capital letter tall. The logo is always exact
+because the agent only writes the plain line. The rewritten answer is what
+Hermes stores, so each credited answer carries about 800 characters of LaTeX in
+the chat history. The terminal and messaging apps show the plain
 line for now.
 
 How it works:

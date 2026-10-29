@@ -104,9 +104,29 @@ def test_the_instruction_asks_for_a_plain_line_with_the_source():
     assert "\u2800" not in text and not any("\u2800" <= c <= "\u28ff" for c in text)
 
 
-def test_desktop_gets_the_purple_wordmark(cite_on):
-    assert memory_credit.WORDMARK == "$\\color{#9F7AEA}{\\textbf{COGNEE}}$"
+def test_desktop_gets_the_pixel_logo(cite_on):
+    logo = memory_credit.WORDMARK
+    assert logo.startswith("$\\color{#BC9BFF}{") and logo.endswith("}$")
+    assert logo.count("\\rule[") > 20
     assert memory_credit.render_credit(PLAIN, "desktop") == RENDERED
+
+
+def test_the_pixel_logo_follows_the_grid():
+    # One rule per vertical run of squares; a single-letter check keeps it readable.
+    # E: a full left column, then squares in rows 0, 2 and 4 (raised 0.8, 0.4, 0).
+    logo = memory_credit.pixel_logo("E")
+    assert logo == (
+        "$\\color{#BC9BFF}{\\rule[0em]{0.2em}{1em}"
+        "\\rule[0.8em]{0.2em}{0.2em}\\kern-0.2em"
+        "\\rule[0.4em]{0.2em}{0.2em}\\kern-0.2em"
+        "\\rule[0em]{0.2em}{0.2em}}$"
+    )
+
+
+def test_the_earlier_bold_wordmark_is_still_stripped():
+    old = "Mika likes Yuji.\n\n> $\\color{#9F7AEA}{\\textbf{COGNEE}}$ Mika likes Yuji, based on x."
+    assert memory_credit.has_credit(old)
+    assert memory_credit.strip_credit_lines(old) == "Mika likes Yuji."
 
 
 @pytest.mark.parametrize("platform", ["cli", "telegram", ""])
