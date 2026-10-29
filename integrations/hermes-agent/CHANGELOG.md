@@ -10,73 +10,54 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.5.0]
-
-### Added
-- **Local mode runs from a private cognee runtime.** The plugin installs `cognee==1.6.5`
-  into a venv of its own, `~/.cognee-plugin/hermes/runtime/venv`, and starts the local
-  server from it, so local mode works again without putting cognee into Hermes's
-  environment, where its dependencies conflict with Hermes's. The venv is built from the
-  interpreter running Hermes, with uv when it is on PATH (never downloading an interpreter)
-  or stdlib `venv` + pip otherwise; about 1 GB from PyPI. One runtime serves every Hermes
-  profile, as the server does.
-- **It is installed only on request:** `hermes memory setup cognee` offers it when you choose
-  local mode, and `hermes cognee install-runtime` installs it, or moves it to the plugin's
-  pinned cognee after an update; `hermes cognee remove-runtime` deletes it. Nothing is
-  downloaded when a session starts. `hermes cognee status` shows a "Local runtime" line.
-
-### Changed
-- **Setup defaults to remote mode.** `hermes memory setup cognee` lists remote first and
-  always offers it as the default; on an install that chose local it prints "Current mode:
-  local" above the prompt, so keeping local means typing `local`. The README now leads with
-  Cognee Cloud (2a) and moves local to 2b.
-- Without the runtime, local mode's startup error now names `hermes cognee install-runtime`.
-  A cognee installed into Hermes's environment by hand still starts the server, and a server
-  another cognee plugin already runs on the port is still used. Embedded mode
-  (`COGNEE_EMBEDDED=true`) still needs cognee in Hermes's own environment.
-- **Local mode is available once its runtime is ready, LLM key or not.** It used to report
-  unavailable without `LLM_API_KEY`, which wrongly refused keyless providers (Ollama) and
-  turned Cognee off in a Hermes Desktop or gateway process started before `hermes memory
-  setup` saved the key, with no hint why. The server bootstrap already warns by name when it
-  starts without a key. Setup now also says to restart Desktop or the gateway after saving keys.
-- **A local server that is still starting no longer holds the session for up to 10 minutes.**
-  Session start waits 90 seconds; if the server it started is alive but not answering yet
-  (a first start migrating an existing `~/.cognee`), the session starts anyway, Cognee's tools
-  answer that the server is still starting and where its log is, and the provider connects in
-  the background once `/health` answers (within the same 10-minute boot deadline, never by
-  starting a second server). A server that fails now reports its own cause (exit code, log
-  path) instead of a generic list of port, dependency and `COGNEE_EMBEDDED` suggestions.
-- **Switching from Cloud to local mode no longer leaves every call failing with 401.** Local
-  setup cleared `COGNEE_BASE_URL` but not `COGNEE_API_KEY`, and a configured key always won,
-  so the Cognee Cloud key went to the local server. Choosing local in `hermes memory setup
-  cognee` now clears both. For setups switched before this release (or a key set by hand), a
-  `COGNEE_API_KEY` from the environment is checked once against a local server
-  (`GET /api/v1/datasets`); if it answers 401/403 the plugin says so in the log and uses the
-  local server's own key, as it does with no key set. A key the server accepts, or that
-  cannot be checked, is used as before.
-
 ## [1.4.0]
 
 ### Changed
-- **cognee is no longer a dependency.** Hermes resolves every plugin into its own shared
-  environment, and cognee 1.6.5's pins conflict with Hermes extras there
-  (`huggingface-hub<1` against `hermes-agent[trace-upload]`, and litellm's `boto3` floor
-  against `hermes-agent[bedrock]` on older Hermes builds), so `hermes plugins enable cognee`
-  was refused for everyone, Cloud users included. Remote mode is plain HTTP and never
-  imported cognee, so it now installs and runs on any Hermes. `pyproject.toml` declares no
-  dependencies and `plugin.yaml` no `pip_dependencies`.
-- **Local and embedded mode need cognee installed separately** (`cognee==1.6.5`, listed in
-  `local-mode-requirements.txt`). Without it, local mode still uses a cognee server already
-  running on the local port (for example one another cognee plugin started); otherwise both
-  modes fail at startup with a message pointing to remote mode, instead of an import error.
-  The provider reports itself available without cognee only when a service URL is set, and
-  `hermes memory setup` defaults to remote mode when cognee is missing.
-- **Setup instructions point to `hermes memory setup cognee`.** Installing or enabling the
-  plugin (`hermes plugins enable cognee`, the Desktop toggle) does not make it Hermes's
-  memory provider, so memory stayed off after following the old "install, enable, setup"
-  steps if the last one was skipped. The plugin description, `after-install.md`, the
-  README and the `hermes cognee install` / `cognee-hermes-install` hints now give the one
-  command that selects it and asks for the mode, and say what each mode needs.
+- **cognee is no longer a dependency, so the plugin installs on any Hermes.** Hermes resolves
+  every plugin into one shared environment, and cognee 1.6.5's pins conflict with Hermes
+  extras there (`huggingface-hub<1` against `hermes-agent[trace-upload]`, and litellm's
+  `boto3` floor against `hermes-agent[bedrock]` on older Hermes builds), so
+  `hermes plugins enable cognee` was refused for everyone, Cognee Cloud users included.
+  `pyproject.toml` now declares no dependencies and `plugin.yaml` no `pip_dependencies`.
+  Remote mode is plain HTTP and never needed cognee.
+- **Local mode runs from a private cognee runtime.** The plugin installs `cognee==1.6.5` into
+  a venv of its own, `~/.cognee-plugin/hermes/runtime/venv` (about 1 GB from PyPI), and starts
+  the local server from it, so cognee never enters Hermes's environment. The venv is built from
+  the interpreter running Hermes, with uv when it is on PATH (never downloading an interpreter)
+  or stdlib `venv` + pip otherwise. It is installed only on request: `hermes memory setup
+  cognee` offers it when you choose local mode, `hermes cognee install-runtime` installs it or
+  moves it to the plugin's pinned cognee after an update, and `hermes cognee remove-runtime`
+  deletes it; nothing is downloaded when a session starts. One runtime serves every Hermes
+  profile, as the server does. `hermes cognee status` shows a "Local runtime" line. A server
+  another cognee plugin already runs on the port is still used, and a cognee installed into
+  Hermes's environment by hand still works. Embedded mode (`COGNEE_EMBEDDED=true`) needs cognee
+  in Hermes's own environment.
+- **Setup defaults to remote mode.** `hermes memory setup cognee` lists remote (Cognee Cloud or
+  another cognee server) first and offers it as the default; an install that chose local sees
+  "Current mode: local" above the prompt. Choosing local clears `COGNEE_API_KEY` along with
+  `COGNEE_BASE_URL`, so a Cognee Cloud key is no longer sent to the local server. A
+  `COGNEE_API_KEY` from the environment that a *local* server rejects (401/403, e.g. one left
+  by an earlier setup) is replaced by the local server's own key; a key it accepts, or that
+  cannot be checked, is used as before.
+- **Availability.** The provider is available with a service URL (remote), or once the local
+  runtime is ready (local). It no longer also requires `LLM_API_KEY`: that refused keyless
+  providers (Ollama), and the server bootstrap already warns by name when it starts without a
+  key.
+- **A local server that is still starting no longer holds the session for up to 10 minutes.**
+  Session start waits 90 seconds; if the server it started is alive but not answering yet (a
+  first start migrating an existing `~/.cognee`), the session starts anyway, Cognee's tools
+  answer that the server is still starting and where its log is, and the provider connects in
+  the background once `/health` answers (within the same 10-minute boot deadline, never by
+  starting a second server). Other failures report their own cause (exit code, log path)
+  instead of a generic list of port, dependency and `COGNEE_EMBEDDED` suggestions.
+- **Setup instructions are one path everywhere.** Installing or enabling the plugin
+  (`hermes plugins enable cognee`, the Desktop toggle) does not make it Hermes's memory
+  provider, so memory stayed off when the old "install, enable, setup" steps stopped early.
+  The plugin description, `after-install.md`, the README and the `hermes cognee install` /
+  `cognee-hermes-install` hints now give the same steps: install, run
+  `hermes memory setup cognee` in a terminal, start a new chat.
+- CI installs `local-mode-requirements.txt` (the same pin) for the tests that run against
+  cognee, and runs them with `uv run --no-sync` so the install is kept.
 
 ## [1.3.3]
 

@@ -145,7 +145,7 @@ def _warn_no_llm_key(env):
     _warned_no_llm_key = True
     logger.warning(
         "Starting the local cognee server without an LLM key: memory will not be "
-        "built. Run `hermes memory setup` (or set LLM_API_KEY in Hermes' .env); "
+        "built. Run `hermes memory setup cognee` (or set LLM_API_KEY in Hermes' .env); "
         "keys kept only for the other cognee plugins are not read by this one."
     )
 

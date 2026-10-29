@@ -9,8 +9,8 @@ hermes memory setup cognee
 
 This makes Cognee the memory provider and asks for a mode:
 
-- **remote** (the default) — Cognee Cloud or a self-hosted cognee server. You'll be asked for
-  the service URL and an API key (for Cognee Cloud, both come from
+- **remote** (the default) — Cognee Cloud or a self-hosted cognee server. You'll
+  be asked for the service URL and an API key (for Cognee Cloud, both come from
   https://platform.cognee.ai/). Nothing else to install.
 - **local** — the plugin runs a cognee server on your machine (shared with the
   Claude Code / Codex / OpenClaw cognee plugins, if you use them). You'll be
@@ -19,13 +19,13 @@ This makes Cognee the memory provider and asks for a mode:
   PyPI) into a private environment kept apart from Hermes's own. You can also
   install it later with `hermes cognee install-runtime`.
 
-`hermes plugins enable cognee` and the Desktop toggle do not make Cognee the
-memory provider; `hermes memory setup cognee` does.
+Then start a **new chat** in Hermes Desktop (or a new `hermes` session): a chat
+that is already open keeps the memory it started with. Check with
+`hermes memory status` (`Provider: cognee`) and `hermes cognee status`, then ask
+the agent to remember something and, in another new chat, to recall it.
 
-Start a new `hermes` session afterwards to activate memory. Hermes Desktop and
-gateway services read `~/.hermes/.env` when they start, so quit and reopen the
-Desktop app (or restart the service) after the setup saves keys. Then verify with
-`hermes memory status` (Provider: cognee) and `hermes cognee status`.
+`hermes plugins enable cognee` and the Desktop toggle enable the plugin but do
+not make it the memory provider; `hermes memory setup cognee` does.
 
 ## Updates
 
