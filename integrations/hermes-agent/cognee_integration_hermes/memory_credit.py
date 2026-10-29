@@ -106,6 +106,9 @@ def pixel_logo(word: str = "COGNEE", square: float = LOGO_SQUARE_EM) -> str:
 
 
 WORDMARK = pixel_logo()
+#: Space between the logo and the sentence after it: one em, drawn by KaTeX (plain
+#: spaces collapse in markdown).
+LOGO_SPACE = "\\quad"
 
 FIRST_CREDIT_ADDENDUM = (
     "This would be the first Cognee credit in this session, so in that line also say in a "
@@ -146,25 +149,30 @@ def tool_credit_instruction(source: str = "") -> str:
 
 
 #: The agent's plain credit line: ``> Cognee:`` then something said.
-_PLAIN_CREDIT_RE = re.compile(r"^([ \t]*>[ \t]*)Cognee:[ \t]*(?=\S)", re.M)
+_PLAIN_CREDIT_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(?=\S)", re.M)
 #: A credit in any form: the plain line, the rendered wordmark, or the earlier
 #: braille logo (plain or KaTeX-coloured), each followed by something said.
 _KATEX_OPEN = r"(?:\$\\color\{[^}\n]*\}\{\\text\{)?"
 _KATEX_CLOSE = r"(?:\}\}\$)?"
-_LEAD = (
-    r"(?:Cognee:"
-    r"|\$\\color\{[^}\n]*\}\{\\textbf\{COGNEE\}\}\$"
-    r"|\$\\color\{[^}\n]*\}\{(?:\\rule\[[^\]\n]*\]\{[^}\n]*\}\{[^}\n]*\}|\\kern-?[\d.]+em)+\}\$"
-    rf"|{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE})"
+#: The drawn logo, with or without the space after it. It leads a credit line with
+#: or without a quote marker (the plugin drops the marker when it draws the logo).
+_DRAWN = (
+    r"(?:\$\\color\{[^}\n]*\}\{\\textbf\{COGNEE\}\}\$"
+    r"|\$\\color\{[^}\n]*\}\{(?:\\rule\[[^\]\n]*\]\{[^}\n]*\}\{[^}\n]*\}|\\kern-?[\d.]+em)+\}"
+    r"(?:\\quad|\\qquad)?\$)"
 )
-_CREDIT_RE = re.compile(rf"^[ \t]*>[ \t]*{_LEAD}[ \t]*\S", re.M)
+_LEAD = (
+    rf"(?:>[ \t]*(?:Cognee:|{_DRAWN}|{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE})"
+    rf"|{_DRAWN})"
+)
+_CREDIT_RE = re.compile(rf"^[ \t]*{_LEAD}[ \t]*\S", re.M)
 #: Tags cited the way the Claude Code and Codex plugins ask (``Cognee memory
 #: [m2]``); ``arr[m1]`` in code is not a citation.
 _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
 #: Lines cut before storing: every credit form above, the braille logo's second
 #: row, and the older ``🧠 Cognee memory [mN]`` line.
 _STRIP_RES = (
-    re.compile(rf"^[ \t]*>[ \t]*{_LEAD}[^\n]*(?:\n|$)", re.M),
+    re.compile(rf"^[ \t]*{_LEAD}[^\n]*(?:\n|$)", re.M),
     re.compile(rf"^[ \t]*>[ \t]*{_KATEX_OPEN}[\u2800-\u28ff]{{6,}}[^\n]*(?:\n|$)", re.M),
     re.compile(r"^[ \t]*(?:>[ \t]*)?🧠?[ \t]*Cognee memory[ \t]*\[m\d+[^\n]*(?:\n|$)", re.M),
 )
@@ -173,14 +181,17 @@ _STRIP_RES = (
 def render_credit(response_text: str, platform: str = "") -> str | None:
     """The answer with its ``> Cognee:`` line drawn for ``platform``, or None to leave it.
 
-    The ``transform_llm_output`` hook's work: in Hermes Desktop, ``Cognee:`` becomes the
-    purple bold COGNEE wordmark. Other platforms are left as written for now.
+    The ``transform_llm_output`` hook's work: in Hermes Desktop the line becomes the
+    Cognee pixel logo, an em of space and the sentence. The quote marker goes, since
+    Desktop draws a blockquote with a quotation mark. Other platforms are left as
+    written for now.
     """
     if not credit_enabled() or (platform or "").strip().lower() not in COLOR_PLATFORMS:
         return None
     if not response_text or not _PLAIN_CREDIT_RE.search(response_text):
         return None
-    return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{WORDMARK} ", response_text)
+    drawn = WORDMARK[:-1] + LOGO_SPACE + "$"
+    return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{drawn} ", response_text)
 
 
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
