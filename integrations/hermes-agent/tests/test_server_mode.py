@@ -811,3 +811,36 @@ class TestSpawnEnv(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestServerEnvFile(unittest.TestCase):
+    """The server must not pick up ~/.cognee-plugin/.env (the other plugins' keys)."""
+
+    def _spawn_env(self, workdir, env_overrides=None):
+        captured = {}
+
+        def fake_popen(args, env=None, **kwargs):
+            captured.update(env or {})
+            return mock.MagicMock()
+
+        with (
+            mock.patch.dict("os.environ", env_overrides or {}, clear=False),
+            mock.patch.object(sb, "server_workdir", return_value=workdir),
+            mock.patch.object(sb.subprocess, "Popen", side_effect=fake_popen),
+        ):
+            sb._spawn(9999, "", "", "/dev/null")
+        return captured
+
+    def test_the_server_loads_an_empty_env_file_instead_of_searching(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            env = self._spawn_env(workdir, {"COGNEE_ENV_FILE": ""})
+            path = env["COGNEE_ENV_FILE"]
+            self.assertEqual(os.path.dirname(path), workdir)
+            with open(path, encoding="utf-8") as handle:
+                lines = [line for line in handle if line.strip() and not line.startswith("#")]
+            self.assertEqual(lines, [])
+
+    def test_an_explicit_env_file_wins(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            env = self._spawn_env(workdir, {"COGNEE_ENV_FILE": "/etc/my-cognee.env"})
+            self.assertEqual(env["COGNEE_ENV_FILE"], "/etc/my-cognee.env")

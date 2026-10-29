@@ -150,8 +150,37 @@ def _warn_no_llm_key(env):
     )
 
 
+def _isolated_env_file():
+    """An empty ``.env`` the server is told to load instead of searching for one.
+
+    cognee >= 1.6.2 loads the first ``.env`` found walking up from its working
+    directory and lets it override the environment. From the plugin's state
+    directory that walk reaches ``~/.cognee-plugin/.env``, the file the *other*
+    cognee plugins keep their keys in, so the server would run on their LLM key
+    and settings instead of the ones Hermes passes in. ``COGNEE_ENV_FILE`` names
+    the one file to load and stops the search; this one is empty on purpose.
+    """
+    path = os.path.join(server_workdir(), "cognee-server.env")
+    try:
+        if not os.path.isfile(path):
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(
+                    "# Left empty on purpose: the Hermes cognee plugin starts its local\n"
+                    "# server with COGNEE_ENV_FILE pointing here, so the server reads its\n"
+                    "# settings from Hermes rather than from a .env found above this folder.\n"
+                )
+    except OSError:
+        return None
+    return path
+
+
 def _spawn(port, data_root, system_root, log_path, python=None):
     env = dict(os.environ)
+    # An explicit COGNEE_ENV_FILE from the user wins; otherwise pin an empty one.
+    if not env.get("COGNEE_ENV_FILE"):
+        isolated = _isolated_env_file()
+        if isolated:
+            env["COGNEE_ENV_FILE"] = isolated
     # The server's API keys come from Hermes (the profile's secret scope), never
     # from a file the plugin reads itself: the plugin-catalog rules forbid that,
     # and under a multi-profile gateway os.environ may hold another profile's.
