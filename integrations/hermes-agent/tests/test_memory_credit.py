@@ -174,3 +174,40 @@ def test_the_stored_answer_has_no_credit_line(cite_on):
         )
     assert "Mika likes tennis." in stored
     assert memory_credit.LOGOTYPE[0] not in stored and memory_credit.LOGOTYPE[1] not in stored
+
+
+PURPLE = memory_credit.logo_rows(colored=True)
+PURPLE_CREDIT = (
+    "Mika likes tennis.\n\n"
+    f"> {PURPLE[0]} Mika likes tennis, based on agent_sessions.\\\n"
+    f"> {PURPLE[1]}"
+)
+
+
+def test_the_coloured_logo_wraps_each_row_in_katex_colour():
+    assert (
+        PURPLE[0]
+        == f"$\\color{{{memory_credit.LOGO_COLOR}}}{{\\text{{{memory_credit.LOGOTYPE[0]}}}}}$"
+    )
+    text = memory_credit.credit_instruction(False, 1, "agent_sessions", colored=True)
+    assert f"> {PURPLE[0]} <what you remembered>, based on agent_sessions." in text
+    assert f"> {PURPLE[1]}" in text
+    assert "$…$ around each braille row" in text
+
+
+def test_a_coloured_credit_counts_and_is_stripped():
+    assert memory_credit.has_credit(PURPLE_CREDIT)
+    assert not memory_credit.has_credit(f"> {PURPLE[0]}")
+    assert memory_credit.strip_credit_lines(PURPLE_CREDIT) == "Mika likes tennis."
+
+
+@pytest.mark.parametrize(("platform", "coloured"), [("desktop", True), ("cli", False), ("", False)])
+def test_the_logo_is_purple_only_where_the_chat_renders_math(cite_on, platform, coloured):
+    with fake_backend() as fake:
+        fake.results["recall"] = [{"text": "Mika likes tennis.", "source": "graph"}]
+        provider = make_provider()
+        provider._platform = platform
+        provider.queue_prefetch("what does mika like")
+        out = provider.prefetch("what does mika like")
+    assert ("\\color{" in out) is coloured
+    assert memory_credit.LOGOTYPE[0] in out
