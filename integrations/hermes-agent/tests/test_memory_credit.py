@@ -87,7 +87,8 @@ def test_code_that_looks_like_a_tag_is_not_a_citation():
 PLAIN = "Mika likes Yuji.\n\n> Cognee: Mika likes Yuji and volleyball, based on agent_sessions."
 RENDERED = (
     "Mika likes Yuji.\n\n"
-    f"{memory_credit.WORDMARK[:-1]}\\quad$ Mika likes Yuji and volleyball, based on agent_sessions."
+    f"{memory_credit.WORDMARK[:-1]}\\enspace$"
+    " Mika likes Yuji and volleyball, based on agent_sessions."
 )
 OLD_BRAILLE = (
     "Mika likes Yuji.\n\n"
@@ -99,7 +100,8 @@ OLD_BRAILLE = (
 def test_the_instruction_asks_for_a_plain_line_with_the_source():
     text = memory_credit.credit_instruction(False, 1, "agent_sessions")
     assert '"> Cognee:"' in text
-    assert "> Cognee: you prefer the server over the CLI, based on agent_sessions." in text
+    assert "> Cognee: you prefer the server over the CLI, based on dataset agent_sessions." in text
+    assert 'Write "dataset agent_sessions" exactly so.' in text
     assert "Do not copy the example" in text
     assert "\u2800" not in text and not any("\u2800" <= c <= "\u28ff" for c in text)
 
@@ -257,8 +259,9 @@ def test_the_plugin_root_registers_the_hook_too():
 
 
 def test_the_drawn_line_is_not_a_blockquote_and_leaves_space(cite_on):
+    # Half an em after the logo, about two spaces.
     # Desktop draws a blockquote with a quotation mark, and markdown collapses spaces.
     line = memory_credit.render_credit(PLAIN, "desktop").splitlines()[-1]
     assert line.startswith("$\\color{#BC9BFF}{")
-    assert "}\\quad$ Mika likes" in line
+    assert "}\\enspace$ Mika likes" in line
     assert not memory_credit.has_credit("Cognee: is a memory layer")
