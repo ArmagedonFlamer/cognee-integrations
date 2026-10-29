@@ -27,9 +27,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - **Setup defaults to remote mode.** `hermes memory setup cognee` lists remote first and
-  offers it as the default; local is the default only when re-running setup on an install
-  that already chose local (and has its runtime), so changing another setting does not flip
-  the mode. The README now leads with Cognee Cloud (2a) and moves local to 2b.
+  always offers it as the default; on an install that chose local it prints "Current mode:
+  local" above the prompt, so keeping local means typing `local`. The README now leads with
+  Cognee Cloud (2a) and moves local to 2b.
 - Without the runtime, local mode's startup error now names `hermes cognee install-runtime`.
   A cognee installed into Hermes's environment by hand still starts the server, and a server
   another cognee plugin already runs on the port is still used. Embedded mode
