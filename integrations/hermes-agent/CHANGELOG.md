@@ -26,6 +26,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   modes fail at startup with a message pointing to remote mode, instead of an import error.
   The provider reports itself available without cognee only when a service URL is set, and
   `hermes memory setup` defaults to remote mode when cognee is missing.
+- **Setup instructions point to `hermes memory setup cognee`.** Installing or enabling the
+  plugin (`hermes plugins enable cognee`, the Desktop toggle) does not make it Hermes's
+  memory provider, so memory stayed off after following the old "install, enable, setup"
+  steps if the last one was skipped. The plugin description, `after-install.md`, the
+  README and the `hermes cognee install` / `cognee-hermes-install` hints now give the one
+  command that selects it and asks for the mode, and say what each mode needs.
 
 ## [1.3.3]
 

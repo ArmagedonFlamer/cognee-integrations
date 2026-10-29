@@ -9,7 +9,13 @@ import time
 from pathlib import Path
 
 from . import catalog, code_graph, recap, update_check
-from .config import DEFAULT_LOCAL_PORT, config_path, load_config, resolve_local_roots
+from .config import (
+    DEFAULT_LOCAL_PORT,
+    LOCAL_COGNEE_REQUIREMENT,
+    config_path,
+    load_config,
+    resolve_local_roots,
+)
 
 
 def _provider_active() -> bool:
@@ -391,22 +397,22 @@ def _print_install(args) -> None:
     name = catalog.catalog_name()
     if name:
         print(f"\nManaged by the Hermes catalog. Update with: hermes plugins update {name}")
-        print("Run `hermes memory setup` to configure Cognee.\n")
+        print("Run `hermes memory setup cognee` to make Cognee your memory provider.\n")
         return
-    print("\nInstall via the Hermes catalog (available after catalog acceptance):")
+    print("\nInstall via the Hermes catalog:")
     print("  hermes plugins install cognee")
-    print("  hermes plugins enable cognee")
-    print("  hermes memory setup")
+    print("  hermes memory setup cognee   # selects Cognee as the memory provider")
     print("  # Updates: hermes plugins update cognee")
     print("\nInstall via pip:")
     print("  pip install cognee-integration-hermes-agent")
     print("  cognee-hermes-install     # copies the plugin into $HERMES_HOME/plugins")
-    print("  hermes memory setup")
+    print("  hermes memory setup cognee")
     print("  # Updates: pip install -U cognee-integration-hermes-agent, then cognee-hermes-install")
     print("\nInstall from a checkout into a Hermes home without an existing Cognee plugin:")
     print("  mkdir -p ~/.hermes/plugins/cognee")
     print(f"  cp -R {here}/. ~/.hermes/plugins/cognee/")
-    print("  hermes memory setup\n")
+    print("  hermes memory setup cognee")
+    print(f"\nLocal mode also needs {LOCAL_COGNEE_REQUIREMENT} installed; remote mode does not.\n")
 
 
 def cognee_command(args) -> None:

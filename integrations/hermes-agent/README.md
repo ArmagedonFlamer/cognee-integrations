@@ -56,7 +56,8 @@ Python package with the `hermes_agent.plugins` entry point.
   reported timeout.
 - Mirrors explicit Hermes memory writes through `on_memory_write`, and steers
   the agent to prefer Cognee over Hermes' built-in memory files.
-- Supports local embedded Cognee and remote Cognee service mode.
+- Works with Cognee Cloud or another cognee server out of the box, and with a
+  local cognee server when the `cognee` package is installed.
 - Closes every session out of process, the way the other cognee plugins do: a
   detached worker bridges the session into the graph and only then unregisters
   from the server. Exiting Hermes never waits on a graph build, and the promotion
@@ -92,24 +93,36 @@ Python package with the `hermes_agent.plugins` entry point.
 
 ### 1. Install the plugin
 
-**Hermes catalog — available after catalog acceptance:**
+**Hermes catalog (recommended):**
 
 ```bash
 hermes plugins install cognee
-hermes plugins enable cognee
-hermes memory setup
+hermes memory setup cognee
 ```
+
+Installing alone does not turn memory on: Hermes uses a memory plugin only once
+it is the selected `memory.provider`. `hermes memory setup cognee` selects it and
+walks you through step 2a or 2b. `hermes plugins enable cognee` and the toggle in
+the Desktop app enable the plugin but do **not** select it, so after either one
+`hermes memory status` still shows `Provider: (none)` until you run the setup.
+(`hermes plugins install cognee --enable` also selects it, but you still need the
+setup for the service URL and keys.)
 
 Catalog installs use the commit reviewed by Hermes. Update them with
 `hermes plugins update cognee`; a newer PyPI release does not change the
 reviewed catalog version. The pip installer refuses to overwrite a catalog copy.
 
-**Via pip (available now):**
+**Via pip:**
 
 ```bash
 pip install cognee-integration-hermes-agent
 cognee-hermes-install
+hermes memory setup cognee
 ```
+
+For local mode, also install `cognee==1.6.5` into the same environment (it is
+listed in `local-mode-requirements.txt`). The package does not depend on it;
+see the prerequisites above.
 
 The pip package registers the memory provider through Hermes' entry-point
 discovery. The second command copies it into `~/.hermes/plugins/cognee/` to
@@ -126,14 +139,18 @@ mkdir -p ~/.hermes/plugins/cognee
 cp -R cognee-integrations/integrations/hermes-agent/. ~/.hermes/plugins/cognee/
 ```
 
-### 2a. Connect locally (default)
+### 2a. Connect locally
+
+Needs the `cognee` package in Hermes's environment (see the prerequisites).
+Without it, the wizard defaults to remote mode, and local mode fails at session
+start with a message saying so, unless another cognee plugin's server is
+already running on port 8011.
 
 ```bash
-hermes memory setup
+hermes memory setup cognee
 ```
 
-Select `cognee` in the provider picker, choose **Mode: local**, and paste your
-LLM API key when asked. That's the whole setup — the wizard writes non-secrets
+Choose **Mode: local**, and paste your LLM API key when asked. That's the whole setup — the wizard writes non-secrets
 to `~/.hermes/cognee.json` and secrets to `~/.hermes/.env`.
 
 On your next `hermes` session the plugin starts a cognee server on
@@ -160,10 +177,11 @@ the [Cognee Cloud dashboard](https://platform.cognee.ai/), then run the same
 wizard and choose **Mode: remote**:
 
 ```bash
-hermes memory setup     # cognee -> Mode: remote -> tenant URL + API key
+hermes memory setup cognee     # Mode: remote -> tenant URL + API key
 ```
 
-Verify: `hermes cognee status` shows your tenant URL, and the same
+Start a new `hermes` session. Verify: `hermes memory status` shows
+`Provider: cognee`, `hermes cognee status` shows your tenant URL, and the same
 remember-`/new`-recall chat round trip works. Nothing runs locally in this
 mode — no server is spawned and no LLM key is used; every request goes to the
 tenant, authenticated with your API key via `X-Api-Key`.
