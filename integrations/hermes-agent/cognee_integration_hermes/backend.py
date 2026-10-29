@@ -40,11 +40,22 @@ class CogneeNotInstalledError(RuntimeError):
 
 
 def cognee_not_installed_message(mode: str) -> str:
+    remote = (
+        "Or use Cognee Cloud or another cognee server: run `hermes memory setup cognee`, "
+        "choose remote, and enter the service URL and API key."
+    )
+    if mode == "local":
+        return (
+            "cognee local mode needs its runtime, which is not installed yet. Run "
+            "`hermes cognee install-runtime` in a terminal: it installs "
+            f"{LOCAL_COGNEE_REQUIREMENT} into a private environment (about 1 GB from PyPI), "
+            f"kept apart from Hermes's own because their dependencies conflict. {remote}"
+        )
     return (
-        f"cognee {mode} mode needs the cognee package ({LOCAL_COGNEE_REQUIREMENT}), "
-        "which this plugin does not install: its dependencies conflict with Hermes's "
-        "own. Use Cognee Cloud or another cognee server instead: run "
-        "`hermes memory setup`, choose remote, and enter the service URL and API key."
+        f"cognee {mode} mode needs the cognee package ({LOCAL_COGNEE_REQUIREMENT}) in "
+        "Hermes's own Python environment, which this plugin does not install: its "
+        "dependencies conflict with Hermes's. Local mode runs cognee in a private "
+        f"environment instead (unset COGNEE_EMBEDDED). {remote}"
     )
 
 

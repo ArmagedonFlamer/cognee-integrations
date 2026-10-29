@@ -69,7 +69,7 @@ def test_is_available(config, cognee, expected):
     p = provider_mod.CogneeMemoryProvider(backend=FakeBackend())
     with (
         mock.patch.object(provider_mod, "load_config", return_value=config),
-        mock.patch.object(provider_mod, "has_cognee", return_value=cognee),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=cognee),
     ):
         assert p.is_available() is expected
 
@@ -77,7 +77,7 @@ def test_is_available(config, cognee, expected):
 def test_a_running_server_is_used_without_cognee():
     with (
         mock.patch.object(sb, "health_ok", return_value=True),
-        mock.patch.object(sb, "has_cognee", return_value=False),
+        mock.patch.object(sb, "server_python", return_value=None),
         mock.patch.object(sb, "_spawn") as spawn,
     ):
         assert sb.ensure_local_server(8011) == "http://127.0.0.1:8011"
@@ -87,10 +87,10 @@ def test_a_running_server_is_used_without_cognee():
 def test_no_server_and_no_cognee_fails_without_spawning():
     with (
         mock.patch.object(sb, "health_ok", return_value=False),
-        mock.patch.object(sb, "has_cognee", return_value=False),
+        mock.patch.object(sb, "server_python", return_value=None),
         mock.patch.object(sb, "_spawn") as spawn,
     ):
-        with pytest.raises(CogneeNotInstalledError, match="hermes memory setup"):
+        with pytest.raises(CogneeNotInstalledError, match="hermes cognee install-runtime"):
             sb.ensure_local_server(8011, boot_timeout=0)
     spawn.assert_not_called()
 
@@ -101,9 +101,9 @@ def test_local_mode_without_cognee_reports_the_fix_not_the_generic_error(monkeyp
     p = provider_mod.CogneeMemoryProvider(backend=FakeBackend())
     with (
         mock.patch.object(sb, "health_ok", return_value=False),
-        mock.patch.object(sb, "has_cognee", return_value=False),
+        mock.patch.object(sb, "server_python", return_value=None),
     ):
-        with pytest.raises(CogneeNotInstalledError, match="choose remote"):
+        with pytest.raises(CogneeNotInstalledError, match="install-runtime"):
             p.initialize("sid")
 
 

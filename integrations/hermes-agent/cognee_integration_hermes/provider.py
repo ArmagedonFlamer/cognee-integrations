@@ -19,6 +19,7 @@ from . import (
     exit_watcher,
     recall_text,
     recap,
+    runtime_env,
     write_buffer,
 )
 from .backend import (
@@ -26,7 +27,6 @@ from .backend import (
     MemoryBackend,
     build_backend,
     default_backend,
-    has_cognee,
 )
 from .config import (
     DEFAULT_DATASET,
@@ -34,6 +34,7 @@ from .config import (
     DEFAULT_IDENTITY_PASSWORD,
     DEFAULT_LOCAL_PORT,
     DEFAULT_SERVER_BOOT_TIMEOUT,
+    LOCAL_COGNEE_REQUIREMENT,
     SHARED_PLUGIN_STATE_DIR,
     load_config,
     resolve_hermes_home,
@@ -346,7 +347,7 @@ class CogneeMemoryProvider(MemoryProvider):
         # Remote mode is plain HTTP; only local and embedded mode run cognee here.
         if cfg.get("service_url"):
             return True
-        return has_cognee() and bool(cfg.get("llm_api_key"))
+        return runtime_env.local_ready() and bool(cfg.get("llm_api_key"))
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
@@ -410,10 +411,11 @@ class CogneeMemoryProvider(MemoryProvider):
         print("  Deployment:")
         print("    local  - a cognee server on this machine")
         print("    remote - Cognee service or Cognee Cloud")
-        local_ready = has_cognee()
+        local_ready = runtime_env.local_ready()
         if not local_ready:
-            print("  Local mode needs the cognee package, which is not installed;")
-            print("  remote mode works without it.")
+            print("  Local mode needs a cognee runtime, which is not installed yet: picking")
+            print(f"  local offers to install it ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from")
+            print("  PyPI). Remote mode needs nothing installed.")
 
         current = load_config(hermes_home)
         default_mode = "remote" if current.get("service_url") or not local_ready else "local"
@@ -453,6 +455,8 @@ class CogneeMemoryProvider(MemoryProvider):
             if llm_model:
                 file_values["llm_model"] = llm_model
                 env_values["LLM_MODEL"] = llm_model
+            if not local_ready:
+                _offer_runtime_install()
 
         save_plugin_config(file_values, hermes_home)
         save_env_vars(env_values, hermes_home)
@@ -2321,6 +2325,21 @@ def _prompt(label: str, default: str | None = None) -> str:
     except (EOFError, KeyboardInterrupt):
         value = ""
     return value or (default or "")
+
+
+def _offer_runtime_install() -> None:
+    """Local branch of setup: build the runtime venv now, with the user's yes."""
+    if not _prompt_bool(
+        f"Install the local runtime now ({LOCAL_COGNEE_REQUIREMENT}, about 1 GB from PyPI)",
+        True,
+    ):
+        print("  Skipped. Install it later with: hermes cognee install-runtime")
+        return
+    try:
+        runtime_env.install_runtime()
+    except runtime_env.RuntimeInstallError as exc:
+        print(f"  Could not install the local runtime: {exc}")
+        print("  Retry with: hermes cognee install-runtime")
 
 
 def _prompt_bool(label: str, default: bool) -> bool:

@@ -69,9 +69,9 @@ def _dead_child(returncode=3):
 
 class TestEnsureLocalServer(unittest.TestCase):
     def setUp(self):
-        # _spawn is faked throughout, so the package itself is never needed; the
-        # missing-package path is covered in test_local_mode_requirement.py.
-        patcher = mock.patch.object(sb, "has_cognee", return_value=True)
+        # _spawn is faked throughout, so no interpreter with cognee is needed; the
+        # no-runtime path is covered in test_local_mode_requirement.py.
+        patcher = mock.patch.object(sb, "server_python", return_value=sys.executable)
         patcher.start()
         self.addCleanup(patcher.stop)
 
