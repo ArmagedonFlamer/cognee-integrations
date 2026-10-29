@@ -579,11 +579,12 @@ Hermes stores, so each credited answer carries about 800 characters of LaTeX in
 the chat history.
 
 In the terminal chats, the terminal UI (`hermes --tui`) and the classic chat
-(`hermes`), the answer streams to the screen before the hook runs, so the
-`> Cognee: …` line stays and the Cognee logo in braille is printed under it:
+(`hermes`), the answer streams to the screen before the hook runs, so the line the
+agent wrote stays. There the agent is asked for the line without the `Cognee:` label,
+and the Cognee logo in braille is printed under it as a signature:
 
 ```
-> Cognee: Mika likes Yuji and volleyball, based on dataset agent_sessions.
+> Mika likes Yuji and volleyball, based on dataset agent_sessions.
 
 ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯
 ⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
@@ -593,7 +594,7 @@ Rewriting the line instead would show the answer twice: the classic chat prints 
 replaced answer again, and the terminal UI keeps the streamed text and adds the new
 answer under it. With streaming off in the classic chat
 (`hermes config set display.streaming false`), the line is replaced by the logo with
-the sentence beside its first row. Messaging apps show the plain line for now.
+the sentence beside its first row instead. Messaging apps show the plain line for now.
 
 How it works:
 

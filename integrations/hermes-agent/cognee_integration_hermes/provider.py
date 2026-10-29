@@ -327,6 +327,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._session_id = ""
         self._session_cognee_id = ""
         self._dataset = DEFAULT_DATASET
+        self._platform = ""  # Hermes' platform for this session; shapes the credit line
         self._top_k = 5
         self._auto_route = True
         self._improve_on_end = True
@@ -554,6 +555,7 @@ class CogneeMemoryProvider(MemoryProvider):
         self._auto_route = str_to_bool(self._config.get("auto_route"), True)
         self._improve_on_end = str_to_bool(self._config.get("improve_on_end"), True)
         self._writes_enabled = kwargs.get("agent_context", "primary") in {"", "primary", None}
+        self._platform = str(kwargs.get("platform") or "")
         self._session_cognee_id = self._build_cognee_session_id(session_id, **kwargs)
         self._apply_dataset_override()
         try:
@@ -1823,7 +1825,10 @@ class CogneeMemoryProvider(MemoryProvider):
                     if cite and credit.found:
                         instruction = (
                             memory_credit.credit_instruction(
-                                not credit.credited, len(credit.found), self._dataset
+                                not credit.credited,
+                                len(credit.found),
+                                self._dataset,
+                                self._platform,
                             )
                             + "\n\n"
                         )
@@ -1888,7 +1893,9 @@ class CogneeMemoryProvider(MemoryProvider):
                         else "Cognee recall"
                     )
                     item["tag"] = self._credit.label("recall", origin, item["text"])
-                envelope["credit"] = memory_credit.tool_credit_instruction(self._dataset)
+                envelope["credit"] = memory_credit.tool_credit_instruction(
+                    self._dataset, self._platform
+                )
             if overflow:
                 # Non-empty results still warn: mean-pooled vectors match
                 # *something*, so plausible-but-wrong hits are the overflow's

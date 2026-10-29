@@ -128,10 +128,19 @@ FIRST_CREDIT_ADDENDUM = (
 )
 
 
-def _credit_rule(source: str) -> str:
+def _credit_rule(source: str, platform: str = "") -> str:
     # The dataset is named as "dataset <name>": a bare name such as "agent_sessions"
     # reads as a person or a document ("agent_sessions says…").
     where = f"dataset {source}" if source else "Cognee memory"
+    if signs_with_logo(platform):
+        return (
+            'end the answer with one line that starts with "> " and says, in your own '
+            f'words, what you remembered and that it is based on {where}. Write "{where}" '
+            f"exactly so. For example:\n"
+            f"> you prefer the server over the CLI, based on {where}.\n"
+            "Do not copy the example, and do not write the tags or the word Cognee in that "
+            "line: the Cognee logo is added under it."
+        )
     return (
         'end the answer with one line that starts with "> Cognee:" and says, in your own '
         f'words, what you remembered and that it is based on {where}. Write "{where}" '
@@ -141,13 +150,15 @@ def _credit_rule(source: str) -> str:
     )
 
 
-def credit_instruction(first_in_session: bool, found: int, source: str = "") -> str:
+def credit_instruction(
+    first_in_session: bool, found: int, source: str = "", platform: str = ""
+) -> str:
     noun = "1 memory" if found == 1 else f"{found} memories"
     text = (
         f"Crediting Cognee memory: Cognee found {noun} for this prompt, each tagged below "
         "as [mN · where it came from]. A memory recalled again in this session keeps its "
         "tag. If your answer uses information from a tagged item, "
-        f"{_credit_rule(source)} Credit only items Cognee tagged, and "
+        f"{_credit_rule(source, platform)} Credit only items Cognee tagged, and "
         "only items your answer actually used. Never credit Cognee for what you know from "
         "project instruction files, your own memory files, the code, or this conversation. "
         "If no tagged item was used, do not mention memory."
@@ -155,11 +166,11 @@ def credit_instruction(first_in_session: bool, found: int, source: str = "") -> 
     return f"{text} {FIRST_CREDIT_ADDENDUM}" if first_in_session else text
 
 
-def tool_credit_instruction(source: str = "") -> str:
+def tool_credit_instruction(source: str = "", platform: str = "") -> str:
     """The same instruction for results of the agent's own ``cognee_recall`` call."""
     return (
         "Each result is tagged [mN · where it came from]. If your answer uses one, "
-        f"{_credit_rule(source)} Credit only results your answer "
+        f"{_credit_rule(source, platform)} Credit only results your answer "
         "actually used."
     )
 
@@ -168,6 +179,10 @@ def tool_credit_instruction(source: str = "") -> str:
 _PLAIN_CREDIT_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(?=\S)", re.M)
 #: The same line with its sentence captured, for the braille form.
 _PLAIN_CREDIT_LINE_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(\S[^\n]*)$", re.M)
+#: The terminal's credit line: quoted, unlabelled, saying what it is based on
+#: (the logo signs it, see ``signs_with_logo``).
+_BASED_ON = r"\bbased on (?:dataset \S+|Cognee memory)"
+_SIGNED_LINE_RE = re.compile(rf"^([ \t]*)>[ \t]*(\S[^\n]*{_BASED_ON}[^\n]*)$", re.M)
 #: A credit in any form: the plain line, the rendered wordmark, or the earlier
 #: braille logo (plain or KaTeX-coloured), each followed by something said.
 _KATEX_OPEN = r"(?:\$\\color\{[^}\n]*\}\{\\text\{)?"
@@ -183,7 +198,7 @@ _LEAD = (
     rf"(?:>[ \t]*(?:Cognee:|{_DRAWN}|{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE})"
     rf"|{_DRAWN}|{LOGOTYPE[0]})"
 )
-_CREDIT_RE = re.compile(rf"^[ \t]*{_LEAD}[ \t]*\S", re.M)
+_CREDIT_RE = re.compile(rf"^[ \t]*(?:{_LEAD}[ \t]*\S|>[^\n]*{_BASED_ON})", re.M)
 #: Tags cited the way the Claude Code and Codex plugins ask (``Cognee memory
 #: [m2]``); ``arr[m1]`` in code is not a citation.
 _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
@@ -193,6 +208,7 @@ _STRIP_RES = (
     re.compile(rf"^[ \t]*{_LEAD}[^\n]*(?:\n|$)", re.M),
     re.compile(rf"^[ \t]*>[ \t]*{_KATEX_OPEN}[\u2800-\u28ff]{{6,}}[^\n]*(?:\n|$)", re.M),
     re.compile(rf"^[ \t]*{LOGOTYPE[1]}[ \t]*(?:\n|$)", re.M),
+    re.compile(rf"^[ \t]*>[^\n]*{_BASED_ON}[^\n]*(?:\n|$)", re.M),
     re.compile(r"^[ \t]*(?:>[ \t]*)?🧠?[ \t]*Cognee memory[ \t]*\[m\d+[^\n]*(?:\n|$)", re.M),
 )
 
@@ -202,8 +218,9 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
 
     The ``transform_llm_output`` hook's work. In Hermes Desktop the line becomes the
     Cognee pixel logo, half an em of space and the sentence (no quote marker: Desktop
-    draws a blockquote with a quotation mark). In the terminal UI and the streaming
-    classic CLI the braille logo is appended below the streamed line; the
+    draws a blockquote with a quotation mark). In the terminal chats the agent writes
+    the line without the label (``signs_with_logo``); in the terminal UI and the
+    streaming classic CLI the braille logo is appended below it as a signature; the
     non-streaming classic CLI gets the logo with the sentence beside its first row
     (see ``CLI_PLATFORM``). Messaging apps are left as written.
     """
@@ -215,19 +232,31 @@ def render_credit(response_text: str, platform: str = "") -> str | None:
         return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{drawn} ", response_text)
     if platform not in BRAILLE_PLATFORMS:
         return None
-    if not _PLAIN_CREDIT_LINE_RE.search(response_text):
+    line_re = next(
+        (r for r in (_PLAIN_CREDIT_LINE_RE, _SIGNED_LINE_RE) if r.search(response_text)), None
+    )
+    if line_re is None:
         return None
     if platform != CLI_PLATFORM or _cli_streams():
-        # Append-only: the streamed text stays, the logo goes underneath it, after a
-        # blank line so it is not drawn inside the quote.
+        # Append-only: the streamed text stays, the logo goes underneath it as a
+        # signature, after a blank line so it is not drawn inside the quote.
         return f"{response_text.rstrip()}\n\n{LOGOTYPE[0]}\n{LOGOTYPE[1]}"
     # Two trailing spaces: a markdown hard break, so a renderer that joins the lines
     # of a paragraph (the classic CLI's ``final_response_markdown: render``) keeps
     # the rows stacked; invisible where lines are shown as written.
-    return _PLAIN_CREDIT_LINE_RE.sub(
+    return line_re.sub(
         lambda m: f"{m.group(1)}{LOGOTYPE[0]}  {m.group(2)}  \n{m.group(1)}{LOGOTYPE[1]}",
         response_text,
     )
+
+
+def signs_with_logo(platform: str) -> bool:
+    """Whether the agent's credit line is unlabelled on ``platform``, signed by the logo.
+
+    In the terminal chats the streamed line stays on screen, so a ``Cognee:`` label
+    would sit next to the logo the plugin adds under it.
+    """
+    return (platform or "").strip().lower() in BRAILLE_PLATFORMS
 
 
 def _cli_streams() -> bool:
