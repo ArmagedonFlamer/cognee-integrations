@@ -56,6 +56,12 @@ project adheres to [Semantic Versioning](https://semver.org/).
   The plugin description, `after-install.md`, the README and the `hermes cognee install` /
   `cognee-hermes-install` hints now give the same steps: install, run
   `hermes memory setup cognee` in a terminal, start a new chat.
+- **Memory credit in the answer**, as in the Cursor and Claude Code plugins: recalled items
+  (the per-prompt memory block and `cognee_recall` results) are tagged `[mN · where it came
+  from]` with one numbering per conversation, an instruction asks the agent to end an answer
+  that used them with `> 🧠 Cognee memory [mN]: …`, and the line is checked against the tags
+  handed out and stripped before the turn is stored. On by default;
+  `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
 - **Local mode works without an LLM key.** cognee 1.6.5 then builds memory with local
   models (GLiNER extraction, fastembed embeddings) installed into the runtime and downloaded
   on the first build (about 1.5 GB); recall returns the matching stored text. The setup's LLM
