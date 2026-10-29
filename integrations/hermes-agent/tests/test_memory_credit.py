@@ -87,7 +87,7 @@ def test_code_that_looks_like_a_tag_is_not_a_citation():
 PLAIN = "Mika likes Yuji.\n\n> Cognee: Mika likes Yuji and volleyball, based on agent_sessions."
 RENDERED = (
     "Mika likes Yuji.\n\n"
-    f"> {memory_credit.WORDMARK} Mika likes Yuji and volleyball, based on agent_sessions."
+    f"{memory_credit.WORDMARK[:-1]}\\quad$ Mika likes Yuji and volleyball, based on agent_sessions."
 )
 OLD_BRAILLE = (
     "Mika likes Yuji.\n\n"
@@ -254,3 +254,11 @@ def test_the_plugin_root_registers_the_hook_too():
 
     module.register(Ctx())
     assert "provider" in registered and "transform_llm_output" in registered
+
+
+def test_the_drawn_line_is_not_a_blockquote_and_leaves_space(cite_on):
+    # Desktop draws a blockquote with a quotation mark, and markdown collapses spaces.
+    line = memory_credit.render_credit(PLAIN, "desktop").splitlines()[-1]
+    assert line.startswith("$\\color{#BC9BFF}{")
+    assert "}\\quad$ Mika likes" in line
+    assert not memory_credit.has_credit("Cognee: is a memory layer")

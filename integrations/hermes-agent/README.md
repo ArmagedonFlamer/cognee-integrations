@@ -571,7 +571,9 @@ recalled memory, the agent ends it with one plain line:
 In Hermes Desktop the plugin replaces `Cognee:` with the Cognee pixel logo in the
 brand purple (`#BC9BFF`), through Hermes' `transform_llm_output` hook. It is drawn
 in KaTeX, which Desktop renders: one coloured `\rule` per run of squares on the
-logo's five-row grid, about a capital letter tall. The logo is always exact
+logo's five-row grid, about a capital letter tall, followed by an em of space
+and the sentence. The drawn line is not a blockquote (Desktop draws those with a
+quotation mark). The logo is always exact
 because the agent only writes the plain line. The rewritten answer is what
 Hermes stores, so each credited answer carries about 800 characters of LaTeX in
 the chat history. The terminal and messaging apps show the plain
