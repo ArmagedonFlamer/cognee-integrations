@@ -350,3 +350,28 @@ def test_the_provider_shapes_the_credit_for_its_platform(cite_on):
         provider.queue_prefetch("what does mika like")
         out = provider.prefetch("what does mika like")
     assert "the Cognee logo is added under it" in out
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "> Mika's likes come from earlier sessions stored in dataset agent_sessions.",
+        "> From dataset agent_sessions: Mika likes Yuji.",
+        "> Mika likes Yuji, as remembered in Cognee memory.",
+    ],
+)
+def test_the_signed_line_is_recognised_however_it_is_worded(cite_on, line):
+    # Seen live: the agent wrote "stored in dataset …", not "based on dataset …".
+    answer = f"Mika likes Yuji.\n\n{line}"
+    top, bottom = memory_credit.LOGOTYPE
+    out = memory_credit.render_credit(answer, "tui")
+    assert out == f"{answer}\n\n{top}\n{bottom}"
+    assert memory_credit.has_credit(out)
+    assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
+
+
+def test_a_quote_naming_a_dataset_mid_answer_is_left_alone(cite_on):
+    answer = "> Load dataset agent_sessions first.\n\nThen run the import."
+    assert memory_credit.render_credit(answer, "tui") is None
+    assert not memory_credit.has_credit(answer)
+    assert memory_credit.strip_credit_lines(answer) == answer

@@ -28,6 +28,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
     `display.streaming` off, the logo replaces the quote marker instead, with the sentence
     beside its first row.
   - Messaging apps keep the plain `> Cognee:` line for now.
+  - In the terminal the unlabelled line is recognised by where it is and what it names: the
+    answer's last line, quoted, naming `dataset <name>` or `Cognee memory`, however the rest is
+    worded (seen live: "stored in dataset agent_sessions", not "based on").
   - Every form of the credit, drawn or plain, is stripped before the turn is stored.
 
 ## [1.4.0]
