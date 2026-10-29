@@ -56,6 +56,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   The plugin description, `after-install.md`, the README and the `hermes cognee install` /
   `cognee-hermes-install` hints now give the same steps: install, run
   `hermes memory setup cognee` in a terminal, start a new chat.
+- **The local server no longer reads `~/.cognee-plugin/.env`.** cognee >= 1.6.2 loads the
+  first `.env` found walking up from its working directory, with that file overriding the
+  environment; from the plugin's state directory the walk reached `~/.cognee-plugin/.env`,
+  the file the other cognee plugins keep their keys in, so the server ran on their LLM key and
+  settings instead of the ones Hermes passed in. The server now starts with `COGNEE_ENV_FILE`
+  pointing at an empty file of the plugin's own (`~/.cognee-plugin/hermes/cognee-server.env`);
+  a `COGNEE_ENV_FILE` you set yourself still wins.
 - CI installs `local-mode-requirements.txt` (the same pin) for the tests that run against
   cognee, and runs them with `uv run --no-sync` so the install is kept.
 
