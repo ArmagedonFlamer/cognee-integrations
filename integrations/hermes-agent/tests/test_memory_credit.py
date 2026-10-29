@@ -267,9 +267,25 @@ def test_the_drawn_line_is_not_a_blockquote_and_leaves_space(cite_on):
     assert not memory_credit.has_credit("Cognee: is a memory layer")
 
 
-def test_the_terminal_ui_gets_the_braille_logo(cite_on):
-    # The TUI shows each line as written and draws "> " quotes with a bar.
+def test_the_terminal_ui_gets_the_logo_appended(cite_on):
+    # The TUI always streams and keeps the streamed text unless the final starts
+    # with it, so a replaced credit line would show the answer twice.
     out = memory_credit.render_credit(PLAIN, "tui")
+    top, bottom = memory_credit.LOGOTYPE
+    assert out == f"{PLAIN}\n\n{top}\n{bottom}"
+    assert out.startswith(PLAIN)
+
+
+def test_the_streaming_classic_cli_gets_the_logo_appended(cite_on, monkeypatch):
+    # A streamed answer is already on screen; Hermes shows only an appended suffix
+    # cleanly (a replaced answer would be printed a second time).
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
+    assert memory_credit.render_credit(PLAIN, "cli") == memory_credit.render_credit(PLAIN, "tui")
+
+
+def test_the_non_streaming_classic_cli_gets_the_line_replaced(cite_on, monkeypatch):
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: False)
+    out = memory_credit.render_credit(PLAIN, "cli")
     top, bottom = memory_credit.LOGOTYPE
     assert out.endswith(
         f"{top}  Mika likes Yuji and volleyball, based on agent_sessions.  \n{bottom}"
@@ -277,30 +293,15 @@ def test_the_terminal_ui_gets_the_braille_logo(cite_on):
     assert "> " not in out
 
 
-def test_a_braille_credit_counts_and_both_rows_are_stripped(cite_on):
-    out = memory_credit.render_credit(PLAIN, "tui")
+@pytest.mark.parametrize("streams", [True, False])
+def test_a_braille_credit_counts_and_both_rows_are_stripped(cite_on, monkeypatch, streams):
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: streams)
+    out = memory_credit.render_credit(PLAIN, "cli")
     assert memory_credit.has_credit(out)
     assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
     # A logo row alone, or braille inside a sentence, is not a credit.
     assert not memory_credit.has_credit(memory_credit.LOGOTYPE[0])
     assert not memory_credit.has_credit(f"see {memory_credit.LOGOTYPE[0]} here")
-
-
-def test_the_streaming_classic_cli_gets_the_logo_appended(cite_on, monkeypatch):
-    # A streamed answer is already on screen; Hermes shows only an appended suffix
-    # cleanly (a replaced answer would be printed a second time).
-    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
-    out = memory_credit.render_credit(PLAIN, "cli")
-    top, bottom = memory_credit.LOGOTYPE
-    assert out == f"{PLAIN}\n{top}\n{bottom}"
-    assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
-
-
-def test_the_non_streaming_classic_cli_gets_the_line_replaced(cite_on, monkeypatch):
-    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: False)
-    out = memory_credit.render_credit(PLAIN, "cli")
-    assert out == memory_credit.render_credit(PLAIN, "tui")
-    assert "> Cognee:" not in out
 
 
 def test_streaming_defaults_to_on_outside_hermes():
