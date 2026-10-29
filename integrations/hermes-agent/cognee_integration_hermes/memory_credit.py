@@ -3,19 +3,20 @@
 Every recalled item the agent is given gets a short tag (``m1``, ``m2``…) and a
 label saying where it came from, so it can tell Cognee's items from everything
 else it knows. An instruction above the memory asks the agent to end an answer
-that used them with the Cognee logo, drawn in braille, and what it remembered:
+that used them with one plain line:
 
-    > ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯ Mika likes tennis, based on agent_sessions.\
-    > ⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
+    > Cognee: Mika likes tennis, based on agent_sessions.
 
-That is the Cursor plugin's line with its logo link swapped for braille: Hermes
-Desktop draws an icon only for the hosts in its own brand list, which has no
-cognee.ai, and the terminal shows a link as text, while braille shows the same
-everywhere. Tags are numbered across the session and a memory recalled again
-keeps its tag.
+The plugin, not the agent, draws the logo: a ``transform_llm_output`` hook
+(:func:`render_credit`) swaps ``Cognee:`` for a purple bold COGNEE wordmark in
+Hermes Desktop, which renders KaTeX. Asking the agent to copy a logo itself
+failed live: it dropped braille cells, lost the colour markup and copied the
+placeholder, and Desktop's font draws braille as a grid of circles anyway.
+Other platforms keep the plain line for now.
 
-When the turn is stored, the answer's credit is noted and stripped, so it is
-never stored back into memory as if it were part of the answer.
+Tags are numbered across the session and a memory recalled again keeps its tag.
+When the turn is stored, the credit is noted and stripped, so it is never stored
+back into memory as if it were part of the answer.
 
 The provider lives for the whole session, so the tags live in memory: no state
 files, unlike the hook-based plugins. ``COGNEE_PLUGIN_CITE_MEMORY=off`` turns it
@@ -41,61 +42,39 @@ from .recall_text import (
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
-#: "COGNEE" six dots tall, as two braille rows (the Claude Code terminal
-#: logotype, one dot row taller). The markdown line break after the first row
-#: keeps the rows together in a rendered chat.
+#: The braille logotype an earlier version asked agents to copy; kept so a credit
+#: written that way is still recognised and stripped.
 LOGOTYPE = ("⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯", "⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓")
-#: The logo's colour where the chat renders it: Hermes Desktop renders KaTeX
-#: (``$…$``), and ``\color`` is the only way to colour text there. A mid purple
-#: between the Cognee wordmark's light and dark shades, readable on either theme.
+#: The wordmark's colour: a mid purple between the Cognee wordmark's light and
+#: dark shades, readable on either Desktop theme.
 LOGO_COLOR = "#9F7AEA"
-#: Platforms whose chat renders inline math. Elsewhere (the terminal, messaging
-#: apps) the KaTeX would show as source, so the logo stays plain braille.
+#: Platforms whose chat renders inline math (KaTeX), where ``Cognee:`` becomes the
+#: purple wordmark. Elsewhere the KaTeX would show as source.
 COLOR_PLATFORMS = frozenset({"desktop"})
+WORDMARK = "$\\color{%s}{\\textbf{COGNEE}}$" % LOGO_COLOR
 
 FIRST_CREDIT_ADDENDUM = (
-    "This would be the first Cognee credit in this session, so after what you remembered "
-    "also say in a few words how it connects to the earlier work."
+    "This would be the first Cognee credit in this session, so in that line also say in a "
+    "few words how it connects to the earlier work."
 )
 
 
-def logo_rows(colored: bool = False) -> tuple[str, str]:
-    """The logo's two rows, wrapped in KaTeX colour when the chat renders it."""
-    if not colored:
-        return LOGOTYPE
-    return tuple("$\\color{%s}{\\text{%s}}$" % (LOGO_COLOR, row) for row in LOGOTYPE)
-
-
-def _credit_lines(source: str, colored: bool) -> str:
-    top, bottom = logo_rows(colored)
-    return f"> {top} <what you remembered>, based on {source}.\\\n> {bottom}"
-
-
-def _copy_rule(colored: bool) -> str:
-    if colored:
-        return (
-            "Copy both lines exactly as shown, including the $…$ around each braille row "
-            "(it colours the logo) and the backslash ending the first line: together they "
-            "are the Cognee logo."
-        )
+def _credit_rule(source: str) -> str:
     return (
-        "Copy both braille rows exactly, including the backslash ending the first line: "
-        "together they are the Cognee logo."
+        'end the answer with one line that starts with "> Cognee:" and says, in your own '
+        f"words, what you remembered and that it is based on {source}. For example:\n"
+        f"> Cognee: you prefer the server over the CLI, based on {source}.\n"
+        "Do not copy the example, and do not write the tags in that line."
     )
 
 
-def credit_instruction(
-    first_in_session: bool, found: int, source: str = "", colored: bool = False
-) -> str:
+def credit_instruction(first_in_session: bool, found: int, source: str = "") -> str:
     noun = "1 memory" if found == 1 else f"{found} memories"
     text = (
         f"Crediting Cognee memory: Cognee found {noun} for this prompt, each tagged below "
         "as [mN · where it came from]. A memory recalled again in this session keeps its "
-        "tag. If your answer uses information from a tagged item, end the answer with these "
-        "two lines:\n"
-        f"{_credit_lines(source or 'Cognee memory', colored)}\n"
-        f"{_copy_rule(colored)} The logo names Cognee, so do not write the tags "
-        'or the words "Cognee memory" in these lines. Credit only items Cognee tagged, and '
+        "tag. If your answer uses information from a tagged item, "
+        f"{_credit_rule(source or 'Cognee memory')} Credit only items Cognee tagged, and "
         "only items your answer actually used. Never credit Cognee for what you know from "
         "project instruction files, your own memory files, the code, or this conversation. "
         "If no tagged item was used, do not mention memory."
@@ -103,32 +82,52 @@ def credit_instruction(
     return f"{text} {FIRST_CREDIT_ADDENDUM}" if first_in_session else text
 
 
-def tool_credit_instruction(source: str = "", colored: bool = False) -> str:
+def tool_credit_instruction(source: str = "") -> str:
     """The same instruction for results of the agent's own ``cognee_recall`` call."""
     return (
-        "Each result is tagged [mN · where it came from]. If your answer uses one, end it with "
-        "these two lines:\n"
-        f"{_credit_lines(source or 'Cognee memory', colored)}\n"
-        f"{_copy_rule(colored)} "
-        'Do not write the tags or the words "Cognee memory" in them, and credit only results '
-        "your answer actually used."
+        "Each result is tagged [mN · where it came from]. If your answer uses one, "
+        f"{_credit_rule(source or 'Cognee memory')} Credit only results your answer "
+        "actually used."
     )
 
 
-#: A credit: a quoted line that opens with the logo's first row and goes on to
-#: say something. The logo alone, or braille elsewhere, is not one.
+#: The agent's plain credit line: ``> Cognee:`` then something said.
+_PLAIN_CREDIT_RE = re.compile(r"^([ \t]*>[ \t]*)Cognee:[ \t]*(?=\S)", re.M)
+#: A credit in any form: the plain line, the rendered wordmark, or the earlier
+#: braille logo (plain or KaTeX-coloured), each followed by something said.
 _KATEX_OPEN = r"(?:\$\\color\{[^}\n]*\}\{\\text\{)?"
 _KATEX_CLOSE = r"(?:\}\}\$)?"
-_CREDIT_RE = re.compile(rf"^[ \t]*>[ \t]*{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE}[ \t]+\S", re.M)
+_LEAD = (
+    r"(?:Cognee:"
+    r"|\$\\color\{[^}\n]*\}\{\\textbf\{COGNEE\}\}\$"
+    rf"|{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE})"
+)
+_CREDIT_RE = re.compile(rf"^[ \t]*>[ \t]*{_LEAD}[ \t]*\S", re.M)
 #: Tags cited the way the Claude Code and Codex plugins ask (``Cognee memory
 #: [m2]``); ``arr[m1]`` in code is not a citation.
 _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
-#: Lines cut before storing: a quoted line led by braille (either logo row, any
-#: logotype version) and the older ``🧠 Cognee memory [mN]`` line.
+#: Lines cut before storing: every credit form above, the braille logo's second
+#: row, and the older ``🧠 Cognee memory [mN]`` line.
 _STRIP_RES = (
+    re.compile(rf"^[ \t]*>[ \t]*{_LEAD}[^\n]*(?:\n|$)", re.M),
     re.compile(rf"^[ \t]*>[ \t]*{_KATEX_OPEN}[\u2800-\u28ff]{{6,}}[^\n]*(?:\n|$)", re.M),
     re.compile(r"^[ \t]*(?:>[ \t]*)?🧠?[ \t]*Cognee memory[ \t]*\[m\d+[^\n]*(?:\n|$)", re.M),
 )
+
+
+def render_credit(response_text: str, platform: str = "") -> str | None:
+    """The answer with its ``> Cognee:`` line drawn for ``platform``, or None to leave it.
+
+    The ``transform_llm_output`` hook's work: in Hermes Desktop, ``Cognee:`` becomes the
+    purple bold COGNEE wordmark. Other platforms are left as written for now.
+    """
+    if not credit_enabled() or (platform or "").strip().lower() not in COLOR_PLATFORMS:
+        return None
+    if not response_text or not _PLAIN_CREDIT_RE.search(response_text):
+        return None
+    return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{WORDMARK} ", response_text)
+
+
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
 _AGENTS = {
     "claude": "Claude Code",

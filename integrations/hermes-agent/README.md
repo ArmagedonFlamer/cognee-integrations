@@ -562,23 +562,17 @@ promotes into the graph at session end, but they are not searched as raw entries
 ### Memory credit in the answer
 
 On by default, as in the Cursor and Claude Code plugins. When an answer uses
-recalled memory, it ends with the Cognee logo, drawn in braille, and what was
-remembered:
+recalled memory, the agent ends it with one plain line:
 
 ```
-> ⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯ Mika likes tennis, based on agent_sessions.\
-> ⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
+> Cognee: Mika likes Yuji and volleyball, based on agent_sessions.
 ```
 
-The two braille rows spell COGNEE; the backslash is a markdown line break that
-keeps them together in a rendered chat. In Hermes Desktop the logo is purple: each
-row is written as KaTeX, `$\color{#9F7AEA}{\text{…}}$`, which Desktop renders
-(it is the only way to colour text there). In the terminal and messaging apps,
-which would show that as source, the logo stays plain braille; the plugin picks by
-the platform Hermes reports for the chat. It is the Cursor plugin's line with its
-logo link replaced by braille: Hermes Desktop draws an icon only for the sites in
-its own brand list, which has no cognee.ai, and the terminal shows links as
-text, while braille looks the same everywhere.
+In Hermes Desktop the plugin draws `Cognee:` as a purple bold **COGNEE**
+wordmark (KaTeX, `$\color{#9F7AEA}{\textbf{COGNEE}}$`, which Desktop renders),
+through Hermes' `transform_llm_output` hook, so the logo is always exact: the
+agent only writes the plain line. The terminal and messaging apps show the plain
+line for now.
 
 How it works:
 
