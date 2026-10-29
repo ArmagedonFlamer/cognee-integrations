@@ -394,7 +394,7 @@ class CogneeMemoryProvider(MemoryProvider):
             },
             {
                 "key": "llm_api_key",
-                "description": "LLM API key for local embedded Cognee",
+                "description": "LLM API key for local mode (optional: blank uses local models)",
                 "secret": True,
                 "required": False,
                 "env_var": "LLM_API_KEY",
@@ -482,7 +482,9 @@ class CogneeMemoryProvider(MemoryProvider):
             env_values["COGNEE_BASE_URL"] = ""
             env_values["COGNEE_SERVICE_URL"] = ""  # clear deprecated alias
             env_values["COGNEE_API_KEY"] = ""
-            llm_key = _prompt_secret("LLM API key", keep=bool(current.get("llm_api_key")))
+            llm_key = _prompt_secret(
+                "LLM API key (blank: local models, no key)", keep=bool(current.get("llm_api_key"))
+            )
             if llm_key:
                 env_values["LLM_API_KEY"] = llm_key
             llm_model = _prompt("LLM model", default=str(current.get("llm_model") or ""))
