@@ -69,8 +69,9 @@ project adheres to [Semantic Versioning](https://semver.org/).
   answer that used them with one plain line, `> Cognee: <what it remembered>, based on
   dataset <name>`. A `transform_llm_output` hook replaces `Cognee:` with the Cognee pixel logo in
   the brand purple in Hermes Desktop (KaTeX rules on the logo's five-row grid), so the logo is
-  always exact; other platforms keep the
-  plain line for now. (Asking the agent to copy a braille logo itself failed live: it dropped
+  always exact; in the terminal UI
+  (`hermes --tui`) it becomes the Cognee logo in braille with the sentence beside its first
+  row; the classic terminal chat and messaging apps keep the plain line for now. (Asking the agent to copy a braille logo itself failed live: it dropped
   cells, lost the colour markup and copied the placeholder.) The credit is noted and stripped
   before the turn is stored. On by default; `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
 - **Local mode works without an LLM key.** cognee 1.6.5 then builds memory with local

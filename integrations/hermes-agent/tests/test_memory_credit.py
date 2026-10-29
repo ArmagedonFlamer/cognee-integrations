@@ -265,3 +265,22 @@ def test_the_drawn_line_is_not_a_blockquote_and_leaves_space(cite_on):
     assert line.startswith("$\\color{#BC9BFF}{")
     assert "}\\enspace$ Mika likes" in line
     assert not memory_credit.has_credit("Cognee: is a memory layer")
+
+
+def test_the_terminal_ui_gets_the_braille_logo(cite_on):
+    # The TUI shows each line as written and draws "> " quotes with a bar.
+    out = memory_credit.render_credit(PLAIN, "tui")
+    top, bottom = memory_credit.LOGOTYPE
+    assert out.endswith(
+        f"{top}  Mika likes Yuji and volleyball, based on agent_sessions.\n{bottom}"
+    )
+    assert "> " not in out
+
+
+def test_a_braille_credit_counts_and_both_rows_are_stripped(cite_on):
+    out = memory_credit.render_credit(PLAIN, "tui")
+    assert memory_credit.has_credit(out)
+    assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
+    # A logo row alone, or braille inside a sentence, is not a credit.
+    assert not memory_credit.has_credit(memory_credit.LOGOTYPE[0])
+    assert not memory_credit.has_credit(f"see {memory_credit.LOGOTYPE[0]} here")

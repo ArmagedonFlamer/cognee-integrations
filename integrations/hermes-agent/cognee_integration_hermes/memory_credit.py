@@ -42,9 +42,14 @@ from .recall_text import (
 
 ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 
-#: The braille logotype an earlier version asked agents to copy; kept so a credit
-#: written that way is still recognised and stripped.
+#: "COGNEE" six dots tall as two braille rows: the logo the plugin draws in the
+#: terminal UI (an earlier version asked agents to copy it, which they did badly).
 LOGOTYPE = ("⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯", "⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓")
+#: Platforms whose chat shows each line of an answer as written (no KaTeX): there
+#: the credit line becomes the braille logo, the sentence beside its first row and
+#: the second row on the line below. ``tui`` is ``hermes --tui`` (and Desktop's
+#: embedded terminal pane).
+BRAILLE_PLATFORMS = frozenset({"tui"})
 #: The Cognee logo's purple (the brand's pixel-logo artwork).
 LOGO_COLOR = "#BC9BFF"
 #: Platforms whose chat renders inline math (KaTeX), where ``Cognee:`` becomes the
@@ -154,6 +159,8 @@ def tool_credit_instruction(source: str = "") -> str:
 
 #: The agent's plain credit line: ``> Cognee:`` then something said.
 _PLAIN_CREDIT_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(?=\S)", re.M)
+#: The same line with its sentence captured, for the braille form.
+_PLAIN_CREDIT_LINE_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(\S[^\n]*)$", re.M)
 #: A credit in any form: the plain line, the rendered wordmark, or the earlier
 #: braille logo (plain or KaTeX-coloured), each followed by something said.
 _KATEX_OPEN = r"(?:\$\\color\{[^}\n]*\}\{\\text\{)?"
@@ -167,7 +174,7 @@ _DRAWN = (
 )
 _LEAD = (
     rf"(?:>[ \t]*(?:Cognee:|{_DRAWN}|{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE})"
-    rf"|{_DRAWN})"
+    rf"|{_DRAWN}|{LOGOTYPE[0]})"
 )
 _CREDIT_RE = re.compile(rf"^[ \t]*{_LEAD}[ \t]*\S", re.M)
 #: Tags cited the way the Claude Code and Codex plugins ask (``Cognee memory
@@ -178,6 +185,7 @@ _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
 _STRIP_RES = (
     re.compile(rf"^[ \t]*{_LEAD}[^\n]*(?:\n|$)", re.M),
     re.compile(rf"^[ \t]*>[ \t]*{_KATEX_OPEN}[\u2800-\u28ff]{{6,}}[^\n]*(?:\n|$)", re.M),
+    re.compile(rf"^[ \t]*{LOGOTYPE[1]}[ \t]*(?:\n|$)", re.M),
     re.compile(r"^[ \t]*(?:>[ \t]*)?🧠?[ \t]*Cognee memory[ \t]*\[m\d+[^\n]*(?:\n|$)", re.M),
 )
 
@@ -185,17 +193,25 @@ _STRIP_RES = (
 def render_credit(response_text: str, platform: str = "") -> str | None:
     """The answer with its ``> Cognee:`` line drawn for ``platform``, or None to leave it.
 
-    The ``transform_llm_output`` hook's work: in Hermes Desktop the line becomes the
-    Cognee pixel logo, half an em of space and the sentence. The quote marker goes, since
-    Desktop draws a blockquote with a quotation mark. Other platforms are left as
-    written for now.
+    The ``transform_llm_output`` hook's work. In Hermes Desktop the line becomes the
+    Cognee pixel logo, half an em of space and the sentence; in the terminal UI, the
+    braille logo with the sentence beside its first row. The quote marker goes either
+    way: Desktop draws a blockquote with a quotation mark, the TUI with a bar. Other
+    platforms (the classic CLI, which would print a replaced answer twice after
+    streaming it, and messaging apps) are left as written for now.
     """
-    if not credit_enabled() or (platform or "").strip().lower() not in COLOR_PLATFORMS:
+    if not credit_enabled() or not response_text:
         return None
-    if not response_text or not _PLAIN_CREDIT_RE.search(response_text):
-        return None
-    drawn = WORDMARK[:-1] + LOGO_SPACE + "$"
-    return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{drawn} ", response_text)
+    platform = (platform or "").strip().lower()
+    if platform in COLOR_PLATFORMS and _PLAIN_CREDIT_RE.search(response_text):
+        drawn = WORDMARK[:-1] + LOGO_SPACE + "$"
+        return _PLAIN_CREDIT_RE.sub(lambda m: f"{m.group(1)}{drawn} ", response_text)
+    if platform in BRAILLE_PLATFORMS and _PLAIN_CREDIT_LINE_RE.search(response_text):
+        return _PLAIN_CREDIT_LINE_RE.sub(
+            lambda m: f"{m.group(1)}{LOGOTYPE[0]}  {m.group(2)}\n{m.group(1)}{LOGOTYPE[1]}",
+            response_text,
+        )
+    return None
 
 
 _LEARNING_DATE_RE = re.compile(r"^# Session learning\W+(\d{4}-\d{2}-\d{2})", re.M)
