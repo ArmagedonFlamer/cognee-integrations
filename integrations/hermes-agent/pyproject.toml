@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cognee-integration-hermes-agent"
-version = "1.4.0"
-description = "Cognee memory provider plugin for Hermes Agent. Cognee Cloud works as is; local mode needs cognee installed separately."
+version = "1.5.0"
+description = "Cognee memory provider plugin for Hermes Agent. Cognee Cloud works as is; local mode runs cognee from a private environment the plugin installs on request."
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
@@ -16,8 +16,8 @@ authors = [
 # environment, where cognee's pins conflict with Hermes extras and refuse the
 # install outright — Cloud users included, who never import it. An extra or a
 # dependency group would not help: Hermes's lock resolves those too. Remote
-# mode is plain HTTP; local mode needs cognee installed separately (see
-# local-mode-requirements.txt and LOCAL_COGNEE_REQUIREMENT in config.py).
+# mode is plain HTTP; local mode runs its server from a private venv the plugin
+# builds on request (runtime_env.py, LOCAL_COGNEE_REQUIREMENT in config.py).
 dependencies = []
 
 # The group Hermes' memory-provider loader actually scans
