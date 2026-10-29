@@ -56,6 +56,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   The plugin description, `after-install.md`, the README and the `hermes cognee install` /
   `cognee-hermes-install` hints now give the same steps: install, run
   `hermes memory setup cognee` in a terminal, start a new chat.
+- **Cognee first, Hermes' built-in memory as the fallback.** An agent shown both a recalled
+  Cognee memory and one of Hermes' own memory notes answered from the (stale) note. The
+  system prompt now says Cognee is the primary memory, that `MEMORY.md` / `USER.md` are the
+  fallback for when Cognee has nothing, and that when they disagree it goes with Cognee and
+  points out the difference; each prompt's Cognee memory block repeats that in one line,
+  next to the memory. While Cognee is unavailable the plugin adds nothing, so Hermes' memory
+  is used as before. `COGNEE_MEMORY_STEER=false` turns both off.
 - **Memory credit in the answer**, as in the Cursor and Claude Code plugins: recalled items
   (the per-prompt memory block and `cognee_recall` results) are tagged `[mN · where it came
   from]` with one numbering per conversation, and an instruction asks the agent to end an
