@@ -35,6 +35,13 @@ project adheres to [Semantic Versioning](https://semver.org/).
   turned Cognee off in a Hermes Desktop or gateway process started before `hermes memory
   setup` saved the key, with no hint why. The server bootstrap already warns by name when it
   starts without a key. Setup now also says to restart Desktop or the gateway after saving keys.
+- **A local server that is still starting no longer holds the session for up to 10 minutes.**
+  Session start waits 90 seconds; if the server it started is alive but not answering yet
+  (a first start migrating an existing `~/.cognee`), the session starts anyway, Cognee's tools
+  answer that the server is still starting and where its log is, and the provider connects in
+  the background once `/health` answers (within the same 10-minute boot deadline, never by
+  starting a second server). A server that fails now reports its own cause (exit code, log
+  path) instead of a generic list of port, dependency and `COGNEE_EMBEDDED` suggestions.
 
 ## [1.4.0]
 
