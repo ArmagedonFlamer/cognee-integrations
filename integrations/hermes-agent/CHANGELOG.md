@@ -10,6 +10,26 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.1]
+
+### Added
+- **The memory credit carries the Cognee logo.** A `transform_llm_output` hook draws it, so
+  the logo is always exact: the agent only writes a plain line. (Asking the agent to copy a
+  braille logo itself failed live: it dropped cells, lost the colour markup and copied the
+  placeholder.)
+  - **Hermes Desktop:** `Cognee:` in the agent's `> Cognee: …` line becomes the Cognee pixel
+    logo in the brand purple (`#BC9BFF`), drawn in KaTeX as coloured rules on the logo's
+    five-row grid, followed by half an em of space and the sentence. The quote marker is
+    dropped (Desktop draws a blockquote with a quotation mark).
+  - **Terminal chats (`hermes --tui` and `hermes`):** the answer streams before the hook runs
+    and a rewritten answer would be shown twice, so the agent is asked for the line without
+    the `Cognee:` label (`> <what it remembered>, based on dataset <name>.`) and the Cognee
+    logo in braille is appended below it as a signature. In the classic chat with
+    `display.streaming` off, the logo replaces the quote marker instead, with the sentence
+    beside its first row.
+  - Messaging apps keep the plain `> Cognee:` line for now.
+  - Every form of the credit, drawn or plain, is stripped before the turn is stored.
+
 ## [1.4.0]
 
 ### Changed
@@ -67,14 +87,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (the per-prompt memory block and `cognee_recall` results) are tagged `[mN · where it came
   from]` with one numbering per conversation, and an instruction asks the agent to end an
   answer that used them with one plain line, `> Cognee: <what it remembered>, based on
-  dataset <name>`. A `transform_llm_output` hook replaces `Cognee:` with the Cognee pixel logo in
-  the brand purple in Hermes Desktop (KaTeX rules on the logo's five-row grid), so the logo is
-  always exact; in the terminal chats (`hermes --tui` and `hermes`) the agent writes the line
-  without the `Cognee:` label and the Cognee logo in braille is appended below it as a
-  signature (a replaced answer would show twice),
-  or, in the classic chat with streaming off, replaces the line with the sentence beside it; messaging apps keep the plain line for now. (Asking the agent to copy a braille logo itself failed live: it dropped
-  cells, lost the colour markup and copied the placeholder.) The credit is noted and stripped
-  before the turn is stored. On by default; `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
+  dataset <name>`. The credit is noted and stripped before the turn is stored. On by default;
+  `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
 - **Local mode works without an LLM key.** cognee 1.6.5 then builds memory with local
   models (GLiNER extraction, fastembed embeddings) installed into the runtime and downloaded
   on the first build (about 1.5 GB); recall returns the matching stored text. The setup's LLM
