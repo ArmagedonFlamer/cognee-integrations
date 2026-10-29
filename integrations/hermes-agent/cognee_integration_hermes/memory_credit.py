@@ -179,10 +179,16 @@ def tool_credit_instruction(source: str = "", platform: str = "") -> str:
 _PLAIN_CREDIT_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(?=\S)", re.M)
 #: The same line with its sentence captured, for the braille form.
 _PLAIN_CREDIT_LINE_RE = re.compile(r"^([ \t]*)>[ \t]*Cognee:[ \t]*(\S[^\n]*)$", re.M)
-#: The terminal's credit line: quoted, unlabelled, saying what it is based on
-#: (the logo signs it, see ``signs_with_logo``).
-_BASED_ON = r"\bbased on (?:dataset \S+|Cognee memory)"
-_SIGNED_LINE_RE = re.compile(rf"^([ \t]*)>[ \t]*(\S[^\n]*{_BASED_ON}[^\n]*)$", re.M)
+#: The terminal's credit line: unlabelled (the logo signs it, see
+#: ``signs_with_logo``), so it is told apart by where it is and what it names: the
+#: answer's last line, quoted, naming the dataset or Cognee memory. Agents word the
+#: rest freely ("based on", "stored in", "come from"), so only the name is required.
+#: The logo rows may already follow it (an answer the hook drew, when it is stored).
+_NAMES_SOURCE = r"\b(?:dataset \S+|Cognee memory)"
+_ANSWER_END = rf"(?:\s*(?:{LOGOTYPE[0]}|{LOGOTYPE[1]})[ \t]*)*\s*\Z"
+_SIGNED_LINE_RE = re.compile(
+    rf"^([ \t]*)>[ \t]*(\S[^\n]*{_NAMES_SOURCE}[^\n]*?)[ \t]*$(?={_ANSWER_END})", re.M
+)
 #: A credit in any form: the plain line, the rendered wordmark, or the earlier
 #: braille logo (plain or KaTeX-coloured), each followed by something said.
 _KATEX_OPEN = r"(?:\$\\color\{[^}\n]*\}\{\\text\{)?"
@@ -198,7 +204,7 @@ _LEAD = (
     rf"(?:>[ \t]*(?:Cognee:|{_DRAWN}|{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE})"
     rf"|{_DRAWN}|{LOGOTYPE[0]})"
 )
-_CREDIT_RE = re.compile(rf"^[ \t]*(?:{_LEAD}[ \t]*\S|>[^\n]*{_BASED_ON})", re.M)
+_CREDIT_RE = re.compile(rf"^[ \t]*{_LEAD}[ \t]*\S", re.M)
 #: Tags cited the way the Claude Code and Codex plugins ask (``Cognee memory
 #: [m2]``); ``arr[m1]`` in code is not a citation.
 _CITATION_RE = re.compile(r"Cognee memory\s*\[(m\d+(?:\s*,\s*m\d+)*)\]")
@@ -208,7 +214,7 @@ _STRIP_RES = (
     re.compile(rf"^[ \t]*{_LEAD}[^\n]*(?:\n|$)", re.M),
     re.compile(rf"^[ \t]*>[ \t]*{_KATEX_OPEN}[\u2800-\u28ff]{{6,}}[^\n]*(?:\n|$)", re.M),
     re.compile(rf"^[ \t]*{LOGOTYPE[1]}[ \t]*(?:\n|$)", re.M),
-    re.compile(rf"^[ \t]*>[^\n]*{_BASED_ON}[^\n]*(?:\n|$)", re.M),
+    re.compile(rf"^[ \t]*>[^\n]*{_NAMES_SOURCE}[^\n]*(?:\n|$)(?={_ANSWER_END})", re.M),
     re.compile(r"^[ \t]*(?:>[ \t]*)?🧠?[ \t]*Cognee memory[ \t]*\[m\d+[^\n]*(?:\n|$)", re.M),
 )
 
@@ -303,9 +309,14 @@ def passage_origin(passage: str) -> str:
     return f"{agent} session"
 
 
+def _logo_credit(answer: str) -> bool:
+    """Whether ``answer`` has the credit line, labelled, drawn or the terminal's signed one."""
+    return bool(_CREDIT_RE.search(answer) or _SIGNED_LINE_RE.search(answer))
+
+
 def has_credit(answer: str) -> bool:
     """Whether an answer carries a credit, the logo line or an older tag line."""
-    return bool(answer) and bool(_CREDIT_RE.search(answer) or _CITATION_RE.search(answer))
+    return bool(answer) and bool(_logo_credit(answer) or _CITATION_RE.search(answer))
 
 
 def strip_credit_lines(answer: str) -> str:
@@ -410,7 +421,7 @@ class MemoryTags:
         the Claude Code and Codex plugins ask. Either marks the session as
         credited, which drops the first-credit addendum from later turns.
         """
-        logo = bool(_CREDIT_RE.search(answer or ""))
+        logo = _logo_credit(answer or "")
         cited: list[str] = []
         for group in _CITATION_RE.findall(answer or ""):
             for tag in re.split(r"\s*,\s*", group):
