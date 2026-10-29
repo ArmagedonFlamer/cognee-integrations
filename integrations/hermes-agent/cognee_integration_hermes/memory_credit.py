@@ -45,13 +45,67 @@ ENV_CITE_MEMORY = "COGNEE_PLUGIN_CITE_MEMORY"
 #: The braille logotype an earlier version asked agents to copy; kept so a credit
 #: written that way is still recognised and stripped.
 LOGOTYPE = ("⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯", "⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓")
-#: The wordmark's colour: a mid purple between the Cognee wordmark's light and
-#: dark shades, readable on either Desktop theme.
-LOGO_COLOR = "#9F7AEA"
+#: The Cognee logo's purple (the brand's pixel-logo artwork).
+LOGO_COLOR = "#BC9BFF"
 #: Platforms whose chat renders inline math (KaTeX), where ``Cognee:`` becomes the
-#: purple wordmark. Elsewhere the KaTeX would show as source.
+#: pixel logo. Elsewhere the KaTeX would show as source.
 COLOR_PLATFORMS = frozenset({"desktop"})
-WORDMARK = "$\\color{%s}{\\textbf{COGNEE}}$" % LOGO_COLOR
+
+#: The Cognee pixel logo: COGNEE on a five-row grid of squares, as in the brand
+#: artwork. ``X`` is a filled square.
+LOGO_GRID = {
+    "C": ("XXX", "X..", "X..", "X..", "XXX"),
+    "O": ("XXX", "X.X", "X.X", "X.X", "XXX"),
+    "G": ("XXX", "X..", "X..", "X.X", "XXX"),
+    "N": ("X..X", "X..X", "XX.X", "X.XX", "X..X"),
+    "E": ("XX", "X.", "XX", "X.", "XX"),
+}
+#: Square size and the gap between letters (in squares), so the logo stands about
+#: a capital letter tall.
+LOGO_SQUARE_EM = 0.2
+LOGO_LETTER_GAP = 0.6
+
+
+def _em(value: float) -> str:
+    return ("%.3f" % value).rstrip("0").rstrip(".") + "em"
+
+
+def pixel_logo(word: str = "COGNEE", square: float = LOGO_SQUARE_EM) -> str:
+    """The pixel logo as inline KaTeX: one coloured ``\\rule`` per vertical run of squares.
+
+    Each column's runs are raised to their row (the bottom row on the baseline) and
+    overlaid with a negative kern; an empty column is a kern. KaTeX positions rules
+    exactly, so this draws the logo's own grid wherever the chat renders math.
+    """
+    parts: list[str] = []
+    for index, letter in enumerate(word):
+        if index:
+            parts.append("\\kern" + _em(LOGO_LETTER_GAP * square))
+        rows = LOGO_GRID[letter]
+        height = len(rows)
+        for column in range(len(rows[0])):
+            runs: list[tuple[int, int]] = []
+            row = 0
+            while row < height:
+                if rows[row][column] == "X":
+                    start = row
+                    while row < height and rows[row][column] == "X":
+                        row += 1
+                    runs.append((start, row - start))
+                else:
+                    row += 1
+            if not runs:
+                parts.append("\\kern" + _em(square))
+                continue
+            for number, (start, length) in enumerate(runs):
+                if number:
+                    parts.append("\\kern-" + _em(square))
+                raise_by = (height - (start + length)) * square
+                parts.append(f"\\rule[{_em(raise_by)}]{{{_em(square)}}}{{{_em(length * square)}}}")
+    return "$\\color{%s}{%s}$" % (LOGO_COLOR, "".join(parts))
+
+
+WORDMARK = pixel_logo()
 
 FIRST_CREDIT_ADDENDUM = (
     "This would be the first Cognee credit in this session, so in that line also say in a "
@@ -100,6 +154,7 @@ _KATEX_CLOSE = r"(?:\}\}\$)?"
 _LEAD = (
     r"(?:Cognee:"
     r"|\$\\color\{[^}\n]*\}\{\\textbf\{COGNEE\}\}\$"
+    r"|\$\\color\{[^}\n]*\}\{(?:\\rule\[[^\]\n]*\]\{[^}\n]*\}\{[^}\n]*\}|\\kern-?[\d.]+em)+\}\$"
     rf"|{_KATEX_OPEN}{LOGOTYPE[0]}{_KATEX_CLOSE})"
 )
 _CREDIT_RE = re.compile(rf"^[ \t]*>[ \t]*{_LEAD}[ \t]*\S", re.M)
