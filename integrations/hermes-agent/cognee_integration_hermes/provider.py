@@ -511,11 +511,9 @@ class CogneeMemoryProvider(MemoryProvider):
         print("  Provider config saved to cognee.json")
         if env_values:
             print("  Secrets saved to .env")
-        print("\n  Start a new Hermes session to activate Cognee memory.")
-        if env_values:
-            print("  Hermes Desktop or a gateway service reads .env when it starts:")
-            print("  restart it so it picks up the keys saved here.")
-        print()
+        print("\n  Start a new chat (or `hermes` session) to use Cognee memory: a chat")
+        print("  that is already open keeps the memory it started with.")
+        print("  Check with: hermes memory status, hermes cognee status\n")
 
     def initialize(self, session_id: str, **kwargs) -> None:
         self._hermes_home = kwargs.get("hermes_home")

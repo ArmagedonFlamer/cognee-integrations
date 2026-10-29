@@ -389,7 +389,7 @@ def _run_setup(args) -> None:
         cmd_setup_provider("cognee")
     except Exception as exc:
         print(f"Could not launch Hermes memory setup: {exc}")
-        print("Run: hermes memory setup")
+        print("Run: hermes memory setup cognee")
 
 
 def _print_install(args) -> None:
