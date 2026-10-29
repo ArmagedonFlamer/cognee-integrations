@@ -30,6 +30,11 @@ project adheres to [Semantic Versioning](https://semver.org/).
   A cognee installed into Hermes's environment by hand still starts the server, and a server
   another cognee plugin already runs on the port is still used. Embedded mode
   (`COGNEE_EMBEDDED=true`) still needs cognee in Hermes's own environment.
+- **Local mode is available once its runtime is ready, LLM key or not.** It used to report
+  unavailable without `LLM_API_KEY`, which wrongly refused keyless providers (Ollama) and
+  turned Cognee off in a Hermes Desktop or gateway process started before `hermes memory
+  setup` saved the key, with no hint why. The server bootstrap already warns by name when it
+  starts without a key. Setup now also says to restart Desktop or the gateway after saving keys.
 
 ## [1.4.0]
 

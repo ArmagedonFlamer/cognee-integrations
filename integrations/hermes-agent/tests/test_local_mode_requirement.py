@@ -62,7 +62,10 @@ def test_manifests_declare_no_python_dependencies():
         ({"service_url": "https://tenant.example"}, True, True),
         ({"llm_api_key": "sk"}, False, False),
         ({"llm_api_key": "sk"}, True, True),
-        ({}, True, False),
+        # Ollama needs no key, and a gateway may not have loaded a new one yet;
+        # the server bootstrap warns when it starts without a key.
+        ({}, True, True),
+        ({}, False, False),
     ],
 )
 def test_is_available(config, cognee, expected):
