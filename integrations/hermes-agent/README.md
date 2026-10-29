@@ -584,9 +584,11 @@ Cognee logo in braille, the sentence beside its first row:
 ⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
 ```
 
-The classic terminal chat (`hermes`) and messaging apps show the plain line for
-now: the classic chat streams the answer, and Hermes prints a replaced answer a
-second time after a stream.
+The classic terminal chat (`hermes`) gets the braille logo too. With streaming on
+(Hermes' default `display.streaming: true`) the streamed `> Cognee: …` line stays
+and the logo is printed under it: Hermes prints a replaced answer a second time
+after a stream, but an appended suffix only once. With streaming off, the line is
+replaced as in the terminal UI. Messaging apps show the plain line for now.
 
 How it works:
 

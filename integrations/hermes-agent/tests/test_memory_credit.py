@@ -131,7 +131,7 @@ def test_the_earlier_bold_wordmark_is_still_stripped():
     assert memory_credit.strip_credit_lines(old) == "Mika likes Yuji."
 
 
-@pytest.mark.parametrize("platform", ["cli", "telegram", ""])
+@pytest.mark.parametrize("platform", ["telegram", "discord", ""])
 def test_other_platforms_keep_the_plain_line_for_now(platform):
     assert memory_credit.render_credit(PLAIN, platform) is None
 
@@ -272,7 +272,7 @@ def test_the_terminal_ui_gets_the_braille_logo(cite_on):
     out = memory_credit.render_credit(PLAIN, "tui")
     top, bottom = memory_credit.LOGOTYPE
     assert out.endswith(
-        f"{top}  Mika likes Yuji and volleyball, based on agent_sessions.\n{bottom}"
+        f"{top}  Mika likes Yuji and volleyball, based on agent_sessions.  \n{bottom}"
     )
     assert "> " not in out
 
@@ -284,3 +284,25 @@ def test_a_braille_credit_counts_and_both_rows_are_stripped(cite_on):
     # A logo row alone, or braille inside a sentence, is not a credit.
     assert not memory_credit.has_credit(memory_credit.LOGOTYPE[0])
     assert not memory_credit.has_credit(f"see {memory_credit.LOGOTYPE[0]} here")
+
+
+def test_the_streaming_classic_cli_gets_the_logo_appended(cite_on, monkeypatch):
+    # A streamed answer is already on screen; Hermes shows only an appended suffix
+    # cleanly (a replaced answer would be printed a second time).
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: True)
+    out = memory_credit.render_credit(PLAIN, "cli")
+    top, bottom = memory_credit.LOGOTYPE
+    assert out == f"{PLAIN}\n{top}\n{bottom}"
+    assert memory_credit.strip_credit_lines(out) == "Mika likes Yuji."
+
+
+def test_the_non_streaming_classic_cli_gets_the_line_replaced(cite_on, monkeypatch):
+    monkeypatch.setattr(memory_credit, "_cli_streams", lambda: False)
+    out = memory_credit.render_credit(PLAIN, "cli")
+    assert out == memory_credit.render_credit(PLAIN, "tui")
+    assert "> Cognee:" not in out
+
+
+def test_streaming_defaults_to_on_outside_hermes():
+    # No hermes_cli to ask (tests, a bare install): assume the default, streaming.
+    assert memory_credit._cli_streams() is True
