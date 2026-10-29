@@ -576,8 +576,17 @@ logo's five-row grid, about a capital letter tall, followed by half an em of spa
 quotation mark). The logo is always exact
 because the agent only writes the plain line. The rewritten answer is what
 Hermes stores, so each credited answer carries about 800 characters of LaTeX in
-the chat history. The terminal and messaging apps show the plain
-line for now.
+the chat history. In the terminal UI (`hermes --tui`) it becomes the
+Cognee logo in braille, the sentence beside its first row:
+
+```
+⡏⠁⡏⡇⡏⡁⡧⣸⢸⠅⡯  Mika likes Yuji and volleyball, based on dataset agent_sessions.
+⠓⠂⠓⠃⠓⠃⠃⠙⠘⠂⠓
+```
+
+The classic terminal chat (`hermes`) and messaging apps show the plain line for
+now: the classic chat streams the answer, and Hermes prints a replaced answer a
+second time after a stream.
 
 How it works:
 
