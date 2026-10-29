@@ -78,6 +78,32 @@ def test_is_available(config, cognee, expected):
         assert p.is_available() is expected
 
 
+@pytest.mark.parametrize(
+    ("config", "ready", "cognee", "expected"),
+    [
+        ({"service_url": "https://tenant.example"}, False, False, None),
+        ({}, True, False, None),
+        ({}, False, False, "hermes cognee install-runtime"),
+        ({"embedded": "true"}, False, False, "Hermes's own Python environment"),
+        ({"embedded": "true"}, True, True, None),
+    ],
+)
+def test_unavailable_reason_names_the_fix(config, ready, cognee, expected):
+    # Hermes never calls initialize() for an unavailable provider; this hint is
+    # the only text of ours the user sees.
+    p = provider_mod.CogneeMemoryProvider(backend=FakeBackend())
+    with (
+        mock.patch.object(provider_mod, "load_config", return_value=config),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=ready),
+        mock.patch.object(provider_mod, "has_cognee", return_value=cognee),
+    ):
+        reason = p.unavailable_reason()
+    if expected is None:
+        assert reason == ""
+    else:
+        assert expected in reason
+
+
 def test_a_running_server_is_used_without_cognee():
     with (
         mock.patch.object(sb, "health_ok", return_value=True),

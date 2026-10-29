@@ -27,7 +27,9 @@ from .backend import (
     CogneeNotInstalledError,
     MemoryBackend,
     build_backend,
+    cognee_not_installed_message,
     default_backend,
+    has_cognee,
 )
 from .config import (
     DEFAULT_DATASET,
@@ -397,6 +399,20 @@ class CogneeMemoryProvider(MemoryProvider):
         # is not in that process yet — "unavailable" would hide both, while the
         # server bootstrap warns by name when it starts without one.
         return runtime_env.local_ready()
+
+    def unavailable_reason(self) -> str:
+        # Hermes skips initialize() when is_available() is False and appends this
+        # to its "reports unavailable" warning, so it is the only place a user
+        # whose runtime is missing (declined at setup, or dropped on upgrade from
+        # 1.3.x, when cognee left Hermes's environment) learns the fix.
+        cfg = load_config()
+        if cfg.get("service_url"):
+            return ""
+        if str_to_bool(cfg.get("embedded"), False) and not has_cognee():
+            return cognee_not_installed_message("embedded")
+        if runtime_env.local_ready():
+            return ""
+        return cognee_not_installed_message("local")
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [

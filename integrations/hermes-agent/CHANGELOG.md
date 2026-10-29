@@ -33,6 +33,23 @@ project adheres to [Semantic Versioning](https://semver.org/).
     worded (seen live: "stored in dataset agent_sessions", not "based on").
   - Every form of the credit, drawn or plain, is stripped before the turn is stored.
 
+### Fixed
+- **Local mode without its runtime now says how to fix it.** Hermes never calls
+  `initialize()` for a provider that reports unavailable, so the "run
+  `hermes cognee install-runtime`" error never reached the user: they saw only Hermes's
+  generic "check credentials/config" warning. The provider now implements
+  `unavailable_reason()`, which Hermes appends to that warning (the embedded-mode wording
+  when `COGNEE_EMBEDDED=true` and cognee is not in Hermes's environment).
+- **Upgrading from 1.3.x in local mode needs `hermes cognee install-runtime`.** 1.3.x
+  installed cognee into Hermes's environment as a dependency; Hermes drops it from the first
+  environment it builds after the upgrade. The README now says so, and corrects 1.4.0's
+  claims: a server another cognee plugin runs on the port is used only once the runtime is
+  installed (availability is decided before anything connects), and a cognee installed into
+  Hermes's environment by hand does not survive Hermes rebuilding that environment.
+- **`hermes plugins validate` passes.** `plugin.yaml` declares the `transform_llm_output`
+  hook under `provides_hooks`; it was registered but undeclared, which the catalog check
+  rejects.
+
 ## [1.4.0]
 
 ### Changed

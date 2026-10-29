@@ -187,13 +187,26 @@ machine instead, set `LLM_PROVIDER=ollama` (see
 > `~/.hermes/.env`, or start a new store (`COGNEE_DATA_ROOT`,
 > `COGNEE_SYSTEM_ROOT`).
 
-At session start the plugin starts a cognee server on `127.0.0.1:8011` from that
-runtime — or attaches to one that a sibling cognee plugin (Claude Code, Codex,
-OpenClaw) already runs — with storage in `~/.cognee`. The very first boot runs
-database migrations; on a fresh store that takes under a minute, and after that
-it's instant. Without the runtime (and no server already on the port), local mode
-fails at session start with a message naming `hermes cognee install-runtime`. A
-`cognee` installed into Hermes's own environment by hand also still works.
+At session start the plugin attaches to a cognee server already running on
+`127.0.0.1:8011` — for example one a sibling cognee plugin (Claude Code, Codex,
+OpenClaw) runs — or starts one from the runtime, with storage in `~/.cognee`. The
+very first boot runs database migrations; on a fresh store that takes under a
+minute, and after that it's instant.
+
+Local mode needs the runtime even when a sibling plugin's server is already up:
+Hermes asks a provider whether it is available before anything connects, and the
+plugin answers from the runtime alone. Without it, Hermes starts the chat with its
+built-in memory only and warns that `cognee` is unavailable, naming
+`hermes cognee install-runtime`. A `cognee` installed into Hermes's own
+environment by hand is also used, but Hermes rebuilds that environment whenever it
+updates or the enabled plugins change, which removes it; the runtime is the
+durable path.
+
+> **Upgrading from 1.3.x in local mode:** run `hermes cognee install-runtime`.
+> Earlier versions installed cognee into Hermes's environment as a dependency;
+> from 1.4.0 the plugin declares none, so the first environment Hermes builds after
+> the upgrade no longer has it and local mode reports unavailable until the
+> runtime is installed. Your data in `~/.cognee` is untouched.
 
 > **An existing `~/.cognee` can take much longer the first time.** If another
 > cognee plugin has filled `~/.cognee` with an older cognee version, the first
@@ -314,8 +327,11 @@ plugins do, and because the SDK's `CloudClient` drops fields the server accepts 
 most importantly `session_ids` on `improve()`, which is what promotes a session's
 turns into the permanent graph. Two consequences worth knowing:
 
-- The `cognee` package is still required. It is what the local server runs, and it
-  is the only way to run without a server at all (`COGNEE_EMBEDDED=true`).
+- The `sdk` transport needs the `cognee` package in Hermes's own environment, which
+  the plugin does not install (see embedded mode under
+  [One brain across agents](#one-brain-across-agents)). The
+  default `http` transport needs no cognee in Hermes's environment: remote mode is
+  plain HTTP, and local mode's server runs from the private runtime.
 - Over HTTP, a `cognee_remember` write cannot be linked to the session it came
   from — `/api/v1/remember` has no field for it. Session-to-graph bridging is
   unaffected. The plugin logs this once rather than dropping it silently.
@@ -397,6 +413,17 @@ Embedded (in-process) mode — single-process / offline only:
 COGNEE_EMBEDDED=true
 LLM_API_KEY=sk-...
 ```
+
+Embedded mode, and the `sdk` transport (`COGNEE_TRANSPORT=sdk`), run cognee inside
+the Hermes process, so they need `cognee==1.6.5` in Hermes's own Python environment.
+The plugin cannot declare it (its dependencies conflict with Hermes's, which is
+why local mode uses a private runtime), and the private runtime does not help here.
+You can install it into Hermes's venv yourself
+(`uv pip install --python <hermes venv python> cognee==1.6.5`), but this is
+fragile: Hermes rebuilds its environment from its own lock whenever it updates or
+the enabled plugins change, which removes it, and cognee's pins may not resolve
+against your Hermes build at all. Prefer local mode unless you specifically need
+no server.
 
 > **Embedded mode and the shared store do not mix.** Embedded drives the local
 > single-writer databases from inside the Hermes process; if another plugin's
