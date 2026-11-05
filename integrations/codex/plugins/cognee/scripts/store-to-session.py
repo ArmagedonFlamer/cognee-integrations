@@ -153,8 +153,8 @@ async def _store_tool_call(payload: dict) -> None:
         allow_tool,
         is_plugin_invocation,
         low_signal_bash,
-        redact,
         safe_first_token,
+        sanitize,
     )
 
     try:
@@ -167,9 +167,9 @@ async def _store_tool_call(payload: dict) -> None:
         return
     if not allowed:
         return
-    tool_input = redact(tool_input)
-    tool_output = redact(tool_output)
-    payload = redact(payload)
+    tool_input = sanitize(tool_input)
+    tool_output = sanitize(tool_output)
+    payload = sanitize(payload)
 
     command = str(tool_input.get("command", "")) if isinstance(tool_input, dict) else ""
     status, error_message = _infer_status(payload)
@@ -322,11 +322,11 @@ def _check_memory_credit(payload: dict) -> None:
 
 async def _store_assistant_stop(payload: dict) -> None:
     """Write a Stop-hook payload (final assistant message) as a QAEntry."""
-    from _capture_policy import capture_enabled, redact
+    from _capture_policy import capture_enabled, sanitize
 
     if not capture_enabled():
         return
-    payload = redact(payload)
+    payload = sanitize(payload)
     msg = str(payload.get("assistant_message") or payload.get("last_assistant_message") or "")
     if not msg or msg == "null":
         return
@@ -346,9 +346,9 @@ async def _store_assistant_stop(payload: dict) -> None:
     # separate question-only and answer-only QA entries for the same turn.
     entry = {
         "type": "qa",
-        "question": redact(pending.get("prompt", "")),
+        "question": sanitize(pending.get("prompt", "")),
         "answer": msg,
-        "context": redact(pending.get("context", "")),
+        "context": sanitize(pending.get("context", "")),
     }
 
     if not server_usable(runtime.get("base_url", "")):
@@ -490,6 +490,34 @@ def main():
                 asyncio.run(_store_tool_call(payload))
     except Exception as exc:
         hook_log("run_exception", {"stop": is_stop, "error": str(exc)[:200]})
+    if is_stop:
+        _print_turn_status()
+
+
+def _print_turn_status() -> None:
+    """Print this turn's status under the answer.
+
+    Codex shows a Stop hook's systemMessage after the reply, so the person
+    reads the answer, its memory credit, then what Cognee did on the turn: the
+    status line, drawn now (a dataset switched during the turn shows as it is
+    after it), over the memory summary the recall hook kept. Printed after
+    ``quiet_hook_output`` has given stdout back.
+    """
+    try:
+        import _plugin_common
+        from _plugin_common import auto_recall_active
+        from _recall_text import pop_turn_status
+        from cognee_statusline_render import render_status_for_host
+
+        summary = pop_turn_status(_plugin_common._PLUGIN_DIR, get_session_key())
+        if not summary:
+            return
+        key = get_session_key()
+        text = f"{render_status_for_host(key, auto_recall_active(key))}\n{summary}"
+    except Exception as exc:
+        hook_log("turn_status_read_failed", {"error": str(exc)[:200]})
+        return
+    print(json.dumps({"systemMessage": text}))
 
 
 if __name__ == "__main__":

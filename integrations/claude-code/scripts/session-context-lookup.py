@@ -38,11 +38,10 @@ from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
     authed_liveness,
+    auto_recall_active,
     buffered_saves_segments,
-    cached_readable_datasets,
     clear_payment_required,
     clear_slow_streak,
-    cross_dataset_search_command,
     elapsed_ms,
     get_session_key,
     hook_log,
@@ -51,7 +50,6 @@ from _plugin_common import (
     mark_recall_slow,
     mark_server_ready,
     notify,
-    other_readable_datasets,
     outage_header,
     phase_begin,
     phase_end,
@@ -112,60 +110,6 @@ TRUNCATE_RETURN = 400
 # Smallest deadline worth dispatching; with less budget than this, nothing is
 # fired rather than sending every scope a doomed request.
 MIN_SCOPE_TIMEOUT = 0.2
-
-# Cross-dataset search hint. Recall reads the active dataset only, and whether
-# what came back actually answers the user is a judgement only the model can
-# make — graph retrieval is nearest-neighbour, so it returns *something* from
-# any populated dataset, and "zero hits" never happens in practice. So every
-# prompt the server answered carries the list of the other readable datasets
-# and how to run a one-off graph search on one (not a switch), worded for the
-# model to act on only when memory did not answer. The listing comes from the
-# per-plugin cache (``cached_readable_datasets``) and is refreshed only when
-# stale, inside what is left of the recall budget. Every other readable dataset
-# is named: nothing ranks them, so the user picks. The model must not switch on
-# its own, but a bare "Do not switch datasets." also beat users who asked for a
-# switch in plain words, so the line names the switch skill for that case.
-# COGNEE_RECALL_DATASET_HINT=off disables the hint.
-
-
-def _dataset_hint_enabled() -> bool:
-    raw = os.environ.get("COGNEE_RECALL_DATASET_HINT", "").strip().lower()
-    return raw not in ("0", "false", "off", "no")
-
-
-def _format_dataset_hint(active: str, others: list) -> str:
-    rows = "\n".join(f"  - {row.get('name', '')} [{row.get('id', '')}]" for row in others)
-    return (
-        f"Other Cognee datasets you can search (active: {active or 'unknown'}):\n{rows}\n"
-        "Memory above was recalled from the active dataset only. If the user is asking to recall "
-        "something and that context does not answer it, do not conclude that memory has nothing: "
-        "ask which of these datasets to search, with AskUserQuestion (single select, the dataset "
-        'names as options; more than four → the first three plus a "More…" option and page on '
-        "the next question; say in the question that they can also decline). Do not switch "
-        "datasets on your own; if the user asks to switch, use "
-        "/cognee-memory:cognee-switch-datasets. Then run the graph-only search on their choice "
-        "and say which dataset the answer came from:\n"
-        f"  {cross_dataset_search_command()}"
-    )
-
-
-def _other_datasets_hint(active: str, active_ids: list, service_url: str, deadline: float) -> str:
-    """The hint block, or "" when there is no other dataset to offer.
-
-    Cache first; one bounded network refresh only when the cache is stale and
-    the recall budget still has room for an honest attempt.
-    """
-    remaining = deadline - time.monotonic()
-    rows = cached_readable_datasets(
-        service_url=service_url,
-        refresh=remaining >= MIN_SCOPE_TIMEOUT,
-        timeout=max(MIN_SCOPE_TIMEOUT, min(2.0, remaining)),
-    )
-    others = other_readable_datasets(rows, active, active_ids)
-    if not others:
-        return ""
-    hook_log("recall_dataset_hint", {"active": active, "offered": len(others)})
-    return _format_dataset_hint(active, others)
 
 
 def _load_session_id() -> str:
@@ -277,30 +221,59 @@ def _entry_origin(source: str, entry: dict) -> str:
     return f"earlier session turn, {day}" if day else "earlier session turn"
 
 
+def _passage_document(passage: str) -> str:
+    """The named document a passage came from (its ``source:`` line), or ``""``.
+
+    Unnamed text is stored as ``text_<hash>`` and says nothing, so it gives none;
+    a name's trailing content hash is dropped.
+    """
+    first = passage.lstrip().split("\n", 1)[0].strip()
+    if not first.lower().startswith("source:"):
+        return ""
+    # A remembered text may carry its date: "text_<hash> (2026-11-04)".
+    name = re.sub(r"\s*\(\d{4}-\d{2}-\d{2}\)$", "", first.split(":", 1)[1].strip())
+    if re.fullmatch(r"text_[0-9a-f]{32}", name):
+        return ""
+    return re.sub(r"-[0-9a-f]{32}$", "", name)
+
+
 def _injection_sections(
-    by_source: dict, tags: MemoryTags | None = None, labels: dict | None = None
+    by_source: dict,
+    tags: MemoryTags | None = None,
+    labels: dict | None = None,
 ) -> list[dict]:
     """Expose bare records; shared labels belong to one section heading.
 
-    With ``tags``, every item carries its credit tag (SDK-1071): an evidence
-    item, passage, session turn or trace on its own first line, a block of
-    entities, facts or other lines on its heading. Tags are only assigned
-    here; ``labels`` collects each ``[mN · origin]`` so the caller can count
-    the ones that survive the budget and dedupe as shown.
+    With ``tags``, every item carries a mark saying where it came from
+    (SDK-1071): an evidence item, passage, session turn or trace on its own
+    first line, a block of entities, facts or other lines on its heading. A
+    graph item names its document, when it has one, and its dataset:
+    ``[document <name> · dataset <name>]`` (SDK-1393); any other item its
+    origin, ``[agent trace, …]``. Items are still numbered in the session's
+    tags, only not shown; ``labels`` maps the text each mark is on to its tag,
+    so the caller can count the ones that survive the budget and dedupe as
+    shown.
     """
     grouped = {}
+    # The dataset the server says the current graph result came from.
+    result_dataset = [""]
 
-    def label(kind, origin, text, ident=""):
+    def label(kind, origin, text, ident="", document="", whole=False):
         if tags is None:
             return ""
-        tag = tags.assign(kind, origin, text, ident)
-        text = f"[{tag} · {origin}]"
+        dataset = result_dataset[0]
+        tag = tags.assign(kind, f"{origin}, dataset {dataset}" if dataset else origin, text, ident)
+        parts = [f"document {document}"] if document else []
+        if dataset:
+            parts.append(f"dataset {dataset}")
+        mark = "[" + " · ".join(parts or [origin]) + "]"
         if labels is not None:
-            labels[text] = tag
-        return text
+            # Marks repeat, so an item is known by its whole text where it has one.
+            labels[f"{mark}\n{text}" if whole else mark] = tag
+        return mark
 
-    def tagged(text, kind, origin, ident=""):
-        mark = label(kind, origin, text, ident)
+    def tagged(text, kind, origin, ident="", document=""):
+        mark = label(kind, origin, text, ident, document, whole=True)
         return f"{mark}\n{text}" if mark else text
 
     def add_block(source, kind, title, priority, entries, result_id, mark):
@@ -338,6 +311,8 @@ def _injection_sections(
         ("trace", "=== Prior agent trace ===", 10),
     ):
         for result_id, entry in enumerate(by_source.get(source, [])):
+            dataset_name = str(entry.get("dataset_name") or "").strip()
+            result_dataset[0] = dataset_name if source == "graph_context" else ""
             items = evidence_items(entry)
             available = [(render_item(item), item) for item in items or []]
             available = [(text, item) for text, item in available if text]
@@ -348,7 +323,13 @@ def _injection_sections(
                     derived = (item.get("source") or {}).get("derived")
                     origin = "derived graph evidence" if derived else "source evidence"
                     # Keyed by its citation: the same evidence keeps its tag.
-                    text = tagged(text, "evidence", origin, str(item.get("citation") or ""))
+                    text = tagged(
+                        text,
+                        "evidence",
+                        origin,
+                        str(item.get("citation") or ""),
+                        str(item.get("title") or "").strip(),
+                    )
                     add(source, "evidence", title, priority, [text], result_id)
                     grouped[(source, "evidence")].setdefault("evidence", {})[text] = item
                 continue
@@ -377,7 +358,15 @@ def _injection_sections(
                                 add_block(source, kind, label_, rank, entries, result_id, mark)
                                 continue
                             passages = [
-                                tagged(p, "passage", passage_origin(p))
+                                (
+                                    tagged(
+                                        p,
+                                        "passage",
+                                        passage_origin(p),
+                                        document=_passage_document(p),
+                                    ),
+                                    is_session_transcript(p),
+                                )
                                 for p in split_passages(parts[kind])
                             ]
                             # Raw turns bridged from other sessions are the bulk and
@@ -388,7 +377,7 @@ def _injection_sections(
                                 kind,
                                 label_,
                                 rank,
-                                [p for p in passages if not is_session_transcript(_untag(p))],
+                                [p for p, transcript in passages if not transcript],
                                 result_id,
                                 PASSAGE_SEPARATOR,
                             )
@@ -398,7 +387,7 @@ def _injection_sections(
                                 "=== Cognee memory: transcripts ===\n[cognee-memory]\n"
                                 "## Passages from other sessions",
                                 rank - 1,
-                                [p for p in passages if is_session_transcript(_untag(p))],
+                                [p for p, transcript in passages if transcript],
                                 result_id,
                                 PASSAGE_SEPARATOR,
                             )
@@ -423,14 +412,6 @@ def _injection_sections(
                     result_id,
                 )
     return list(grouped.values())
-
-
-def _untag(text: str) -> str:
-    """``text`` without the credit tag line ``_injection_sections`` put on it."""
-    first, sep, rest = text.partition("\n")
-    if sep and first.startswith("[m") and " · " in first and first.endswith("]"):
-        return rest
-    return text
 
 
 def _recall_output(context: str, notice: str = "") -> dict:
@@ -738,6 +719,16 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # name-addressed — it is this repo's own dataset.
     session_dataset = get_dataset(config)
     write_id, read_ids = resolve_active_dataset_ids() if scope_specs else ("", [])
+    # Auto recall (SDK-1393): unless recall is pinned (a picked dataset,
+    # COGNEE_PLUGIN_RECALL_MODE=pinned, an explicit read set), the graph scope names
+    # no dataset and the server routes it (cognee 1.6.6; an older server reads
+    # every readable dataset). Local state only: it costs no request.
+    auto_route = False
+    if scope_specs:
+        try:
+            auto_route = auto_recall_active()
+        except Exception as exc:
+            hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's request, run off the event loop.
@@ -780,6 +771,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                 timeout=scope_timeout,
                 # Only this hook renders evidence items; other graph callers skip the cost.
                 evidence_mode="context" if "graph" in scope_list else None,
+                auto_route=auto_route and scope_list == ["graph"],
             )
         except Exception as caught:
             exc = caught
@@ -822,8 +814,8 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
             # (scopes_answered_err) so real failures stay visible (SDK-469).
             # It IS an answer, though: the server was reached and said so. Since
             # memory became one request (SDK-741) nothing else answers on such a
-            # prompt, so this must count as ok or the ready marker, the breaker
-            # and the dataset hint would all read a fresh dataset as an outage.
+            # prompt, so this must count as ok or the ready marker and the
+            # breaker would both read a fresh dataset as an outage.
             hook_log("recall_graph_not_built", {"scope": scope_list, "dataset": scope_dataset})
             scopes_ok += 1
             continue
@@ -992,7 +984,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
     # fired on 12 of 40 turns" activation number the status line shows next to
     # the per-turn count — no extra calls, just the turn that was already
     # counted. Keyed by host session, so /clear starts over and --resume
-    # continues. Read here, before the dataset hint, which it gates.
+    # continues.
     from pathlib import Path as _Path
 
     _state = _Path.home() / ".cognee-plugin" / "claude-code" / "last_recall.json"
@@ -1009,28 +1001,6 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         except Exception:
             pass
     _totals["turns"] += 1
-
-    # Name the other datasets the user could search instead (see
-    # _other_datasets_hint). The block is static text, so it rides along on
-    # the session's FIRST answered prompt — the model keeps it from there —
-    # and again on any prompt memory answered with nothing, the moment it is
-    # actually needed (SDK-904). Not when nothing answered: the search it
-    # recommends would fail the same way. Decoration on the recall path — it
-    # must never break the hook output.
-    dataset_hint = ""
-    if scopes_ok and _dataset_hint_enabled() and (_totals["turns"] <= 1 or total == 0):
-        try:
-            dataset_hint = _other_datasets_hint(
-                session_dataset,
-                read_ids or ([write_id] if write_id else []),
-                service_url,
-                budget_deadline,
-            )
-        except Exception as exc:
-            hook_log(
-                "recall_error",
-                {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
-            )
 
     # Build a one-line visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
@@ -1090,8 +1060,6 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         sections.append(
             {"entries": ["(no memory matches for this prompt)"], "priority": 1, "counted": False}
         )
-    if dataset_hint:
-        sections.append({"entries": [dataset_hint], "priority": 0, "counted": False})
     notice = _bounded_notice(header, notice)
 
     def measure(text):
@@ -1245,6 +1213,7 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
+        from _capture_policy import sanitize as _sanitize
         from _logfiles import append_line as _append_log_line
 
         _audit = _Path.home() / ".cognee-plugin" / "claude-code" / "recall-audit.log"
@@ -1265,8 +1234,14 @@ async def _recall(prompt: str, cwd: str = "", notice: str = "") -> tuple[dict | 
                     # The header the user sees: an empty recall no longer
                     # puts it in the injected context (SDK-1071).
                     "header": header,
-                    "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
-                    **{k: v for k, v in injection_stats.items() if k != "entries"},
+                    "context": _audit_clip(_sanitize(full_context), _AUDIT_CONTEXT_CHARS),
+                    # deduped_entries holds whole recalled entries; the
+                    # hook.log line leaves it out for the same reason.
+                    **{
+                        k: v
+                        for k, v in injection_stats.items()
+                        if k not in {"entries", "deduped_entries"}
+                    },
                 }
             ),
         )
@@ -1320,6 +1295,14 @@ def main():
         return
 
     prompt = payload.get("prompt", "")
+    try:
+        from _capture_policy import sanitize
+
+        # Every recall lane, the audit line and the tags see only this copy.
+        prompt = sanitize(prompt) if isinstance(prompt, str) else ""
+    except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
+        hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})
+        return
     if not prompt or len(prompt) < 5:
         return
     # Only a raised floor applies here: the stock gate above keeps its exact

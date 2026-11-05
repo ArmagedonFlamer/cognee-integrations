@@ -78,6 +78,32 @@ def test_is_available(config, cognee, expected):
         assert p.is_available() is expected
 
 
+@pytest.mark.parametrize(
+    ("config", "ready", "cognee", "expected"),
+    [
+        ({"service_url": "https://tenant.example"}, False, False, None),
+        ({}, True, False, None),
+        ({}, False, False, "hermes cognee install-runtime"),
+        ({"embedded": "true"}, False, False, "Hermes's own Python environment"),
+        ({"embedded": "true"}, True, True, None),
+    ],
+)
+def test_unavailable_reason_names_the_fix(config, ready, cognee, expected):
+    # Hermes never calls initialize() for an unavailable provider; this hint is
+    # the only text of ours the user sees.
+    p = provider_mod.CogneeMemoryProvider(backend=FakeBackend())
+    with (
+        mock.patch.object(provider_mod, "load_config", return_value=config),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=ready),
+        mock.patch.object(provider_mod, "has_cognee", return_value=cognee),
+    ):
+        reason = p.unavailable_reason()
+    if expected is None:
+        assert reason == ""
+    else:
+        assert expected in reason
+
+
 def test_a_running_server_is_used_without_cognee():
     with (
         mock.patch.object(sb, "health_ok", return_value=True),
@@ -194,3 +220,19 @@ def test_setup_defaults_to_remote(tmp_path, saved_config, runtime_ready, expecte
 def test_a_local_install_is_told_its_current_mode(tmp_path, capsys):
     _default_mode(tmp_path, {"service_url": ""}, True)
     assert "Current mode: local" in capsys.readouterr().out
+
+
+def test_unavailable_reason_names_an_outdated_runtime():
+    # After a plugin update that moves the pin, local mode stays off until the
+    # user installs the new runtime; the hint says so rather than "not installed".
+    p = provider_mod.CogneeMemoryProvider(backend=FakeBackend())
+    with (
+        mock.patch.object(provider_mod, "load_config", return_value={}),
+        mock.patch.object(provider_mod.runtime_env, "local_ready", return_value=False),
+        mock.patch.object(
+            provider_mod.runtime_env, "outdated_requirement", return_value="cognee==0.0.1"
+        ),
+    ):
+        reason = p.unavailable_reason()
+    assert "cognee==0.0.1" in reason
+    assert "hermes cognee install-runtime" in reason

@@ -43,6 +43,7 @@ from _plugin_common import (
     _https_context,
     _reexec_into_venv,
     apply_cognee_env,
+    auto_recall_active,
     clear_server_pidfile,
     ensure_launch_record,
     get_session_key,
@@ -145,7 +146,7 @@ _HOST_PYTHON_CANDIDATES = (
 # refusal reaches the user as a systemMessage (the worker that hits it runs
 # detached, with nothing it prints visible). Cleared once a venv is ready.
 _HOST_PYTHON_MARKER = _GLOBAL_STATE_DIR / "host-python-unsupported.json"
-_PINNED_COGNEE_VERSION = "1.6.5"
+_PINNED_COGNEE_VERSION = "1.6.6"
 _INSTALL_TIMEOUT_SECONDS = float(os.environ.get("COGNEE_INSTALL_TIMEOUT", "") or 600.0)
 
 # Maps a configured backend provider env var to the cognee package "extra" that
@@ -2188,7 +2189,7 @@ async def _start(payload: dict | None = None) -> dict:
         file=sys.stderr,
     )
 
-    status_line = render_status_for_host(session_key)
+    status_line = render_status_for_host(session_key, auto_recall_active(session_key))
     return {
         "hookSpecificOutput": {
             "hookEventName": "SessionStart",

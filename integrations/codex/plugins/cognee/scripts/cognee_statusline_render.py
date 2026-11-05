@@ -135,7 +135,7 @@ def _active_dataset(host_id: str = "") -> str:
         return recorded
     # 2. env var (inherited from the shell that launched Codex)
     v = os.environ.get("COGNEE_PLUGIN_DATASET", "").strip()
-    if v:
+    if v and v.lower() != "auto":  # reserved: "auto" means the default dataset
         return v
     # 3. default
     return _DEFAULT_DATASET
@@ -554,12 +554,21 @@ def _top_up_hint() -> str:
     return f" · top up: {_billing_url()}"
 
 
-def render_status_for_host(host_id: str) -> str:
+def render_status_for_host(host_id: str, recall_auto: bool = False) -> str:
     """Return the status string. ``host_id`` is this session's key, used to show only
-    LLM-key verdicts written by this session (the marker is machine-wide)."""
+    LLM-key verdicts written by this session (the marker is machine-wide).
+
+    ``recall_auto`` (the hooks pass ``_plugin_common.auto_recall_active``; this
+    renderer stays pure-local and does not work it out) shows the dataset as
+    ``auto (<dataset>)``, as Claude Code's row does: recall is routed by the
+    server across the readable datasets, and saves go to ``<dataset>``.
+    """
+    dataset = _active_dataset(str(host_id or ""))
+    if recall_auto:
+        dataset = f"auto ({dataset})"
     return (
         f"{_status_prefix(str(host_id or ''))}"
-        f"cognee: {_active_dataset(str(host_id or ''))} · {_active_mode()}"
+        f"cognee: {dataset} · {_active_mode()}"
         f"{_credits_segment()}{_update_segment()}"
     )
 

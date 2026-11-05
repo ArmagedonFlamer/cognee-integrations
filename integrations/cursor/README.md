@@ -117,7 +117,7 @@ EOF
 chmod 600 ~/.cognee/.env
 ```
 
-`COGNEE_BACKEND=local|cloud` pins the mode for every Cognee plugin; `COGNEE_CURSOR_BACKEND` does the same for this plugin only. The IDE's hooks inherit the Cursor app's environment, not a terminal's, so put these in `~/.cognee/.env` (re-read by every hook) rather than exporting them in a shell, unless you start Cursor from that shell. All other knobs are the Codex plugin's and are documented in the [Codex README](../codex/README.md): `COGNEE_PLUGIN_DATASET` under *Dataset*, `COGNEE_CAPTURE` and the `COGNEE_CAPTURE_*` allow/deny/redaction lists under capture, and the improve cooldowns under *Session sync and watchers*.
+`COGNEE_BACKEND=local|cloud` pins the mode for every Cognee plugin; `COGNEE_CURSOR_BACKEND` does the same for this plugin only. The IDE's hooks inherit the Cursor app's environment, not a terminal's, so put these in `~/.cognee/.env` (re-read by every hook) rather than exporting them in a shell, unless you start Cursor from that shell. All other knobs are the Codex plugin's and are documented in the [Codex README](../codex/README.md): `COGNEE_PLUGIN_DATASET` under *Dataset* and `COGNEE_PLUGIN_RECALL_MODE` (`auto` or `pinned`) under *Auto recall*, `COGNEE_CAPTURE` and the `COGNEE_CAPTURE_*` allow/deny/redaction lists under capture, and the improve cooldowns under *Session sync and watchers*.
 
 ## Verify
 
@@ -159,7 +159,7 @@ With the opt-in set, `sessionStart` registers it: `scripts/_statusline_config.py
 
 ## Status bar (Cursor IDE)
 
-The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that switches the chat's dataset. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
+The Cursor IDE has no hook for a status line. The plugin ships a small VS Code extension in [`statusbar/`](statusbar/README.md) that shows the same line in the IDE's status bar, with a click that opens a dataset picker: `auto (best-matching dataset)` sets recall back to auto, the active dataset (its row shows the recall mode and the script's sentence about it) restricts recall to it without a new session (`switch-dataset.py pin`), and another dataset switches the chat to it. A dataset named `auto` is never offered as a target. It is a separate install: installing the plugin copies its source but does not install the extension, so build and install it as its README describes. It runs in classic windows only; glass windows do not load it.
 
 Without it, the same text (without ANSI) is the first line of the context the plugin injects at session start and on each turn's first tool call, so the agent can relay it.
 
@@ -170,6 +170,7 @@ Everything goes to the Cognee server at `COGNEE_BASE_URL`: your own local server
 - **Sent per turn:** your prompt, the agent's final answer, and each tool call with its input and output (truncated), as session memory in the active dataset (`agent_sessions` by default). When the conversation ends, that session memory is turned into graph memory on the server.
 - **Sent per prompt:** the prompt as a recall query, to fetch the memory the agent gets.
 - **Redacted first:** API keys, tokens, private keys, connection strings, `Authorization` headers and similar secrets are replaced with `[redacted:<kind>]` before anything is sent. Credit lines and the plugin's own instructions are removed as well.
+- **Private spans:** text inside `<private>…</private>` is replaced with `[private]` before it is logged, stored, sent as a query or uploaded, for automatic capture and explicit remember alike; neither `COGNEE_CAPTURE` nor `COGNEE_CAPTURE_REDACT` turns that off, and a `--file` upload is sent unchanged (see [private spans](../claude-code/README.md#private-spans)). The agent still sees the span in the live turn.
 - **Not sent:** reads of sensitive paths such as `.env` files and key files, and the plugin's own Cognee commands.
 - **Kept locally:** logs and per-session state under `~/.cognee-plugin/cursor/`. The API key stays in `~/.cognee/.env` or your shell, never in the plugin.
 
@@ -179,7 +180,7 @@ Everything goes to the Cognee server at `COGNEE_BASE_URL`: your own local server
 | `COGNEE_CAPTURE_TOOLS` / `COGNEE_CAPTURE_DENY_TOOLS` | which tool calls are stored, e.g. `COGNEE_CAPTURE_DENY_TOOLS=Bash(curl:*)` |
 | `COGNEE_CAPTURE_DENY_PATHS` | more paths whose reads are never stored |
 | `COGNEE_CAPTURE_REDACT_PATTERNS` | your own regexes to redact, one per line |
-| `COGNEE_CAPTURE_REDACT=false` | turn redaction off (not recommended) |
+| `COGNEE_CAPTURE_REDACT=false` | turn the secret patterns off (not recommended); `<private>` spans are removed regardless |
 
 Forget something with the `cognee-forget` skill ("forget what we said about X"), which deletes the matching documents and the graph built from them.
 

@@ -22,7 +22,7 @@ import time
 import urllib.error
 import urllib.request
 
-from .backend import CogneeNotInstalledError, cognee_not_installed_message
+from .backend import CogneeNotInstalledError
 from .config import (
     DEFAULT_SERVER_BOOT_TIMEOUT,
     DEFAULT_USER_EMAIL,
@@ -32,7 +32,7 @@ from .config import (
     ollama_embedding_pins,
     secret,
 )
-from .runtime_env import server_python
+from .runtime_env import local_not_ready_message, server_python
 
 logger = logging.getLogger(__name__)
 
@@ -337,7 +337,7 @@ def ensure_local_server(
     # Hermes's own when cognee was installed into it by hand.
     python = server_python()
     if python is None:
-        raise CogneeNotInstalledError(cognee_not_installed_message("local"))
+        raise CogneeNotInstalledError(local_not_ready_message())
     if log_path is None:
         log_path = default_server_log_path()
     proc = None

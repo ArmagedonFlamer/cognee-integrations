@@ -28,7 +28,8 @@ runs no code from anywhere else.
 filtered by the [capture controls](#automatic-capture-controls)), and Claude's
 answers, plus a short memory anchor before compaction. Credentials, private keys and
 database URLs are redacted before anything is stored or uploaded, and `.env`,
-credential and key files are never captured. `COGNEE_CAPTURE=false` turns automatic
+credential and key files are never captured. Text you wrap in `<private>…</private>`
+never leaves the hooks; see [private spans](#private-spans). `COGNEE_CAPTURE=false` turns automatic
 capture off; recall and explicit remember keep working.
 
 **Where it goes.** To the Cognee server you configure, and nowhere else.
@@ -43,7 +44,7 @@ capture off; recall and explicit remember keep working.
 Memory is kept until you delete it (the `cognee-forget` skill, or deleting the
 dataset). The plugin never expires server-side memory on its own.
 
-**Other network calls.** Local mode installs `cognee==1.6.5` from PyPI into
+**Other network calls.** Local mode installs `cognee==1.6.6` from PyPI into
 `~/.cognee-plugin/venv` once. The background idle watcher fetches this repository's
 `marketplace.json` from `raw.githubusercontent.com` at most hourly to offer updates
 (`COGNEE_UPDATE_CHECK=off`). No telemetry, no analytics: nothing is sent to
@@ -90,8 +91,8 @@ the events the hooks fire. On your explicit action in the fix dialog it also run
 `cognee-doctor.sh` (read-only diagnostics) and appends a value you typed to
 `~/.cognee/.env`. Everything else it runs is one of this
 folder's scripts, on your action or Claude's: `switch-dataset.py --list` once when
-the band is first drawn and `switch-dataset.py <name>` when you pick a dataset or
-run `/cognee-dataset <name>`; the `search` tool runs `cognee-search.sh` (and
+the band is first drawn and `switch-dataset.py <name>` (`pin` for the dataset in use, `auto`,
+or a dataset's id when it is named `pin`) when you pick a dataset or run `/cognee-dataset`; the `search` tool runs `cognee-search.sh` (and
 `recall-trim.py` on its output); the `remember` tool runs `cognee-remember.sh`.
 Those are the same programs the skills
 run, with the same server traffic. The module itself makes no network requests,
@@ -338,7 +339,7 @@ Two terminals can deliberately share a session by setting the same `COGNEE_SESSI
 
 ## Dataset
 
-All writes and recall are scoped to a single dataset. By default both the Claude Code and Codex plugins use `agent_sessions`, so memory is shared across both integrations automatically.
+All writes go to a single dataset, the active one. By default both the Claude Code and Codex plugins use `agent_sessions`, so memory is shared across both integrations automatically.
 
 Set a custom dataset at launch:
 
@@ -346,8 +347,11 @@ Set a custom dataset at launch:
 export COGNEE_PLUGIN_DATASET="my-project-memory"
 ```
 
-`COGNEE_PLUGIN_DATASET` seeds the dataset at launch. Recall searches only the active dataset (but see
-[Searching another dataset without switching](#searching-another-dataset-without-switching)).
+`COGNEE_PLUGIN_DATASET` seeds the dataset at launch, and saves go to the active dataset. It does
+not restrict recall: recall is auto (the server picks the dataset when it can) unless
+`COGNEE_PLUGIN_RECALL_MODE=pinned` or a choice made in the session says otherwise (see
+[Auto recall and restricting it to one dataset](#auto-recall-and-restricting-it-to-one-dataset)).
+`auto` is reserved: `COGNEE_PLUGIN_DATASET=auto` means the default dataset.
 Data added outside of Claude to the dataset (via SDK or the server for example) is visible in Claude via the Cognee plugin.
 
 ### Switching datasets mid-session
@@ -376,48 +380,71 @@ The choice lives in the launch record (`~/.cognee-plugin/claude-code/sessions/<h
 so it survives `--resume` and beats the shell's `COGNEE_PLUGIN_DATASET` (and a pinned
 `COGNEE_SESSION_ID`) for the rest of the launch. Retired sessions stay in the record's `touched`
 list and the session-end sync covers them again as a safety net. The script behind the skill is
-`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`,
-`--session-key <host id>` when several launches share a directory).
+`scripts/switch-dataset.py` (`--list [--json]`, `<name> [--force] [--json]`, `pin [--json]`,
+`auto [--json]`, `--session-key <host id>` when several launches share a directory). Every
+`--json` result carries `message`, one or two sentences for the user; the text output prints the
+same sentences.
 
-### Searching another dataset without switching
+### Auto recall and restricting it to one dataset
 
-Recall only ever reads the active dataset. On every prompt the server answers, the hook also
-appends a block to the injected context naming **every other dataset you can read** (with their
-UUIDs — nothing ranks them, so you choose; read-only ones included, since a search needs no write
-access) and the command to search one of them. Whether the recalled context actually answers you
-is a call only the model can make — graph retrieval returns its nearest matches from any populated
-dataset, relevant or not — so the block is worded for it to act on only when memory did not answer.
-If you are asking Claude to recall something and the active dataset did not have it, it offers those datasets as a picker; pick one and Claude runs a **one-off, graph-only search** on
-it and tells you which dataset the answer came from. Nothing else moves: the active dataset,
-the Cognee session and where writes go stay as they were — this is for looking something up
-elsewhere, not for working there (that is what the switch above is for). The block tells
-Claude not to switch datasets on its own. If you ask for a switch, it runs
-`/cognee-memory:cognee-switch-datasets`.
+Saves always go to the active dataset, but **recall is auto by default**: the graph recall on each
+prompt (and a `cognee-search` that names no dataset) sends no dataset, and the server picks the
+readable dataset(s) most likely to hold the answer (dataset routing). Routing needs a cognee 1.6.6
+server; an older one searches every readable dataset. Routing is best effort: when the server
+cannot narrow the query it searches every
+readable dataset instead. That happens with backend access control off, fewer than two readable
+datasets, nothing close enough to the query, or a vector database without routing support; a
+dataset that has not been through `improve` on 1.6.6 yet has no routing index and is always
+searched, and when the picked dataset returns nothing the server widens to the rest. Pin a dataset
+to keep recall on one.
 
-The same flow is available on demand through the `cognee-search` skill when an explicit search comes
-back empty, and through the `search` tool's `dataset_id` argument. Under the hood:
+Switching to a dataset **restricts recall to it**, `pin` restricts it to the active dataset, and
+`auto` lifts the restriction. `pin` and `auto` leave saves where they are and start no new
+session:
+
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" <dataset>   # saves go there, recall restricted to it
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" pin         # recall restricted to the active dataset
+python3 "${CLAUDE_PLUGIN_ROOT}/scripts/switch-dataset.py" auto        # let the server pick the dataset for recall again
+```
+
+`COGNEE_PLUGIN_RECALL_MODE` (exported or in `~/.cognee/.env`) sets the mode every session starts
+in: `auto` (the default) or `pinned` (recall restricted to the session's dataset, reason
+`configured_pin`). Any other value means `auto`. `COGNEE_PLUGIN_DATASET` only names the dataset:
+it no longer restricts recall, so set `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on a
+configured dataset.
+
+The choice made in a session is stored in the launch record (`recall_pinned`) and wins over the
+configured mode for that session: `auto` gives auto recall even under `pinned`, and `pin` or a
+switch restricts recall even under `auto`. A session switched before this release stays
+restricted. `auto` is reserved: no dataset can be named so. `pin` names the action, so a dataset
+called `pin` is switched to by its id. A `COGNEE_PLUGIN_READ_DATASET_IDS`
+read set restricts recall too, and `auto` cannot lift it. These always keep their explicit dataset: session history and
+guidance (bound to the active dataset), the code lane (this repository's code dataset) and a
+`COGNEE_PLUGIN_READ_DATASET_IDS` read set. Shared agent memory's dataset ids are dropped with the
+dataset under auto recall and kept when it is restricted. When the server is unreachable,
+`cognee-search` falls back to the local `cognee-cli`, which sends no dataset under auto recall and
+the active dataset when recall is restricted.
+
+### Searching one dataset without switching
+
+A one-off, graph-only search of one named dataset leaves the active dataset, the Cognee session and
+the recall mode as they are:
 
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT}/scripts/list-datasets.py" --others   # the candidates
-"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid>
+"${CLAUDE_PLUGIN_ROOT}/scripts/cognee-search.sh" "<query>" 10 --graph --dataset-id <uuid> --user-picked
 ```
+
+While recall is restricted (a picked or pinned dataset, or a read set), the wrapper searches
+another dataset only with `--user-picked`, which marks it as your choice: a dataset you named
+or picked when the agent asked. Without the flag it refuses and says how to ask. The `search`
+tool takes the same mark as `user_picked: true`. Under auto recall the flag is not needed.
 
 Every search reads the knowledge graph (or, with `--code`, a repository's code graph); the
 session cache is written, never searched. The session id is bound to the active dataset, so the
 wrapper drops it for any other dataset; the active dataset named by hand keeps it. Datasets are
-addressed by UUID because a name only resolves among the
-datasets your identity owns. The listing behind the hint is cached per plugin
-(`~/.cognee-plugin/claude-code/readable-datasets.json`) and refreshed at most every
-`COGNEE_DATASETS_CACHE_TTL` seconds (default `300`), inside what is left of the recall budget,
-so the prompt path never waits on it. A refresh that fails (timeout, unreachable) is not
-retried for `COGNEE_DATASETS_CACHE_RETRY` seconds (default `120`): the stale rows serve the
-hint meanwhile, so a loaded server costs one listing timeout per window, not one per prompt.
-
-| Env var | Default | Effect |
-|---|---|---|
-| `COGNEE_RECALL_DATASET_HINT` | `on` | Set `off` to stop the prompt hook from naming the other datasets. On, the block is injected once per session (the first prompt the server answered) and again on any prompt memory answered with nothing. The explicit skill flow is unaffected. |
-| `COGNEE_DATASETS_CACHE_TTL` | `300` | Seconds the cached readable-datasets listing is served before one bounded refresh. |
-| `COGNEE_DATASETS_CACHE_RETRY` | `120` | Seconds after a failed refresh before the listing is fetched again; the stale rows are served meanwhile. |
+addressed by UUID because a name only resolves among the datasets your identity owns.
 
 ## Hooks
 
@@ -488,28 +515,32 @@ See [Claude Code's auto-memory settings](https://code.claude.com/docs/en/memory#
 When an answer uses recalled memory, the agent says so in one line at the end:
 
 ```
-> 🧠 Cognee memory [m2]: on Oct 3 (Codex session) you chose the server over the CLI.
+> Cognee memory: Maya's orders and support chat, from maya-7f3a in the live_context_support_agent_demo dataset
 ```
+
+Claude Code draws that line under the answer with the Cognee mark in place of the label.
 
 How it works:
 
-- The recall hook tags every injected item with `m1`, `m2`… and where it came from: an
-  evidence item, a Claude Code or Codex session, a dated session learning, a document,
-  graph entities or facts, code-graph facts, or agent guidance. Tags are numbered across
-  the session, and a memory recalled again keeps its tag: an evidence item by its
-  citation, an earlier turn or trace by its server id, anything else by its text. So a
-  tag names one memory for the whole session. Tags are assigned before the 9,000-char
-  budget and the injection ledger trim the context; only the ones that survive count as
-  this prompt's.
+- The recall hook marks every injected graph item with the dataset it came from, plus
+  the document when the item names one:
+  `[document maya-7f3a · dataset live_context_support_agent_demo]`. With recall set to
+  auto the server picks the dataset, and this mark is the only place the answer can
+  learn which one. Other items say where they came from, e.g. `[agent trace, …]`.
+  Behind the scenes every item is still numbered across the session (`m1`, `m2`…; a
+  memory recalled again keeps its number) before the 9,000-char budget and the
+  injection ledger trim the context; only the ones that survive count as this prompt's.
 - On turns where memory was injected, an instruction above it says how many memories
   Cognee found for this prompt and asks the agent to add the credit line only when the
   answer used a tagged item, and never for what it knows from CLAUDE.md, MEMORY.md, the
   code, or the conversation. The first credit in a session also says in a few words how
   it connects to the earlier work.
-- The Stop hook reads only the credit line (`arr[m1]` in code is not a citation),
-  compares its tags with the session's and logs a `memory_credit` event to `hook.log`:
-  cited, valid, invented, `earlier` (valid but not injected on this turn) and `available`
-  (how many this turn injected). Nothing is sent anywhere.
+- The Stop hook reads only the answer's last line and logs a `memory_credit` event to
+  `hook.log`: `available` (how many this turn injected) and `untagged: true` when the
+  answer ends with the credit line. It cannot tell which items the answer used. A line
+  that still cites `[mN]` (an older answer) is checked against the session's tags:
+  cited, valid, invented and `earlier` (valid but not injected on this turn). Nothing
+  is sent anywhere.
 - The tags, the credit state and the final-sync stored count live in the session's
   folder, `~/.cognee-plugin/claude-code/sessions/<session>/`, which the state sweep
   removes after a week idle.
@@ -1103,17 +1134,20 @@ credits segment altogether.
 The dataset name in the row is a **picker**: it lists the datasets you can write to
 (one `switch-dataset.py --list` when the band is first drawn, not awaited, and again
 after each switch), and choosing another one switches the session there at once,
-with no model turn, the way `/cognee-dataset <name>` does. Its last entry, `+ new
+with no model turn, the way `/cognee-dataset <name>` does. Its first entry, `auto
+(best-matching dataset)`, puts recall back on auto and leaves saves where they are
+(`switch-dataset.py auto`). Picking a dataset, the active one included, restricts
+recall to it (the active one as `switch-dataset.py pin`, with no new session). While recall is auto the name reads `auto (<active dataset>)`. Its last entry, `+ new
 dataset…`, turns the picker into a text field: Enter with a name switches to that
 dataset, creating it (the same rules as a typed switch: no spaces or dots), and
 Enter on nothing or the `✕` brings the picker back. The row says `switching
 dataset…` while it runs and a toast reports the outcome, errors included. Until the
 listing lands, or when it fails (no launch record, server down), the name is plain
-text. In a terminal the picker stays closed until asked for, since a focused
-picker shows its list: the dataset name is a button (`agent_sessions ▾`); press
-it, or `/cognee-dataset` alone, to open the list, then `ctrl+x tab` or a click
-reaches it, arrows move, Enter picks and the list closes again. Escape returns
-to the prompt.
+text. In a terminal the picker shows the selected name (`agent_sessions`, or
+`auto (agent_sessions)` while recall is auto) and lights under the pointer; a
+click or `ctrl+x tab` gives it the focus, which opens its list and lists the
+datasets afresh. Arrows move, Enter picks; a click on an entry only moves the
+focus. Escape returns to the prompt and the picker shows the name again.
 
 The module also adds, on both surfaces:
 
@@ -1122,7 +1156,7 @@ The module also adds, on both surfaces:
   in the background (saving, learning from the session, indexing, session sync), because the
   recall and compaction hooks already show their own status message there.
 
-The credit inside an answer that used memory (`🧠 Cognee memory [m2]: …`) is the
+The credit inside an answer that used memory (`> Cognee memory: …`) is the
 agent's own, asked for by the recall hook; see [Credit in the answer](#credit-in-the-answer).
 The module only redraws that line: the wave mark on the desktop, the display
 logotype in a terminal (see [Dataset picker and tools](#dataset-picker-and-tools)).
@@ -1194,15 +1228,21 @@ Claude. All of it runs the scripts in this folder, with the same server traffic 
 the skills.
 
 **The dataset picker.** The dataset name in the status row above the prompt is a
-picker of the datasets you can write to, the current one selected, with `+ new
-dataset…` last for a name that does not exist yet. Picking another
-runs `switch-dataset.py <name>` at once, with no model turn: the session it leaves
-is synced first, a new Cognee session starts on the chosen dataset, and the row
-follows. `switching dataset…` shows while it runs; a toast reports `switched to
-demo`, `already on demo`, or the script's error (`✕ Selected dataset is not
-writable`). The list is read once when the row is first drawn and again after each
-switch; nothing polls. `/cognee-dataset <name>` does the same from the prompt on
-every surface, and `/cognee-dataset` alone prints the list.
+picker of the datasets you can write to, with `auto (best-matching dataset)` first
+and `+ new dataset…` last for a name that does not exist yet. While recall is auto
+the row reads `auto (<active dataset>)` and the auto entry is selected. Picking
+another dataset runs `switch-dataset.py <name>` at once, with no model turn: the
+session it leaves is synced first, a new Cognee session starts on the chosen
+dataset, recall is restricted to it, and the row follows. Picking the active
+dataset runs `switch-dataset.py pin`: it only restricts recall to it; picking `auto` lifts that
+(`switch-dataset.py auto`), with no new session either way. `switching dataset…` shows while it
+runs; a toast reports the outcome in the script's own words (its `message`, the same sentences
+`switch-dataset.py` prints), for example `Recall is now pinned to 'agent_sessions', the active
+dataset; saves go there too.`, or the script's error (`✕ Selected dataset is not writable`).
+
+The list is read once when the row is first drawn, again after each switch
+and, in a terminal, each time a click gives the picker the focus; nothing polls. `/cognee-dataset <name>` (or `/cognee-dataset pin`, `/cognee-dataset auto`) does the same from the prompt
+on every surface, and `/cognee-dataset` alone prints the list and the script's sentence about the recall mode.
 
 **Two tools Claude calls directly.** At session start the module registers
 `mcp__cognee-memory__search` and `mcp__cognee-memory__remember`. Both sit behind
@@ -1214,12 +1254,12 @@ does not load mods and for the judgement the skill text carries.
 
 | Tool | Arguments | Runs | Returns |
 |---|---|---|---|
-| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id>]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from the active dataset.` then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
+| `search` | `query` (required), `top_k` (1–50, default 10), `scope` (`graph` default, or `code` for the indexed repository), `dataset_id` (read another readable dataset by UUID; the session stays on the active one), `user_picked` (the person chose that dataset; required for another dataset while recall is restricted) | `cognee-search.sh "<query>" <top_k> --graph\|--code [--dataset-id <id> [--user-picked]]`, its output trimmed by `recall-trim.py` the way the prompt hook trims a graph hit | `N results from memory.` (`from the active dataset.` once recall is restricted to it) then each hit as `### n. <source>` and its text. An empty list from a reachable server is `No memories matched.`; an unreachable server is an error result, never an empty answer. |
 | `remember` | `content` (the text, up to 16,000 characters) or `file` (a path, stored under its real name so code rides the code path, up to 64,000 bytes), `category` (`user` default, `project`, `agent`) mapped to the node set the skill documents. Past either cap, or past the session's allowance of 5 calls and 64,000 bytes in all, the call is refused with a pointer to the `cognee-remember` skill, which has neither: each call runs a cognify on your key. The description tells Claude to store only what you asked to remember, never its own working notes | `cognee-remember.sh "<content>" --node-set <set>` or `--file <path> --node-set <set>` | One line: stored and already in the graph, stored and still being built, or an error (the server unreachable, the write rejected, the cognify failed). |
 
 The credit line the model writes under an answer that used memory
-(`> 🧠 Cognee memory [m4, m5]: …`) is drawn as the mark and the note alone, the
-label and the tags left to the stored line: the engine still draws the reply,
+(`> Cognee memory: …`) is drawn as the mark and the note alone, the
+label left to the stored line: the engine still draws the reply,
 with the line taken off its text, and the mod draws the row under it. The mark
 is the wave on the desktop; a terminal draws no vector image, so there it is
 the display logotype from the brand resources, which is built on a grid of
@@ -1367,7 +1407,7 @@ skips local-path (dev) installs. Turn it off with `COGNEE_UPDATE_CHECK=false`.
 - If a mode seems stuck, check for a forgotten `COGNEE_BACKEND` / `COGNEE_CLAUDE_BACKEND` export in the shell or in `~/.cognee/.env` — the plugin-specific name silently beats the shared one.
 
 **Recall returns empty but data was ingested**
-- Recall is scoped to the active dataset (the one in the status line — `COGNEE_PLUGIN_DATASET` / `agent_sessions` at launch, or whatever you switched to).
+- Recall is auto (the server picks the best-matching dataset, or searches every readable one when it cannot narrow; routing needs a cognee 1.6.6 server, and an older one always searches every readable dataset) unless you restricted it to one by picking or pinning a dataset or by setting `COGNEE_PLUGIN_RECALL_MODE=pinned`; then it reads only that one (the one in the status line). `switch-dataset.py auto` lifts the restriction.
 - Data written via the Python SDK or `client.py` goes to `default_dataset` by default, if dataset not otherwise specified.
 - To verify, call the recall API directly without a dataset filter: `curl -X POST "$COGNEE_BASE_URL/api/v1/recall" -d '{"query":"..."}'`
 
@@ -1444,7 +1484,8 @@ Keys are letters, digits, and underscores. Values are taken literally — no `$V
 
 | Key | Env var(s) | Default | Notes |
 |---|---|---|---|
-| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes and recall at launch; `/cognee-memory:cognee-switch-datasets` changes it mid-session (config value is informational-only) |
+| `dataset` | `COGNEE_PLUGIN_DATASET` | `agent_sessions` | Dataset for writes at launch. It does not restrict recall (see `COGNEE_PLUGIN_RECALL_MODE`). `auto` is reserved: the default dataset. `/cognee-memory:cognee-switch-datasets` changes it mid-session (config value is informational-only) |
+| — | `COGNEE_PLUGIN_RECALL_MODE` | `auto` | The recall mode a session starts in: `auto` (the server picks the dataset) or `pinned` (recall restricted to the session's dataset). Any other value is `auto`. `switch-dataset.py pin` / `auto` or a switch overrides it for the session |
 | `session_id` | `COGNEE_SESSION_ID` | auto-generated per launch | Override to resume a named session |
 | `session_strategy` | `COGNEE_SESSION_STRATEGY` | `per-directory` | `per-directory`, `git-branch`, `static` |
 | `session_prefix` | `COGNEE_SESSION_PREFIX` | `cc` | Prefix for auto-generated session IDs |
@@ -1514,7 +1555,7 @@ win over the shared file. Changes apply when a new hook process starts.
 | `COGNEE_CAPTURE_TOOLS` | all registered tools | Pipe-separated allowlist of tool names, globs or `Tool(prefix:*)` command matchers, e.g. `Bash(git:*)\|Bash(pytest:*)\|Read\|Edit`; everything else is not captured. |
 | `COGNEE_CAPTURE_DENY_TOOLS` | empty | Same syntax, applied after the allowlist: a matching call is not captured, e.g. `Bash(rg:*)\|Bash(grep:*)\|Bash(cat:*)` keeps every Bash call except search and inspection. |
 | `COGNEE_CAPTURE_DENY_PATHS` | sensitive file patterns | Comma-separated patterns or a JSON array extending the built-in `.env`, credential and private-key exclusions. |
-| `COGNEE_CAPTURE_REDACT` | `true` | Redacts common credentials, authorization values, database URLs and private-key blocks before truncation, persistence or upload. |
+| `COGNEE_CAPTURE_REDACT` | `true` | Redacts common credentials, authorization values, database URLs and private-key blocks before truncation, persistence or upload. `false` turns these patterns off; `<private>` spans are removed regardless. |
 | `COGNEE_CAPTURE_REDACT_PATTERNS` | empty | JSON array of additional regular expressions. Invalid expressions prevent the affected content from being captured. |
 
 `Tool(prefix:*)` borrows Claude Code's permission spelling: `Bash(git:*)` matches a
@@ -1531,6 +1572,28 @@ where automatic content capture is inappropriate. Disabling capture does not era
 existing memory or retained buffers; use the forget workflow to remove stored data.
 Sensitive-path exclusions inspect structured tool path arguments, not arbitrary
 shell command syntax.
+
+#### Private spans
+
+Wrap anything you don't want remembered in `<private>…</private>`, in a prompt or in
+text you ask Claude to remember:
+
+```
+Deploy with the staging key <private>the value is in 1Password under "staging"</private>.
+```
+
+The span is replaced with `[private]` before the text is written to a plugin file or
+log, sent as a recall or search query, or stored, and the text around it is kept.
+This applies to automatic capture and to explicit remember (`/cognee-remember`,
+`/cognee-handoff`) alike, and neither `COGNEE_CAPTURE` nor `COGNEE_CAPTURE_REDACT`
+turns it off. Spans don't nest: each `<private>` ends at the next `</private>`, so an
+opener inside a span is hidden with it, and text between two spans is kept. A span may
+cross lines and its tags may carry attributes (`<private reason="x">`). An opener with no
+closing tag is left as plain text, so close every span you open. The secret patterns
+above then run on what is left.
+
+Two limits: Claude itself still sees the span in the live turn, and a `--file` upload
+(`cognee-remember.sh --file`) is sent byte for byte.
 
 ### HTTP backend compatibility
 
