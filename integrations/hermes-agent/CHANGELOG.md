@@ -10,6 +10,91 @@ The version must match the `version` field in both `pyproject.toml` and
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0]
+
+### Added
+- **Recall is auto by default (SDK-1393).** Unless recall is pinned, the per-prompt memory
+  lane and `cognee_recall` name no dataset and the server picks the best-matching one.
+  Routing needs a cognee 1.6.6 server; an older one searches every dataset the user can read.
+  Saves still go to the conversation's dataset. While recall is auto, the memory credit says
+  "based on Cognee memory" rather than naming the active dataset. The guidance lane,
+  `cognee_code_search` and recaps keep their datasets.
+- **The recall mode is a setting: `recall_mode` / `COGNEE_PLUGIN_RECALL_MODE`.** `auto` (the
+  default for everyone) lets the server pick the dataset; `pinned` keeps recall on the active
+  dataset (reason `configured_pin`). Set it with the env var, `recall_mode` in `cognee.json`, or
+  the setup wizard's new recall-mode question. An unknown value is `auto`.
+  `COGNEE_PLUGIN_DATASET=auto` (any case) means the default dataset and says nothing about the
+  mode; before, saves went to a dataset named `auto`.
+- **`cognee_switch_dataset` sets the conversation's recall mode, which wins over the
+  configured one.** New `action='pin'` pins recall to the active dataset (no new session); a
+  `switch` pins recall to its target, and a `switch` to the dataset in use behaves as `pin`.
+  `action='auto'` lets the server pick for that conversation, lifting a configured pin too (the
+  reply names it in `lifted`). `reset` goes back to the configured dataset and recall mode.
+  `current` reports the mode in effect and, when pinned, a `reason` as the other cognee
+  plugins do: `dataset_picked` or `configured_pin`. Every result carries one `message` line
+  built from the mode and reason. `switch` refuses the name `auto`. The memory credit names
+  the dataset whenever recall is pinned.
+- **The mode is kept in `dataset-overrides.json` as a mode.** A pin or `auto` without a switch
+  stores only `{"recall": ...}`: recall applies to the active dataset, which follows the
+  configuration, so after a change of the configured dataset a pinned conversation is pinned
+  to the new one (reason `dataset_picked`). A switch stores its dataset and counter too.
+  Entries written before this release (no `recall`) stay pinned, except one on the configured
+  dataset (indistinguishable from a reset), which follows the configuration.
+
+### Changed
+- **A configured dataset no longer restricts recall.** Before, recall read only the configured
+  `COGNEE_PLUGIN_DATASET` (or setup-wizard dataset); now recall is auto there too and reaches
+  every dataset the server routes to. To keep recall on it, set
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` (or `recall_mode` in setup).
+- **Local mode installs cognee 1.6.6** (was 1.6.5), and a runtime installed for 1.6.5 keeps
+  local mode off until `hermes cognee install-runtime` installs 1.6.6: the plugin never starts
+  a server on a cognee it was not written against, and never downloads one behind the user's
+  back. Hermes reports Cognee as unavailable with that command, and `hermes cognee status`
+  shows the runtime as outdated. `install-runtime` upgrades `runtime/venv` in place; a failed
+  or interrupted install leaves no ready marker, so local mode stays off and the next
+  `install-runtime` repairs the venv. Restart a local server still running from the old
+  version, and start a new Hermes session.
+
+## [1.4.1]
+
+### Added
+- **The memory credit carries the Cognee logo.** A `transform_llm_output` hook draws it, so
+  the logo is always exact: the agent only writes a plain line. (Asking the agent to copy a
+  braille logo itself failed live: it dropped cells, lost the colour markup and copied the
+  placeholder.)
+  - **Hermes Desktop:** `Cognee:` in the agent's `> Cognee: …` line becomes the Cognee pixel
+    logo in the brand purple (`#BC9BFF`), drawn in KaTeX as coloured rules on the logo's
+    five-row grid, followed by half an em of space and the sentence. The quote marker is
+    dropped (Desktop draws a blockquote with a quotation mark).
+  - **Terminal chats (`hermes --tui` and `hermes`):** the answer streams before the hook runs
+    and a rewritten answer would be shown twice, so the agent is asked for the line without
+    the `Cognee:` label (`> <what it remembered>, based on dataset <name>.`) and the Cognee
+    logo in braille is appended below it as a signature. In the classic chat with
+    `display.streaming` off, the logo replaces the quote marker instead, with the sentence
+    beside its first row.
+  - Messaging apps keep the plain `> Cognee:` line for now.
+  - In the terminal the unlabelled line is recognised by where it is and what it names: the
+    answer's last line, quoted, naming `dataset <name>` or `Cognee memory`, however the rest is
+    worded (seen live: "stored in dataset agent_sessions", not "based on").
+  - Every form of the credit, drawn or plain, is stripped before the turn is stored.
+
+### Fixed
+- **Local mode without its runtime now says how to fix it.** Hermes never calls
+  `initialize()` for a provider that reports unavailable, so the "run
+  `hermes cognee install-runtime`" error never reached the user: they saw only Hermes's
+  generic "check credentials/config" warning. The provider now implements
+  `unavailable_reason()`, which Hermes appends to that warning (the embedded-mode wording
+  when `COGNEE_EMBEDDED=true` and cognee is not in Hermes's environment).
+- **Upgrading from 1.3.x in local mode needs `hermes cognee install-runtime`.** 1.3.x
+  installed cognee into Hermes's environment as a dependency; Hermes drops it from the first
+  environment it builds after the upgrade. The README now says so, and corrects 1.4.0's
+  claims: a server another cognee plugin runs on the port is used only once the runtime is
+  installed (availability is decided before anything connects), and a cognee installed into
+  Hermes's environment by hand does not survive Hermes rebuilding that environment.
+- **`hermes plugins validate` passes.** `plugin.yaml` declares the `transform_llm_output`
+  hook under `provides_hooks`; it was registered but undeclared, which the catalog check
+  rejects.
+
 ## [1.4.0]
 
 ### Changed
@@ -67,14 +152,8 @@ project adheres to [Semantic Versioning](https://semver.org/).
   (the per-prompt memory block and `cognee_recall` results) are tagged `[mN · where it came
   from]` with one numbering per conversation, and an instruction asks the agent to end an
   answer that used them with one plain line, `> Cognee: <what it remembered>, based on
-  dataset <name>`. A `transform_llm_output` hook replaces `Cognee:` with the Cognee pixel logo in
-  the brand purple in Hermes Desktop (KaTeX rules on the logo's five-row grid), so the logo is
-  always exact; in the terminal chats (`hermes --tui` and `hermes`) the agent writes the line
-  without the `Cognee:` label and the Cognee logo in braille is appended below it as a
-  signature (a replaced answer would show twice),
-  or, in the classic chat with streaming off, replaces the line with the sentence beside it; messaging apps keep the plain line for now. (Asking the agent to copy a braille logo itself failed live: it dropped
-  cells, lost the colour markup and copied the placeholder.) The credit is noted and stripped
-  before the turn is stored. On by default; `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
+  dataset <name>`. The credit is noted and stripped before the turn is stored. On by default;
+  `COGNEE_PLUGIN_CITE_MEMORY=off` turns it off.
 - **Local mode works without an LLM key.** cognee 1.6.5 then builds memory with local
   models (GLiNER extraction, fastembed embeddings) installed into the runtime and downloaded
   on the first build (about 1.5 GB); recall returns the matching stored text. The setup's LLM

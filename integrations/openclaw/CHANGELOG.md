@@ -11,6 +11,45 @@ reports an update only when the published npm version changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/). Versions are
 date-based (`YYYY.M.D`), matching the OpenClaw plugin ecosystem.
 
+## [2026.11.3]
+
+### Added
+- **Unpinned recall is routed by the server (SDK-1393).** Prompt-time graph recall and
+  `memory_search` name no dataset unless the conversation is pinned, and a cognee >= 1.6.6
+  server routes the query, best effort: it picks the best-matching dataset when it can, and
+  otherwise searches every readable dataset. Routing needs a cognee 1.6.6 server; an older
+  one searches every readable dataset. Pin a dataset to keep recall on one. Saves still go to
+  the conversation's dataset. Multi-scope mode, the guidance lane and the code lane keep their
+  explicit datasets, and an install with no indexed data still skips prompt recall and
+  `memory_search`. `recall()` omits `dataset_ids` when given none.
+- **`recallMode` config option (SDK-1393):** `"auto"` (default) or `"pinned"`, also
+  `COGNEE_PLUGIN_RECALL_MODE`; unknown values mean `auto`. It sets the recall mode for a
+  conversation that has not chosen one. A conversation's choice wins: `memory_switch_dataset`
+  `action: "auto"` lifts `recallMode: "pinned"` for that conversation, and `pin` or a switch
+  pins; `reset` returns to the config. Multi-scope mode always recalls from its scopes.
+- **`memory_switch_dataset` pins recall.** `action: "pin"` pins recall to the dataset in use,
+  with no sync and no new session; it records a mode only, so saves keep following the
+  configured `datasetName` (also after it changes). A switch pins recall to its new dataset;
+  switching to the dataset in use is the same as `pin`. `action: "auto"` unpins; `reset` drops
+  the conversation's switch and recall choice. Each result that reports the mode carries
+  `recall`, a `reason` when pinned (`dataset_picked`, `configured_pin`, `multi_scope`) and one
+  `note` built the same way for `current`, `pin`, `auto`, `switch` and `reset`. `"auto"` is
+  reserved and cannot be switched to. An override saved before this release counts as pinned.
+
+### Changed
+- **The bundled server runs cognee 1.6.6** (was 1.6.5), and `cognee-docker-compose.yaml` uses
+  `cognee/cognee:1.6.6`.
+- **Behaviour change: a configured non-default `datasetName` no longer restricts recall.**
+  With the default `recallMode: "auto"`, an agent configured with its own `datasetName` (or
+  `COGNEE_PLUGIN_DATASET`) still saves there, but recall is routed across every readable
+  dataset. Set `recallMode: "pinned"` to keep recall on that dataset. `datasetName: "auto"`
+  still means the default dataset and says nothing about the recall mode.
+
+### Fixed
+- **Dataset overrides keep their recall mode across gateway restarts**, and a conversation's
+  `key:` and `sid:` entries are always written together, so they cannot disagree after a
+  reload. `memory_switch_dataset` waits for the saved overrides to load before it answers.
+
 ## [2026.10.26]
 
 ### Added

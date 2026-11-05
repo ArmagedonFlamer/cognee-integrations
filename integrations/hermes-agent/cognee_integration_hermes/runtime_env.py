@@ -13,6 +13,11 @@ the interpreter running Hermes (cognee supports it: Hermes runs 3.14, cognee
 3.10-3.14) with uv when one is on PATH, else stdlib ``venv`` + pip, and uv is
 never allowed to download an interpreter. One venv serves every Hermes profile,
 as the server it runs does (one port, one store under ~/.cognee).
+
+A runtime an earlier plugin version installed for another cognee pin does not
+count as installed: local mode stays off, and says to run ``install-runtime``,
+which upgrades the venv in place to the current pin. The plugin never starts a
+server on a cognee it was not written against.
 """
 
 from __future__ import annotations
@@ -26,7 +31,7 @@ import sys
 from pathlib import Path
 from typing import Callable, Optional
 
-from .backend import has_cognee
+from .backend import cognee_not_installed_message, has_cognee
 from .config import LOCAL_COGNEE_REQUIREMENT, SHARED_PLUGIN_STATE_DIR
 
 try:  # POSIX only; on Windows two concurrent installs are not serialized.
@@ -59,16 +64,37 @@ def venv_python(venv_dir: Optional[Path] = None) -> Path:
     return venv_dir / "bin" / "python"
 
 
-def runtime_python() -> Optional[str]:
-    """The runtime venv's interpreter, when it holds the pinned cognee."""
+def _marker_requirement() -> Optional[str]:
     try:
         marker = json.loads(READY_MARKER.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    if not isinstance(marker, dict) or marker.get("requirement") != LOCAL_COGNEE_REQUIREMENT:
+    requirement = marker.get("requirement") if isinstance(marker, dict) else None
+    return requirement if isinstance(requirement, str) else None
+
+
+def runtime_python() -> Optional[str]:
+    """The runtime venv's interpreter, when it holds the pinned cognee."""
+    if _marker_requirement() != LOCAL_COGNEE_REQUIREMENT:
         return None
     python = venv_python()
     return str(python) if python.exists() else None
+
+
+def outdated_requirement() -> Optional[str]:
+    """The ``cognee==X`` the runtime venv holds when X is not the current pin.
+
+    An earlier plugin version installed it. It is not used: local mode stays
+    off until ``install-runtime`` upgrades the venv to the current pin.
+    """
+    requirement = _marker_requirement()
+    if (
+        not requirement
+        or requirement == LOCAL_COGNEE_REQUIREMENT
+        or not requirement.startswith("cognee==")
+    ):
+        return None
+    return requirement if venv_python().exists() else None
 
 
 def server_python() -> Optional[str]:
@@ -86,6 +112,19 @@ def server_python() -> Optional[str]:
 
 def local_ready() -> bool:
     return server_python() is not None
+
+
+def local_not_ready_message() -> str:
+    """What to tell a user whose local mode cannot start (no usable runtime)."""
+    outdated = outdated_requirement()
+    if not outdated:
+        return cognee_not_installed_message("local")
+    return (
+        f"cognee local mode is off: its runtime holds {outdated}, and this plugin version "
+        f"needs {LOCAL_COGNEE_REQUIREMENT}. Run `hermes cognee install-runtime` in a "
+        "terminal: it upgrades the runtime in place. Then start a new Hermes session "
+        "(restart a local cognee server still running from the old version)."
+    )
 
 
 def _find_uv() -> Optional[str]:

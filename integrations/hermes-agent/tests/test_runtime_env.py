@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from cognee_integration_hermes import runtime_env  # noqa: E402
 from cognee_integration_hermes import server_bootstrap as sb  # noqa: E402
+from cognee_integration_hermes.backend import CogneeNotInstalledError  # noqa: E402
 from cognee_integration_hermes.config import LOCAL_COGNEE_REQUIREMENT  # noqa: E402
 
 PINNED = LOCAL_COGNEE_REQUIREMENT.split("==", 1)[1]
@@ -72,6 +73,30 @@ def test_not_ready_without_a_marker(runtime):
 def test_a_marker_for_another_version_is_not_ready(runtime):
     _mark_ready(runtime, requirement="cognee==0.0.1")
     assert runtime_env.runtime_python() is None
+
+
+def test_an_outdated_runtime_is_not_used(runtime):
+    # A runtime an older plugin installed for its own pin keeps local mode off.
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    with mock.patch.object(runtime_env, "has_cognee", return_value=False):
+        assert runtime_env.outdated_requirement() == "cognee==0.0.1"
+        assert runtime_env.server_python() is None
+        assert runtime_env.local_ready() is False
+
+
+@pytest.mark.parametrize("venv", [True, False])
+def test_the_not_ready_message_names_both_pins_only_for_an_outdated_runtime(runtime, venv):
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    if not venv:
+        # A marker whose venv is gone is no runtime at all.
+        _python(runtime).unlink()
+    message = runtime_env.local_not_ready_message()
+    if venv:
+        assert "cognee==0.0.1" in message
+        assert LOCAL_COGNEE_REQUIREMENT in message
+        assert "hermes cognee install-runtime" in message
+    else:
+        assert "not installed yet" in message
 
 
 def test_ready_with_a_matching_marker(runtime):
@@ -140,11 +165,21 @@ def test_an_older_runtime_is_upgraded_in_place(runtime):
         mock.patch.object(runtime_env.subprocess, "run", side_effect=run),
     ):
         runtime_env.install_runtime(output=lambda _: None)
-    assert [c[1] for c in run.commands] == ["pip"]
+    assert run.commands == [
+        ["/bin/uv", "pip", "install", "--python", str(_python(runtime)), LOCAL_COGNEE_REQUIREMENT],
+    ]
+    assert json.loads((runtime / "ready.json").read_text())["requirement"] == (
+        LOCAL_COGNEE_REQUIREMENT
+    )
     assert runtime_env.runtime_python() == str(_python(runtime))
+    assert runtime_env.outdated_requirement() is None
 
 
-def test_a_failed_step_leaves_no_marker(runtime):
+@pytest.mark.parametrize("outdated", [False, True])
+def test_a_failed_step_leaves_no_marker(runtime, outdated):
+    if outdated:
+        # The marker goes before the install, so a half-upgraded venv is never used.
+        _mark_ready(runtime, requirement="cognee==0.0.1")
     run = _FakeRun(runtime, fail_on="install")
     with (
         mock.patch.object(runtime_env, "_find_uv", return_value="/bin/uv"),
@@ -184,3 +219,33 @@ def test_the_server_is_spawned_with_the_runtime_interpreter():
         sb.ensure_local_server(8011, log_path="/dev/null")
     argv = popen.call_args.args[0]
     assert argv[:4] == ["/runtime/bin/python", "-m", "uvicorn", "cognee.api.client:app"]
+
+
+def test_an_outdated_runtime_starts_no_server(runtime):
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    with (
+        mock.patch.object(sb, "health_ok", return_value=False),
+        mock.patch.object(sb.subprocess, "Popen") as popen,
+        mock.patch.object(runtime_env.subprocess, "run") as run,
+        mock.patch.object(runtime_env, "has_cognee", return_value=False),
+    ):
+        with pytest.raises(CogneeNotInstalledError, match="install-runtime") as raised:
+            sb.ensure_local_server(8011, log_path="/dev/null")
+    assert "cognee==0.0.1" in str(raised.value)
+    assert LOCAL_COGNEE_REQUIREMENT in str(raised.value)
+    popen.assert_not_called()
+    run.assert_not_called()  # nothing is installed behind the user's back
+
+
+def test_status_says_an_outdated_runtime_keeps_local_mode_off(runtime):
+    from cognee_integration_hermes import cli
+
+    _mark_ready(runtime, requirement="cognee==0.0.1")
+    with mock.patch.object(cli.importlib.util, "find_spec", return_value=None):
+        status = cli._runtime_status()
+    assert status.startswith("outdated")
+    assert "cognee==0.0.1" in status
+    assert "install-runtime" in status
+    # A cognee installed into Hermes's own environment by hand still runs local mode.
+    with mock.patch.object(cli.importlib.util, "find_spec", return_value=object()):
+        assert cli._runtime_status() == "cognee installed in Hermes's environment"

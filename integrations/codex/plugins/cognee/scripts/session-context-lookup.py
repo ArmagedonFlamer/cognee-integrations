@@ -33,18 +33,16 @@ from _plugin_common import (
     DEFINITIVE_FAILURE_STATES,
     _float_env,
     authed_liveness,
+    auto_recall_active,
     buffered_saves_segments,
-    cached_readable_datasets,
     clear_payment_required,
     clear_slow_streak,
-    cross_dataset_search_command,
     elapsed_ms,
     get_session_key,
     hook_log,
     load_resolved,
     mark_server_ready,
     notify,
-    other_readable_datasets,
     outage_header,
     probe_health,
     quiet_hook_output,
@@ -67,6 +65,7 @@ from _plugin_common import (
 )
 from _recall_http import DOWN, SLOW, classify_transport_exception
 from _recall_text import (
+    DESKTOP_ORIGINATOR,
     MemoryTags,
     begin_turn,
     code_facts,
@@ -74,6 +73,9 @@ from _recall_text import (
     credit_instruction,
     format_code_facts,
     has_credited,
+    pop_turn_status,
+    session_originator,
+    stash_turn_status,
     trim_recall_text,
 )
 from cognee_statusline_render import render_status_for_host
@@ -98,55 +100,6 @@ TRUNCATE_RETURN = 400
 # Smallest deadline worth dispatching; with less budget than this, nothing is
 # fired rather than sending every scope a doomed request.
 MIN_SCOPE_TIMEOUT = 0.2
-
-# Cross-dataset search hint. Recall reads the active dataset only, and whether
-# what came back actually answers the user is a judgement only the model can
-# make — graph retrieval is nearest-neighbour, so it returns *something* from
-# any populated dataset, and "zero hits" never happens in practice. So every
-# prompt the server answered carries the list of the other readable datasets
-# and how to run a one-off graph search on one (not a switch), worded for the
-# model to act on only when memory did not answer. The listing comes from the
-# per-plugin cache (``cached_readable_datasets``) and is refreshed only when
-# stale, inside what is left of the recall budget. Every other readable dataset
-# is named: nothing ranks them, so the user picks. COGNEE_RECALL_DATASET_HINT=off
-# disables the hint.
-
-
-def _dataset_hint_enabled() -> bool:
-    raw = os.environ.get("COGNEE_RECALL_DATASET_HINT", "").strip().lower()
-    return raw not in ("0", "false", "off", "no")
-
-
-def _format_dataset_hint(active: str, others: list) -> str:
-    rows = "\n".join(f"  - {row.get('name', '')} [{row.get('id', '')}]" for row in others)
-    return (
-        f"Other Cognee datasets you can search (active: {active or 'unknown'}):\n{rows}\n"
-        "Memory above was recalled from the active dataset only. If the user is asking to recall "
-        "something and that context does not answer it, do not conclude that memory has nothing: "
-        "present all of these datasets as a numbered list and ask the user to reply with a number, "
-        'a name, or "no". Do not switch datasets. Then run the graph-only search on their choice '
-        "and say which dataset the answer came from:\n"
-        f"  {cross_dataset_search_command()}"
-    )
-
-
-def _other_datasets_hint(active: str, active_ids: list, service_url: str, deadline: float) -> str:
-    """The hint block, or "" when there is no other dataset to offer.
-
-    Cache first; one bounded network refresh only when the cache is stale and
-    the recall budget still has room for an honest attempt.
-    """
-    remaining = deadline - time.monotonic()
-    rows = cached_readable_datasets(
-        service_url=service_url,
-        refresh=remaining >= MIN_SCOPE_TIMEOUT,
-        timeout=max(MIN_SCOPE_TIMEOUT, min(2.0, remaining)),
-    )
-    others = other_readable_datasets(rows, active, active_ids)
-    if not others:
-        return ""
-    hook_log("recall_dataset_hint", {"active": active, "offered": len(others)})
-    return _format_dataset_hint(active, others)
 
 
 def _load_session_id() -> str:
@@ -262,19 +215,23 @@ def _memory_summary(
 
 
 def _tagged_entry(entry: dict, tags: MemoryTags | None) -> str:
-    """``_format_entry`` with the item's credit tag (SDK-1071), when tagging is on.
+    """``_format_entry`` with the item's credit mark (SDK-1071), when tagging is on.
 
-    Graph memory is tagged per passage plus one tag each for its entities and
-    facts; every other item gets one tag naming where it came from. An earlier
-    turn or trace is known by its server id, so it keeps its tag when recalled
-    again.
+    Graph memory is marked per passage plus one mark each for its entities and
+    facts, naming its document (when known) and the dataset the server says it
+    came from (SDK-1393); every other item gets one mark naming where it came
+    from. An earlier turn or trace is known by its server id, so it keeps its
+    tag when recalled again.
     """
     if tags is None:
         return _format_entry(entry)
     source = entry.get("source", "")
     if source == "graph_context":
         entry = dict(entry)
-        entry["text"] = tags.tag_graph(str(entry.get("text", "") or entry.get("content", "")))
+        entry["text"] = tags.tag_graph(
+            str(entry.get("text", "") or entry.get("content", "")),
+            str(entry.get("dataset_name") or "").strip(),
+        )
         return _format_entry(entry)
     body = _format_entry(entry)
     ident = str(entry.get("qa_id") or entry.get("trace_id") or "")
@@ -295,7 +252,8 @@ def _outage_output(state: str) -> dict:
     session_id = _load_session_id()
     saves = read_and_reset_save_counter(session_id) if session_id else {}
     summary = outage_header(state, saves, warmup_backlog(), " · ")
-    header = f"{render_status_for_host(get_session_key())}\n{summary}"
+    key = get_session_key()
+    header = f"{render_status_for_host(key, auto_recall_active(key))}\n{summary}"
     return {
         "systemMessage": header,
         "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": header},
@@ -325,7 +283,15 @@ def _has_entry_content(entry: dict) -> bool:
     return any(str(entry.get(field, "") or "").strip() for field in fields)
 
 
-async def _run(prompt: str, cwd: str = "") -> dict | None:
+async def _run(prompt: str, cwd: str = "", chatgpt_app: bool = False) -> dict | None:
+    """One prompt's recall. ``chatgpt_app``: the session runs in the ChatGPT app,
+    which renders KaTeX, so the credit opens with the icon drawn in it."""
+    # A turn cut short never reached its Stop hook: drop the status it kept, so
+    # it is not printed under this turn's answer.
+    try:
+        pop_turn_status(_plugin_common._PLUGIN_DIR, get_session_key())
+    except Exception as exc:
+        hook_log("turn_status_write_failed", {"error": str(exc)[:200]})
     if credit_enabled(_plugin_common.CITE_MEMORY_DEFAULT):
         # First, so a recall that returns early leaves this turn with no tags
         # and the Stop hook cannot check the answer against the previous
@@ -512,6 +478,16 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # name-addressed — it is this repo's own dataset.
     session_dataset = get_dataset(config)
     write_id, read_ids = resolve_active_dataset_ids() if scope_specs else ("", [])
+    # Auto recall (SDK-1393): unless recall is pinned (a picked dataset,
+    # COGNEE_PLUGIN_RECALL_MODE=pinned, an explicit read set), the graph scope names
+    # no dataset and the server routes it (cognee 1.6.6; an older server reads
+    # every readable dataset). Local state only: it costs no request.
+    auto_route = False
+    if scope_specs:
+        try:
+            auto_route = auto_recall_active()
+        except Exception as exc:
+            hook_log("recall_auto_route_error", {"error": str(exc)[:200]})
 
     async def _dispatch(scope_list: list, qtype, context_profile):
         """One scope's request, run off the event loop.
@@ -552,6 +528,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                 dataset_ids=scope_dataset_ids,
                 code_query=scope_code_query,
                 timeout=scope_timeout,
+                auto_route=auto_route and scope_list == ["graph"],
             )
         except Exception as caught:
             exc = caught
@@ -594,8 +571,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
             # (scopes_answered_err) so real failures stay visible (SDK-469).
             # It IS an answer, though: the server was reached and said so. Since
             # memory became one request (SDK-741) nothing else answers on such a
-            # prompt, so this must count as ok or the ready marker, the breaker
-            # and the dataset hint would all read a fresh dataset as an outage.
+            # prompt, so this must count as ok or the ready marker and the
+            # breaker would both read a fresh dataset as an outage.
             hook_log("recall_graph_not_built", {"scope": scope_list, "dataset": scope_dataset})
             scopes_ok += 1
             continue
@@ -762,8 +739,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # on 12 of 40 turns" activation number in the header. Carried forward from
     # the marker only when the marker is ours (codex keeps a single shared
     # file, so another terminal may have prompted last); keyed by host session,
-    # so a new session starts over and a resumed one continues. Read here,
-    # before the dataset hint, which it gates.
+    # so a new session starts over and a resumed one continues.
     _session_key = get_session_key()
     _totals = {"turns": 0, "turns_with_hits": 0}
     _state = None
@@ -788,28 +764,6 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     _totals["turns"] += 1
     if total > 0:
         _totals["turns_with_hits"] += 1
-
-    # Name the other datasets the user could search instead (see
-    # _other_datasets_hint). The block is static text, so it rides along on
-    # the session's FIRST answered prompt — the model keeps it from there —
-    # and again on any prompt memory answered with nothing, the moment it is
-    # actually needed (SDK-904). Not when nothing answered: the search it
-    # recommends would fail the same way. Decoration on the recall path — it
-    # must never break the hook output.
-    dataset_hint = ""
-    if scopes_ok and _dataset_hint_enabled() and (_totals["turns"] <= 1 or total == 0):
-        try:
-            dataset_hint = _other_datasets_hint(
-                session_dataset,
-                read_ids or ([write_id] if write_id else []),
-                service_url,
-                budget_deadline,
-            )
-        except Exception as exc:
-            hook_log(
-                "recall_error",
-                {"scope": ["dataset_hint"], "error": str(exc)[:200], "verdict": "unknown"},
-            )
 
     # Write last-turn counts so the status line script can render them.
     # Best-effort; failure here must not break the hook output.
@@ -841,7 +795,8 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
     # Build a visibility header so the user (via the assistant's
     # context) can tell that memory fired on this turn — both what it
     # recalled right now and what the previous turn persisted.
-    status_line = render_status_for_host(_session_key)
+    # The mode this recall ran under, asked once above: the header says what it did.
+    status_line = render_status_for_host(_session_key, auto_route)
     header = f"{status_line}\n" + _memory_summary(
         total,
         _totals,
@@ -888,13 +843,11 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         instruction = ""
         if tags is not None and tags.found:
             first = not has_credited(_plugin_common._PLUGIN_DIR, get_session_key())
-            instruction = credit_instruction(first, len(tags.found)) + "\n\n"
+            instruction = credit_instruction(first, len(tags.found), chatgpt_app) + "\n\n"
         full_context = (
             f"{header}\n\n{instruction}Relevant context from this session's memory:\n\n"
             + "\n".join(section_lines).strip()
         )
-        if dataset_hint:
-            full_context += f"\n\n{dataset_hint}"
         hook_log(
             "context_lookup_hit",
             {
@@ -908,9 +861,9 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         notify(f"injected context ({counts}); saves last turn {saves_last_turn}")
     else:
         # Nothing recalled: the agent gets no memory header (a "0 hits" line on
-        # most turns read as "Cognee does nothing", SDK-1071). The header stays
-        # in systemMessage; the dataset hint, when due, still goes in.
-        full_context = dataset_hint
+        # most turns read as "Cognee does nothing", SDK-1071). The person still
+        # sees the status, under the answer.
+        full_context = ""
         hook_log(
             "context_lookup_empty",
             {
@@ -927,6 +880,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
         from datetime import timezone as _tz
         from pathlib import Path as _Path
 
+        from _capture_policy import sanitize as _sanitize
         from _logfiles import append_line as _append_log_line
 
         _audit = _Path.home() / ".cognee-plugin" / "codex" / "recall-audit.log"
@@ -946,7 +900,7 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
                     # The header the user sees: an empty recall no longer
                     # puts it in the injected context (SDK-1071).
                     "header": header,
-                    "context": _audit_clip(full_context, _AUDIT_CONTEXT_CHARS),
+                    "context": _audit_clip(_sanitize(full_context), _AUDIT_CONTEXT_CHARS),
                 }
             ),
         )
@@ -962,11 +916,17 @@ async def _run(prompt: str, cwd: str = "") -> dict | None:
 
     # additionalContext is the MODEL injection channel and must carry the full
     # recalled content — trimming it to the status line would silently disable
-    # memory for the model. systemMessage carries the short status for the
-    # terminal (mirrors the claude-code integration); hosts that render
-    # additionalContext directly will still show the full block.
+    # memory for the model. The short status for the person is not printed
+    # here, above the answer: the Stop hook prints it under the answer and its
+    # credit. Hosts that render additionalContext directly still show the
+    # full block.
+    try:
+        # The memory summary only: the status line above it is drawn when it is
+        # printed, so a dataset switched during the turn shows as it now is.
+        stash_turn_status(_plugin_common._PLUGIN_DIR, get_session_key(), header.split("\n", 1)[-1])
+    except Exception as exc:
+        hook_log("turn_status_write_failed", {"error": str(exc)[:200]})
     output = {
-        "systemMessage": header,
         "hookSpecificOutput": {
             "hookEventName": "UserPromptSubmit",
             "additionalContext": full_context,
@@ -1010,6 +970,14 @@ def main():
         return
 
     prompt = payload.get("prompt", "")
+    try:
+        from _capture_policy import sanitize
+
+        # Every recall lane, the audit line and the tags see only this copy.
+        prompt = sanitize(prompt) if isinstance(prompt, str) else ""
+    except Exception as exc:  # a malformed custom pattern: no recall, never the raw text
+        hook_log("context_lookup_sanitize_failed", {"error": str(exc)[:200]})
+        return
     if not prompt or len(prompt) < 5:
         return
     # Only a raised floor applies here: the stock gate above keeps its exact
@@ -1019,11 +987,22 @@ def main():
         hook_log("context_lookup_short_prompt", {"chars": len(prompt.strip()), "min": min_chars})
         return
     cwd = str(payload.get("cwd") or "") or os.getcwd()
+    try:
+        originator = session_originator(
+            _plugin_common._PLUGIN_DIR,
+            get_session_key(),
+            str(payload.get("transcript_path") or ""),
+            str(payload.get("session_id") or ""),
+        )
+    except Exception as exc:
+        originator = ""
+        hook_log("context_lookup_client_unknown", {"error": str(exc)[:200]})
 
     output = None
     try:
         with quiet_hook_output("session-context-lookup"):
-            output = asyncio.run(_run(prompt, cwd))
+            in_app = originator == DESKTOP_ORIGINATOR
+            output = asyncio.run(_run(prompt, cwd, chatgpt_app=in_app))
     except Exception as exc:
         hook_log("context_lookup_exception", {"error": str(exc)[:200]})
     return with_base_url_notice(output, "UserPromptSubmit")

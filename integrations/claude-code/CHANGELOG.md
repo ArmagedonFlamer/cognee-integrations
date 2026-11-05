@@ -10,6 +10,127 @@ Code only offers an update when that string changes. Tag releases as
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0]
+
+### Added
+- **Recall is auto by default (SDK-1393).** Unless recall is pinned, the graph recall on
+  each prompt, and a `cognee-search` that names no dataset, send no dataset: a cognee 1.6.6 server
+  picks the readable dataset(s) most likely to hold the answer, or searches every readable one
+  when it cannot narrow (dataset routing, SDK-1317; best effort). Routing needs a cognee 1.6.6 server;
+  an older one searches every readable dataset. Pin a dataset to keep recall on one.
+  Saves still go to the active dataset. Session history and guidance, the code
+  lane and a `COGNEE_PLUGIN_READ_DATASET_IDS` read set keep their explicit scope; shared agent
+  memory's dataset ids are dropped with the dataset under auto recall and kept while restricted; recap, evidence and file-context reads stay on the active dataset.
+- **Picking a dataset restricts recall to it.** A switch restricts recall to the new dataset
+  (stored as `recall_pinned` in the launch record); the new `switch-dataset.py pin` restricts
+  recall to the active dataset without a new session, and so does naming the active dataset (by
+  name or id, also when another principal owns it); `switch-dataset.py auto` lifts the
+  restriction and leaves saves where they are. `--list` reports the mode in effect (`recall:
+  auto|pinned`, and when pinned why: `dataset_picked`, `configured_pin` or `read_dataset_ids`). A
+  session switched before this release stays restricted. `auto` is a reserved name: no dataset can
+  be switched to or created as `auto`, and `COGNEE_PLUGIN_DATASET=auto` means the default dataset.
+- **One message per result.** `switch-dataset.py --json` adds `message`, one or two plain
+  sentences for the user, to the `--list` output (which recall is on and why) and to every switch,
+  `pin` and `auto` result; the text output prints the same sentences, and the skills relay them.
+- **`COGNEE_PLUGIN_RECALL_MODE` sets the recall mode a session starts in.** `auto` (the default)
+  or `pinned` (recall restricted to the session's dataset, reason `configured_pin`), exported or
+  in `~/.cognee/.env`; any other value is `auto`. A choice made in the session (`pin`, `auto`, or
+  a switch) wins over it for that session. **Behaviour change:** a configured non-default
+  `COGNEE_PLUGIN_DATASET` no longer restricts recall: it only names the dataset saves go to. Set
+  `COGNEE_PLUGIN_RECALL_MODE=pinned` to keep recall on it.
+- **`cognee-search`'s CLI fallback follows the recall mode.** With the server unreachable, the
+  `cognee-cli` fallback sends no dataset under auto recall and the active dataset when pinned.
+- **The status-row picker and `/cognee-dataset` know about auto recall.** The picker starts with
+  `auto (best-matching dataset)` and the row reads `auto (<dataset>)` while recall is auto;
+  `/cognee-dataset auto` lifts a restriction, `/cognee-dataset pin` restricts recall to the active
+  dataset, and `/cognee-dataset` alone says which mode is on. Picking the active dataset runs
+  `switch-dataset.py pin`; toasts and the listing show the script's `message`. The `search` tool
+  reports results "from memory" unless recall is restricted.
+
+### Changed
+- **Local mode installs cognee 1.6.6** (was 1.6.5), the first release with dataset routing.
+- **The memory credit names the document and dataset (SDK-1393).** Every graph item the recall
+  hook injects is marked `[document <name> · dataset <name>]` (the document only when the item
+  names one), since under auto recall the server picks the dataset and the mark is the only place
+  the answer learns which one. The credit line is now `> Cognee memory: <what>, from <document> in
+  the <dataset> dataset`, with no `[mN]` tags or brain; items are still numbered behind the scenes.
+  The Stop hook counts a turn whose answer ends with that line (`untagged: true` in the
+  `memory_credit` event); an older line citing `[mN]` is still checked against the session's tags.
+- **The terminal dataset picker is drawn from the start.** It shows the selected name and lights
+  under the pointer; a click or `ctrl+x tab` gives it the focus, which opens the list and lists the
+  datasets afresh. The `▾` button that opened it is gone.
+
+### Removed
+- **The cross-dataset hint.** Auto-recall no longer appends the "Other Cognee datasets you can
+  search" block or asks the user to pick a dataset. `COGNEE_RECALL_DATASET_HINT`,
+  `COGNEE_DATASETS_CACHE_TTL`, `COGNEE_DATASETS_CACHE_RETRY` and the `readable-datasets.json`
+  cache are gone. A one-off search of one dataset (`cognee-search.sh --dataset-id`,
+  `list-datasets.py`) is unchanged.
+
+### Fixed
+- **Switching to a dataset you don't own under shared memory lands in it (SDK-1393).** Under
+  shared agent memory the parent account owns the datasets, so the switch addressed the target
+  by its id, and the shared-memory resolver read that id as a *name*: it pinned the session to
+  an empty dataset named after the id (creating one when none existed) while reporting the right
+  id. A dataset picked by id now resolves as that dataset, the record keeps its name with its
+  canonical id, and a dataset the shared role cannot hold is addressed by its id instead of
+  forking a copy. Picked by id among datasets that share a name, it also stays the write target,
+  including across the periodic refresh, rather than giving way to the parent's same-named copy.
+  Present since shared memory became the default. Delete any leftover empty dataset whose name
+  is a UUID.
+- **No empty agent-owned copy of the shared dataset (SDK-1393).** Under shared memory the sync's
+  pre-improve dataset ensure posted the launch's dataset by name with the agent key, and the server,
+  which matches a name only among the caller's own datasets, created an empty agent-owned
+  `agent_sessions` beside the canonical one. The ensure now skips the by-name create when the name
+  has a canonical id, and the dataset listing marks only the canonical row as current, not every
+  dataset of that name.
+- **The status row no longer vanishes when the dataset picker opens on same-named datasets.**
+  The terminal picker offered a name once per dataset so named; the engine refuses a `Select` whose
+  values repeat and dropped the whole row, for the rest of the session. Each name is offered once.
+- **The status row follows `/clear` and `/resume`.** The engine sends no session start for the
+  conversation that replaces the ended one, so the row stayed unbound until the next prompt and
+  could show the ended session's sync as `✓ session saved`. The module now drops the ended
+  session's marker and binds the new conversation as soon as its id is out (watching for up to
+  30 s), with the snapshot, warm-up poll and dataset listing a session start gets.
+- **Searching another dataset while recall is restricted takes the person's pick (SDK-1393).**
+  The skills already said to list the other datasets and ask before a one-off search of one, but
+  `cognee-search.sh --dataset-id` and the `search` tool's `dataset_id` searched any id they were
+  given, so an agent could leave a pinned dataset on an id it found in a recalled memory. While
+  recall is pinned or limited to a read set, the wrapper now refuses a dataset other than the
+  active one (exit 2, a JSON `error` saying how to ask, no request sent) unless `--user-picked`
+  marks it as the person's choice: one they picked when asked or named in their request. The
+  `search` tool passes it for `user_picked: true`; the skills, the `cognee-recall` agent and the
+  README carry the flag. Auto recall, and the active dataset named by hand, need no flag.
+
+## [1.7.6]
+
+### Security
+- **`<private>…</private>` keeps text out of memory, logs and requests.** Anything you
+  wrap in the tag is replaced with `[private]` before the plugin writes it to a file or
+  log, sends it as a query, or stores it; the text around it is kept. Spans don't nest:
+  each opener ends at the next close, and text between two spans is kept; a span may
+  cross lines and carry attributes. An opener with no close is left as plain text. No setting turns this off. Claude still sees the span in the live turn.
+- **Explicit remember is sanitized like automatic capture.** `/cognee-remember` text,
+  and its `cognee-cli` fallback, used to be uploaded exactly as given, credentials
+  included. It now goes through the same `<private>` stripping and secret patterns,
+  whatever `COGNEE_CAPTURE` says. A `--file` upload is still sent byte for byte, so
+  `/cognee-handoff` now passes its note as text. Supersedes
+  [#468](https://github.com/topoteretes/cognee-integrations/pull/468), thanks to
+  @Tilzen for the report and the first fix.
+- **Queries are sanitized.** The per-prompt recall (graph, session and code lanes),
+  `cognee-search.sh` and its CLI fallback, the timeline topic and the evidence index
+  no longer send a span's content or a recognised secret to the server. A `--code-query`
+  is sanitized field by field, so it stays valid JSON.
+- **Fewer secrets on disk.** `recall-audit.log` sanitizes the prompt and context it
+  keeps and no longer copies the full text of every deduplicated memory entry. The
+  `sync_payload` line in `hook.log` records the payload's field names and size instead
+  of its first 200 characters.
+
+### Changed
+- `COGNEE_CAPTURE_REDACT=false` still turns the secret patterns off, but no longer
+  affects `<private>` spans.
+- `/cognee-forget` searches for what surrounds a secret, never the value itself.
+
 ## [1.7.5]
 
 ### Changed

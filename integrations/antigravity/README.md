@@ -150,6 +150,16 @@ The codebase skill uses the current code-graph indexing and search endpoints.
 The plugin follows dataset changes recorded for a conversation and includes its
 retired sessions in final sync.
 
+**Recall mode.** With a remote Cognee server, graph recall names no dataset by
+default (`auto`): a cognee 1.6.6 server picks the readable dataset(s) most likely
+to hold the answer, and saves still go to the active dataset. Set
+`COGNEE_PLUGIN_RECALL_MODE=pinned` (exported or in `~/.cognee/.env`) to keep recall
+on the active dataset. For one session, `python3 scripts/switch-dataset.py pin`
+restricts recall to the dataset in use, `switch-dataset.py auto` lifts it, and
+`switch-dataset.py --list` shows the mode in effect. `COGNEE_PLUGIN_READ_DATASET_IDS`
+always restricts recall to its datasets. The recall mode applies to recall over
+HTTP; local mode's in-process recall names no dataset either way.
+
 ## Verify
 
 Re-run the native validator after changing the package:
@@ -163,6 +173,6 @@ installing the plugin or changing local Antigravity configuration.
 
 ## Capture, events, and project memory
 
-The shared Python hooks support capture opt-out (`COGNEE_CAPTURE=0`), tool/path filtering and credential redaction before buffering or upload. See [the shared controls](../claude-code/README.md#automatic-capture-controls) and [configuration precedence](../CONFIGURATION.md). Structured log migration is documented in [EVENTS.md](EVENTS.md).
+The shared Python hooks support capture opt-out (`COGNEE_CAPTURE=0`), tool/path filtering, credential redaction before buffering or upload, and `<private>…</private>` spans that never leave the hooks, explicit remember included. See [the shared controls](../claude-code/README.md#automatic-capture-controls) and [configuration precedence](../CONFIGURATION.md). Structured log migration is documented in [EVENTS.md](EVENTS.md).
 
 Project node sets (`COGNEE_PROJECT_NODE_SET=auto` or a fixed name) and verified companion routing (`COGNEE_SESSION_COMPANION_DATASET=1`) follow the same contract as Claude Code/Codex. They require the server extension in [cognee#4948](https://github.com/topoteretes/cognee/pull/4948); unverified companions fall back to the primary dataset and unsupported project tags keep capture queued. Both features default off. A named project (or `COGNEE_RECALL_PROJECT_NODE_SET`, recall only) also scopes graph recall to that node set plus `COGNEE_RECALL_SHARED_NODE_SETS` (default `global,user_context`); `COGNEE_RECALL_PROJECT_SCOPE=false` turns the scoping off.
